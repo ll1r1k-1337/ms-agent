@@ -1,0 +1,8 @@
+[mssanitizer] logging to file: ./mindstudio_sanitizer_log/mssanitizer_20250522100500_222222.log
+Failed
+====== WARNING: out of bounds of size 224
+======    at 0x402000800 on GM when writing data
+======    by thread (0,0,0)
+======    in block aicore(0) on device 0
+======    code in pc current 0x100 (serialNo:142)
+======    #0 add_custom.cpp:30:9

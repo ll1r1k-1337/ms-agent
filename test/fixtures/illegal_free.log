@@ -1,0 +1,6 @@
+[mssanitizer] logging to file: ./mindstudio_sanitizer_log/mssanitizer_20250522102500_555555.log
+Failed
+====== ERROR: illegal free()
+======    at 0x402000100 on GM
+======    code in main.cpp:40 (serialNo:202)
+======    #0 main.cpp:40:5

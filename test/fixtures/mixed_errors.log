@@ -1,0 +1,15 @@
+[mssanitizer] logging to file: ./mindstudio_sanitizer_log/mssanitizer_20250522105000_mixed.log
+Failed
+====== ERROR: misaligned access of size 32
+======    at 0x402002100 on L1
+======    in block aicore(0) on device 0
+======    code in add_custom.cpp:42 (serialNo:165)
+======    #0 add_custom.cpp:42:5
+====== WARNING: out of bounds of size 224
+======    at 0x402000800 on GM when writing data
+======    in block aicore(0) on device 0
+======    code in pc current 0x100 (serialNo:142)
+======    #0 add_custom.cpp:30:9
+======    Direct leak of 32800 byte(s)
+======      at 0x402000000 on GM by module 0
+======      allocated in main.cpp:55 (serialNo:200)

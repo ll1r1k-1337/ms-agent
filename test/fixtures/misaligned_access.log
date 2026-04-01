@@ -1,0 +1,7 @@
+[mssanitizer] logging to file: ./mindstudio_sanitizer_log/mssanitizer_20250522101000_333333.log
+Failed
+====== ERROR: misaligned access of size 32
+======    at 0x402002100 on L1
+======    in block aicore(0) on device 0
+======    code in add_custom.cpp:42 (serialNo:165)
+======    #0 add_custom.cpp:42:5

@@ -1,0 +1,7 @@
+[mssanitizer] logging to file: ./mindstudio_sanitizer_log/mssanitizer_20250522103500_777777.log
+Failed
+====== ERROR: uninitialized read of size 64
+======    at 0x402003000 on UB in add_custom_kernel
+======    in block aicore(0) on device 0
+======    code in add_custom.cpp:50 (serialNo:300)
+======    #0 add_custom.cpp:50:9

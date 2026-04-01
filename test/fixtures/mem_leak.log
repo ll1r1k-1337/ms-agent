@@ -1,0 +1,5 @@
+[mssanitizer] logging to file: ./mindstudio_sanitizer_log/mssanitizer_20250522102000_444444.log
+====== SUMMARY: MemorySanitizer summary: 1 leak(s) found
+======    Direct leak of 32800 byte(s)
+======      at 0x402000000 on GM by module 0
+======      allocated in main.cpp:55 (serialNo:200)

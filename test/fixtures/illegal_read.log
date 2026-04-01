@@ -1,0 +1,7 @@
+[mssanitizer] logging to file: ./mindstudio_sanitizer_log/mssanitizer_20250522093805_922880.log
+Failed
+====== ERROR: illegal read of size 368
+======    at 0x12c0c0053190 on GM in triton_add
+======    in block aiv(1) on device 0
+======    code in pc current 0x1b0 (serialNo:524)
+======    #0 sample.py:18:45

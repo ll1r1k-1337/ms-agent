@@ -1,0 +1,3 @@
+[mssanitizer] logging to file: ./mindstudio_sanitizer_log/mssanitizer_20250522106000_clean.log
+Succeed
+[mssanitizer] No memory errors detected.

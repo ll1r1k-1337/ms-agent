@@ -1,0 +1,4 @@
+[mssanitizer] logging to file: ./mindstudio_sanitizer_log/mssanitizer_20250522103000_666666.log
+====== WARNING: Unused memory of 1024 byte(s)
+======    at 0x402000200 on GM
+======    code in main.cpp:30 (serialNo:201)

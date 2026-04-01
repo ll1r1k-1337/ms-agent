@@ -1,0 +1,7 @@
+[mssanitizer] logging to file: ./mindstudio_sanitizer_log/mssanitizer_20250522100000_111111.log
+Failed
+====== ERROR: illegal write of size 224
+======    at 0x402001000 on UB
+======    in block aicore(0) on device 0
+======    code in add_custom.cpp:35 (serialNo:150)
+======    #0 add_custom.cpp:35:9
