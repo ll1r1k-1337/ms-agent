@@ -122,7 +122,9 @@ function groupLines(content: string): RawGroup[] {
         }
 
         const leakMatch = line.match(LEAK_HEADER_RE);
-        if (leakMatch && !current) {
+        // Always start a new group for leak/unused headers (do not require !current:
+        // otherwise a leak after another diagnostic is dropped, e.g. mixed_errors.log).
+        if (leakMatch) {
             current = {
                 header: leakMatch[1] + ' ' + leakMatch[2],
                 severity: leakMatch[1] === 'Direct leak' ? 'ERROR' : 'WARNING',
