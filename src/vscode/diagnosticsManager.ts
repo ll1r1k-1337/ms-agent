@@ -37,7 +37,8 @@ export class DiagnosticsManager {
     static parseFileAndPublish(filePath: string) {
         const result = parseLogFile(filePath);
         currentDiagnostics = result.diagnostics;
-        lastLogDir = path.dirname(path.resolve(filePath));
+        const resolved = path.normalize(path.resolve(filePath));
+        lastLogDir = path.dirname(resolved);
         
         const workspaceRoot = vscode.workspace.rootPath || '';
         const searchDirs = [workspaceRoot, lastLogDir].filter((v): v is string => Boolean(v));

@@ -51,6 +51,31 @@ function resolveFilePath(fileName: string, workspaceRoot: string): string {
     return path.join(workspaceRoot, fileName);
 }
 
+/**
+ * Fix the problem at `index` (0-based) in the diagnostics list from the last `msagent.parseLog` (or any parse).
+ */
+export async function fixProblem(index: number): Promise<boolean> {
+    if (!Number.isFinite(index) || index < 0 || !Number.isInteger(index)) {
+        vscode.window.showWarningMessage(
+            'msAgent: fixProblem requires a non-negative integer index (0-based).',
+        );
+        return false;
+    }
+    const all = DiagnosticsManager.getCurrentDiagnostics();
+    if (index >= all.length) {
+        const hint =
+            all.length === 0
+                ? 'Parse a log first (msagent.parseLog).'
+                : `Valid index range: 0..${all.length - 1}.`;
+        vscode.window.showWarningMessage(
+            `msAgent: problem index ${index} is out of range. ${hint}`,
+        );
+        return false;
+    }
+    await fixSingleDiagnostic(all[index]);
+    return true;
+}
+
 export async function fixDiagnostic(
     documentUri: string,
     lineNumber: number,
