@@ -12,19 +12,20 @@ function getNonce(): string {
 
 export class WebviewPanelProvider {
     private panel: vscode.WebviewPanel | undefined;
+    private webviewReady = false;
     private messageIdCounter = 0;
-    private onStopCallback: (() => void) | undefined;
+    private onActionCallback: ((message: any) => void) | undefined;
+    private lastQueueState: WebviewMessage | undefined;
+    private sessionMessages: WebviewMessage[] = [];
+    private static readonly MAX_SESSION_MESSAGES = 2000;
 
     createOrShow(context: vscode.ExtensionContext): vscode.WebviewPanel {
         console.log('[WebviewPanelProvider] createOrShow called');
-        
         if (this.panel) {
-            console.log('[WebviewPanelProvider] Panel exists, revealing');
             this.panel.reveal(vscode.ViewColumn.Beside);
             return this.panel;
         }
 
-        console.log('[WebviewPanelProvider] Creating new panel');
         this.panel = vscode.window.createWebviewPanel(
             'msAgentFix',
             'msAgent Fix Details',
@@ -32,37 +33,75 @@ export class WebviewPanelProvider {
             {
                 enableScripts: true,
                 retainContextWhenHidden: true,
-            }
+            },
         );
-
-        console.log('[WebviewPanelProvider] Setting HTML');
+        this.webviewReady = false;
         this.panel.webview.html = this.getHTML(this.panel.webview);
-        
+
         this.panel.webview.onDidReceiveMessage((message: any) => {
             console.log('[WebviewPanelProvider] Received message from webview:', message);
-            if (message.type === 'stop') {
-                this.onStopCallback?.();
+            if (message.type === 'fix_details_ready') {
+                if (this.webviewReady) {
+                    return;
+                }
+                this.webviewReady = true;
+                console.log('[WebviewPanelProvider] fix_details_ready received');
+                if (this.sessionMessages.length > 0) {
+                    console.log(
+                        `[WebviewPanelProvider] replaying ${this.sessionMessages.length} session messages to webview`,
+                    );
+                    for (const sessionMessage of this.sessionMessages) {
+                        void this.panel?.webview.postMessage(sessionMessage);
+                    }
+                }
+                if (this.lastQueueState) {
+                    console.log('[WebviewPanelProvider] replaying last queue_state to webview');
+                    void this.panel?.webview.postMessage(this.lastQueueState);
+                }
+                return;
+            }
+            if (
+                message.type === 'pause_toggle'
+                || message.type === 'cancel_current'
+                || message.type === 'remove_queued'
+            ) {
+                this.onActionCallback?.(message);
             }
         });
-        
+
         this.panel.onDidDispose(() => {
-            console.log('[WebviewPanelProvider] Panel disposed');
             this.panel = undefined;
-            this.onStopCallback = undefined;
-            this.messageIdCounter = 0;
+            this.webviewReady = false;
+            this.onActionCallback = undefined;
         });
 
         return this.panel;
     }
 
-    onStop(callback: () => void): void {
-        console.log('[WebviewPanelProvider] onStop callback registered');
-        this.onStopCallback = callback;
+    revealLatestSession(): void {
+        if (this.panel) {
+            this.panel.reveal(vscode.ViewColumn.Beside);
+        }
+    }
+
+    onAction(callback: (message: any) => void): void {
+        this.onActionCallback = callback;
     }
 
     postMessage(message: WebviewMessage): void {
+        if (message.type === 'queue_state') {
+            this.lastQueueState = message;
+            console.log('[WebviewPanelProvider] queue_state payload:', message.payload);
+        }
+        else {
+            this.recordSessionMessage(message);
+        }
         if (!this.panel) {
             console.error('[WebviewPanelProvider] postMessage called but panel is undefined!');
+            return;
+        }
+        if (!this.webviewReady) {
+            console.log('[WebviewPanelProvider] webview not ready, defer immediate post:', message.type);
             return;
         }
         console.log('[WebviewPanelProvider] postMessage:', message.type);
@@ -70,13 +109,27 @@ export class WebviewPanelProvider {
     }
 
     clear(): void {
+        this.sessionMessages = [];
         this.postMessage({ type: 'clear', payload: {} });
         this.messageIdCounter = 0;
-        this.onStopCallback = undefined;
     }
 
     nextMessageId(): string {
         return 'msg_' + (++this.messageIdCounter) + '_' + Date.now();
+    }
+
+    private recordSessionMessage(message: WebviewMessage): void {
+        if (message.type === 'clear') {
+            this.sessionMessages = [];
+            return;
+        }
+        this.sessionMessages.push(message);
+        if (this.sessionMessages.length > WebviewPanelProvider.MAX_SESSION_MESSAGES) {
+            this.sessionMessages.splice(
+                0,
+                this.sessionMessages.length - WebviewPanelProvider.MAX_SESSION_MESSAGES,
+            );
+        }
     }
 
     private getHTML(webview: vscode.Webview): string {
@@ -90,17 +143,46 @@ export class WebviewPanelProvider {
 '    <title>msAgent Fix Details</title>\n' +
 '    <style>\n' +
 '        * { box-sizing: border-box; margin: 0; padding: 0; }\n' +
+'        html, body {\n' +
+'            height: 100%;\n' +
+'        }\n' +
 '        body {\n' +
 '            font-family: var(--vscode-editor-font-family, -apple-system, BlinkMacSystemFont, sans-serif);\n' +
 '            background-color: var(--vscode-editor-background, #1e1e1e);\n' +
 '            color: var(--vscode-editor-foreground, #d4d4d4);\n' +
-'            padding: 16px;\n' +
 '            line-height: 1.5;\n' +
+'            display: flex;\n' +
+'            flex-direction: column;\n' +
+'            overflow: hidden;\n' +
+'            padding: 16px;\n' +
+'            padding-top: 48px;\n' +
+'            min-height: 100vh;\n' +
+'            box-sizing: border-box;\n' +
+'        }\n' +
+'        .main-column {\n' +
+'            flex: 1 1 auto;\n' +
+'            min-height: 0;\n' +
+'            display: flex;\n' +
+'            flex-direction: column;\n' +
+'            overflow: hidden;\n' +
+'        }\n' +
+'        .bottom-dock {\n' +
+'            flex: 0 0 auto;\n' +
+'            display: flex;\n' +
+'            flex-direction: column;\n' +
+'            gap: 10px;\n' +
+'            padding-top: 4px;\n' +
 '        }\n' +
 '        #debug-info {\n' +
 '            display: none;\n' +
 '        }\n' +
-'        #messages { margin-top: 24px; }\n' +
+'        #messages {\n' +
+'            flex: 1 1 auto;\n' +
+'            min-height: 0;\n' +
+'            overflow-y: auto;\n' +
+'            overflow-x: hidden;\n' +
+'            padding-right: 4px;\n' +
+'        }\n' +
 '        .message {\n' +
 '            margin-bottom: 16px;\n' +
 '            border-left: 3px solid #3c3c3c;\n' +
@@ -132,16 +214,63 @@ export class WebviewPanelProvider {
 '            top: 8px;\n' +
 '            right: 8px;\n' +
 '            z-index: 100;\n' +
+'            display: flex;\n' +
+'            gap: 8px;\n' +
 '        }\n' +
-'        .stop-btn {\n' +
-'            background: #c42b1c;\n' +
-'            color: white;\n' +
-'            border: none;\n' +
-'            padding: 6px 16px;\n' +
+'        .stop-btn, .cancel-btn {\n' +
+'            min-width: 92px;\n' +
+'            padding: 7px 14px;\n' +
 '            border-radius: 4px;\n' +
+'            border: none;\n' +
 '            cursor: pointer;\n' +
 '            font-size: 12px;\n' +
 '            font-weight: 600;\n' +
+'            box-sizing: border-box;\n' +
+'            text-align: center;\n' +
+'        }\n' +
+'        .stop-btn {\n' +
+'            background: #6c757d;\n' +
+'            color: white;\n' +
+'        }\n' +
+'        .cancel-btn {\n' +
+'            background: #c42b1c;\n' +
+'            color: white;\n' +
+'        }\n' +
+'        .queue-panel {\n' +
+'            flex: 0 0 auto;\n' +
+'            width: 100%;\n' +
+'            margin-top: 12px;\n' +
+'            background: rgba(255,255,255,0.04);\n' +
+'            border: 1px solid rgba(255,255,255,0.12);\n' +
+'            border-radius: 6px;\n' +
+'            overflow: hidden;\n' +
+'        }\n' +
+'        .queue-header {\n' +
+'            padding: 8px 12px;\n' +
+'            cursor: pointer;\n' +
+'            font-size: 12px;\n' +
+'            opacity: 0.9;\n' +
+'            user-select: none;\n' +
+'        }\n' +
+'        .queue-body {\n' +
+'            border-top: 1px solid rgba(255,255,255,0.08);\n' +
+'            max-height: 180px;\n' +
+'            overflow: auto;\n' +
+'        }\n' +
+'        .queue-item {\n' +
+'            display: flex;\n' +
+'            justify-content: space-between;\n' +
+'            align-items: center;\n' +
+'            gap: 8px;\n' +
+'            padding: 8px 12px;\n' +
+'            font-size: 12px;\n' +
+'        }\n' +
+'        .queue-remove {\n' +
+'            background: transparent;\n' +
+'            border: none;\n' +
+'            color: #f44336;\n' +
+'            cursor: pointer;\n' +
+'            font-size: 14px;\n' +
 '        }\n' +
 '        .hidden { display: none; }\n' +
 '    </style>\n' +
@@ -149,15 +278,30 @@ export class WebviewPanelProvider {
 '<body>\n' +
 '    <div id="debug-info">Loading...</div>\n' +
 '    <div class="toolbar">\n' +
-'        <button id="stopBtn" class="stop-btn hidden">Stop</button>\n' +
+'        <button id="stopBtn" class="stop-btn hidden">Pause</button>\n' +
+'        <button id="cancelBtn" class="cancel-btn hidden">Cancel</button>\n' +
 '    </div>\n' +
-'    <div id="messages"></div>\n' +
+'    <div class="main-column">\n' +
+'        <div id="messages"></div>\n' +
+'        <div class="bottom-dock">\n' +
+'            <div id="queuePanel" class="queue-panel hidden">\n' +
+'                <div id="queueHeader" class="queue-header">0 problems queued</div>\n' +
+'                <div id="queueBody" class="queue-body hidden"></div>\n' +
+'            </div>\n' +
+'        </div>\n' +
+'    </div>\n' +
 '    <script nonce="' + nonce + '">\n' +
 '        var vscode = acquireVsCodeApi();\n' +
 '        var debugInfo = document.getElementById("debug-info");\n' +
 '        var container = document.getElementById("messages");\n' +
 '        var stopBtn = document.getElementById("stopBtn");\n' +
+'        var cancelBtn = document.getElementById("cancelBtn");\n' +
+'        var queuePanel = document.getElementById("queuePanel");\n' +
+'        var queueHeader = document.getElementById("queueHeader");\n' +
+'        var queueBody = document.getElementById("queueBody");\n' +
 '        var messageMap = new Map();\n' +
+'        var queueExpanded = false;\n' +
+'        var lastQueueHeaderBody = "0 problems queued";\n' +
 '        \n' +
 '        function log(msg) {\n' +
 '            console.log("[WebView] " + msg);\n' +
@@ -176,7 +320,16 @@ export class WebviewPanelProvider {
 '                if (container) container.innerHTML = "";\n' +
 '                messageMap.clear();\n' +
 '                toolCallMap.clear();\n' +
-'                if (stopBtn) stopBtn.classList.remove("hidden");\n' +
+'                if (stopBtn) {\n' +
+'                    stopBtn.classList.add("hidden");\n' +
+'                    stopBtn.disabled = false;\n' +
+'                    stopBtn.textContent = "Pause";\n' +
+'                }\n' +
+'                if (cancelBtn) {\n' +
+'                    cancelBtn.classList.add("hidden");\n' +
+'                    cancelBtn.disabled = false;\n' +
+'                    cancelBtn.textContent = "Cancel";\n' +
+'                }\n' +
 '            } else if (msg.type === "text_stream") {\n' +
 '                appendText(msg.payload.messageId, msg.payload.delta);\n' +
 '            } else if (msg.type === "tool_call") {\n' +
@@ -189,12 +342,34 @@ export class WebviewPanelProvider {
 '                appendFinalDiff(msg.payload);\n' +
 '            } else if (msg.type === "message_complete") {\n' +
 '                completeMessage(msg.payload.messageId);\n' +
-'                if (stopBtn) stopBtn.classList.add("hidden");\n' +
 '            } else if (msg.type === "error") {\n' +
 '                showError(msg.payload.message);\n' +
-'                if (stopBtn) stopBtn.classList.add("hidden");\n' +
+'            } else if (msg.type === "queue_state") {\n' +
+'                renderQueueState(msg.payload);\n' +
 '            }\n' +
 '        });\n' +
+'        \n' +
+'        if (stopBtn) {\n' +
+'            stopBtn.addEventListener("click", function() {\n' +
+'                vscode.postMessage({ type: "pause_toggle" });\n' +
+'            });\n' +
+'        }\n' +
+'        if (cancelBtn) {\n' +
+'            cancelBtn.addEventListener("click", function() {\n' +
+'                cancelBtn.disabled = true;\n' +
+'                vscode.postMessage({ type: "cancel_current" });\n' +
+'            });\n' +
+'        }\n' +
+'        if (queueHeader) {\n' +
+'            queueHeader.addEventListener("click", function() {\n' +
+'                queueExpanded = !queueExpanded;\n' +
+'                if (queueBody) {\n' +
+'                    if (queueExpanded) queueBody.classList.remove("hidden");\n' +
+'                    else queueBody.classList.add("hidden");\n' +
+'                }\n' +
+'                queueHeader.textContent = (queueExpanded ? "▼ " : "▶ ") + lastQueueHeaderBody;\n' +
+'            });\n' +
+'        }\n' +
 '        \n' +
 '        function appendText(messageId, delta) {\n' +
 '            log("appendText: " + messageId);\n' +
@@ -236,6 +411,64 @@ export class WebviewPanelProvider {
 '            el.style.color = "#f44336";\n' +
 '            el.textContent = "Error: " + message;\n' +
 '            if (container) container.appendChild(el);\n' +
+'        }\n' +
+'        \n' +
+'        function renderQueueState(payload) {\n' +
+'            if (!queuePanel || !queueHeader || !queueBody) return;\n' +
+'            var items = payload.items || [];\n' +
+'            var n = items.length;\n' +
+'            var sessionPaused = Boolean(payload.paused);\n' +
+'            if (n > 0) {\n' +
+'                queuePanel.classList.remove("hidden");\n' +
+'                queueExpanded = true;\n' +
+'                queueBody.classList.remove("hidden");\n' +
+'                lastQueueHeaderBody = sessionPaused\n' +
+'                    ? ("Paused · " + n + " queued")\n' +
+'                    : (n + " problem" + (n === 1 ? "" : "s") + " queued");\n' +
+'                queueHeader.textContent = "▼ " + lastQueueHeaderBody;\n' +
+'                queueBody.innerHTML = "";\n' +
+'                items.forEach(function(item) {\n' +
+'                    var row = document.createElement("div");\n' +
+'                    row.className = "queue-item";\n' +
+'                    var text = document.createElement("span");\n' +
+'                    text.textContent = item.title;\n' +
+'                    row.appendChild(text);\n' +
+'                    var removeBtn = document.createElement("button");\n' +
+'                    removeBtn.className = "queue-remove";\n' +
+'                    removeBtn.textContent = "🗑";\n' +
+'                    removeBtn.addEventListener("click", function(e) {\n' +
+'                        e.stopPropagation();\n' +
+'                        vscode.postMessage({ type: "remove_queued", id: item.id });\n' +
+'                    });\n' +
+'                    row.appendChild(removeBtn);\n' +
+'                    queueBody.appendChild(row);\n' +
+'                });\n' +
+'            } else {\n' +
+'                queuePanel.classList.add("hidden");\n' +
+'                queueExpanded = false;\n' +
+'                queueBody.classList.add("hidden");\n' +
+'                queueBody.innerHTML = "";\n' +
+'                lastQueueHeaderBody = "0 problems queued";\n' +
+'                queueHeader.textContent = "▶ " + lastQueueHeaderBody;\n' +
+'            }\n' +
+'            if (stopBtn) {\n' +
+'                if (payload.hasPendingTasks) {\n' +
+'                    stopBtn.classList.remove("hidden");\n' +
+'                    stopBtn.disabled = false;\n' +
+'                    stopBtn.textContent = payload.paused ? "Resume" : "Pause";\n' +
+'                } else {\n' +
+'                    stopBtn.classList.add("hidden");\n' +
+'                }\n' +
+'            }\n' +
+'            if (cancelBtn) {\n' +
+'                if (payload.hasPendingTasks) {\n' +
+'                    cancelBtn.classList.remove("hidden");\n' +
+'                    cancelBtn.disabled = false;\n' +
+'                    cancelBtn.textContent = n > 0 ? "Skip" : "Cancel";\n' +
+'                } else {\n' +
+'                    cancelBtn.classList.add("hidden");\n' +
+'                }\n' +
+'            }\n' +
 '        }\n' +
 '        \n' +
 '        function appendToolCall(payload) {\n' +
@@ -394,6 +627,7 @@ export class WebviewPanelProvider {
 '        }\n' +
 '        \n' +
 '        log("Ready");\n' +
+'        vscode.postMessage({ type: "fix_details_ready" });\n' +
 '    </script>\n' +
 '</body>\n' +
 '</html>';

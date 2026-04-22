@@ -6,11 +6,20 @@ export type WebviewMessageType =
     | 'final_diff'
     | 'message_complete'
     | 'error'
-    | 'clear';
+    | 'clear'
+    | 'queue_state';
 
 export interface WebviewMessage {
     type: WebviewMessageType;
-    payload: TextStreamPayload | ToolCallPayload | ToolResultPayload | DiffPayload | FinalDiffPayload | ErrorPayload | ClearPayload;
+    payload:
+        | TextStreamPayload
+        | ToolCallPayload
+        | ToolResultPayload
+        | DiffPayload
+        | FinalDiffPayload
+        | ErrorPayload
+        | ClearPayload
+        | QueueStatePayload;
 }
 
 export interface TextStreamPayload {
@@ -54,3 +63,16 @@ export interface ErrorPayload {
 }
 
 export interface ClearPayload {}
+
+export interface QueueStateItem {
+    id: string;
+    title: string;
+}
+
+export interface QueueStatePayload {
+    /** User paused the fix pipeline (`pauseRequested` in fixService). */
+    paused: boolean;
+    /** There is active, paused, or queued work that can still be controlled. */
+    hasPendingTasks: boolean;
+    items: QueueStateItem[];
+}
