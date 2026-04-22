@@ -63,17 +63,17 @@
         "msagent.modelEndpoint": {
           "type": "string",
           "default": "http://localhost:11434",
-          "description": "LLM API endpoint URL (OpenAI-compatible, e.g. Ollama, vLLM, Volcano Engine)"
+          "description": "LLM API endpoint URL (OpenAI-compatible, e.g. Ollama, vLLM)"
         },
         "msagent.modelName": {
           "type": "string",
           "default": "qwen3:8b",
-          "description": "Model name (e.g. qwen3:8b for Ollama, ep-xxx for Volcano Engine)"
+          "description": "Model name (e.g. qwen3:8b for Ollama)"
         },
         "msagent.apiKey": {
           "type": "string",
           "default": "",
-          "description": "API key for cloud providers (e.g. Volcano Engine). Leave empty for local providers like Ollama."
+          "description": "API key for cloud providers. Leave empty for local providers like Ollama."
         },
         "msagent.temperature": {
           "type": "number",
