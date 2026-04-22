@@ -17,7 +17,8 @@ import {
     type FixProblemResult,
 } from './vscode/fixService';
 import { registerFixActions } from './vscode/codeActionProvider';
-import { getLLMConfig } from './llm/config';
+import { getLLMConfig, LLMConfig } from './llm/config';
+import { OpenAICompatProvider } from './llm/openaiCompatProvider';
 import { Severity } from './parser/types';
 import type { ParseResult } from './parser/types';
 
@@ -139,8 +140,28 @@ export async function activate(context: vscode.ExtensionContext) {
         vscode.window.showInformationMessage('msAgent diagnostics cleared.');
     });
 
+    let settingsProvider: import('./webview/settingsPanelProvider').SettingsPanelProvider | undefined;
+
     const openSettingsCmd = vscode.commands.registerCommand('msagent.openSettings', () => {
-        vscode.commands.executeCommand('workbench.action.openSettings', 'msagent');
+        const config = getLLMConfig();
+        const settingsPayload = {
+            agentMode: config.agentMode,
+            modelEndpoint: config.endpoint,
+            modelName: config.modelName,
+            apiKey: config.apiKey,
+            temperature: config.temperature,
+            maxTokens: config.maxTokens,
+            timeoutMs: config.timeoutMs,
+            opencodeCliPath: config.opencodeCliPath,
+        };
+        if (!settingsProvider) {
+            import('./webview/settingsPanelProvider').then(({ SettingsPanelProvider }) => {
+                settingsProvider = new SettingsPanelProvider();
+                settingsProvider.createOrShow(context, settingsPayload);
+            });
+        } else {
+            settingsProvider.createOrShow(context, settingsPayload);
+        }
     });
 
     const testWebviewCmd = vscode.commands.registerCommand('msagent.testWebview', () => {
@@ -204,9 +225,24 @@ async function validateLLMConfiguration(context: vscode.ExtensionContext): Promi
         return;
     }
 
-    const endpointTimeoutMs = Math.min(Math.max(config.timeoutMs, 5000), 15000);
-    const reachable = await isEndpointReachable(config.endpoint, endpointTimeoutMs);
-    if (!reachable) {
+    if (config.agentMode === 'opencode') {
+        outputChannel.appendLine('OpenCode mode selected - skipping auto-validation (user must install OpenCode)');
+        return;
+    }
+
+    try {
+        const provider = new OpenAICompatProvider({
+            endpoint: config.endpoint,
+            modelName: config.modelName,
+            timeoutMs: 30000,
+            apiKey: config.apiKey,
+        });
+
+        await provider.chat(
+            [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+            [],
+        );
+    } catch (error) {
         const action = await vscode.window.showWarningMessage(
             `msAgent: Cannot connect to LLM at ${config.endpoint}. Would you like to configure it now?`,
             'Configure',
@@ -215,7 +251,7 @@ async function validateLLMConfiguration(context: vscode.ExtensionContext): Promi
         );
 
         if (action === 'Configure') {
-            vscode.commands.executeCommand('workbench.action.openSettings', 'msagent');
+            vscode.commands.executeCommand('msagent.openSettings');
         } else if (action === "Don't Ask Again") {
             context.globalState.update('msagent.skipConfigValidation', true);
         }

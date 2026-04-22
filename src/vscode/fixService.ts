@@ -1,7 +1,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import * as vscode from 'vscode';
-import { runAgent, AgentResult } from '../agent/agentLoop';
+import { AgentResult } from '../agent/agentLoop';
 import { DiagnosticsManager } from './diagnosticsManager';
 import { OpenAICompatProvider } from '../llm/openaiCompatProvider';
 import { LLMProvider } from '../llm/provider';
@@ -13,6 +13,7 @@ import { ToolContext } from '../tools/toolHandlers';
 import { SanitizerDiagnostic, Severity } from '../parser/types';
 import { WebviewPanelProvider } from '../webview/webviewPanelProvider';
 import { StreamChunk } from '../llm/types';
+import { createFixBackend, FixBackend, FixCallbacks, FixResult } from '../backends/backendFactory';
 
 let outputChannel: vscode.OutputChannel | undefined;
 const webviewProvider = new WebviewPanelProvider();
@@ -452,14 +453,7 @@ async function fixSingleDiagnostic(
     externalCancellationTokenSource?: vscode.CancellationTokenSource,
 ): Promise<FixProblemResult> {
     const config = getLLMConfig();
-    const llm: LLMProvider = new OpenAICompatProvider({
-        endpoint: config.endpoint,
-        modelName: config.modelName,
-        temperature: config.temperature,
-        maxTokens: config.maxTokens,
-        timeoutMs: config.timeoutMs,
-    });
-
+    const backend = createFixBackend();
     const workspaceRoot = vscode.workspace.rootPath || '.';
     const skillContent = loadSkill('memcheck-skills') || '';
 
@@ -478,6 +472,10 @@ async function fixSingleDiagnostic(
         : `msAgent: Fixing ${diagnostic.errorType}`;
 
     const cancellationTokenSource = externalCancellationTokenSource ?? new vscode.CancellationTokenSource();
+
+    cancellationTokenSource.token.onCancellationRequested(() => {
+        backend.cancel();
+    });
 
     try {
         const extensionContext = (global as any).msAgentContext as vscode.ExtensionContext;
@@ -538,17 +536,8 @@ async function fixSingleDiagnostic(
                     }
                 });
 
-                outputChannel.appendLine('[DEBUG] Starting runAgent...');
-                const agentResult = await runAgent({
-                    systemPrompt: 'You are a memory error fix specialist for Ascend NPU operators. Read the source file, understand the error, and apply a minimal fix. Use the edit_file tool to make changes.',
-                    taskDescription: prompt,
-                    toolContext,
-                    llm,
-                    maxToolRounds: 10,
-                    abortSignal: { get aborted() { return cancellationTokenSource.token.isCancellationRequested; } },
-                    pauseSignal: { get paused() { return pauseRequested; } },
-                    useStreaming: true,
-
+                outputChannel.appendLine('[DEBUG] Starting backend.executeFix...');
+                const callbacks: FixCallbacks = {
                     onMessageChunk: (chunk: StreamChunk, messageId: string) => {
                         if (cancellationTokenSource.token.isCancellationRequested) return;
                         outputChannel.appendLine('[DEBUG] onMessageChunk: type=' + chunk.type + ' delta=' + (chunk.delta?.substring(0, 30) || 'null'));
@@ -560,7 +549,6 @@ async function fixSingleDiagnostic(
                             });
                         }
                     },
-
                     onToolCall: (name, params, toolCallId) => {
                         if (cancellationTokenSource.token.isCancellationRequested) return;
                         progress.report({
@@ -577,7 +565,6 @@ async function fixSingleDiagnostic(
                             }
                         });
                     },
-
                     onToolResult: (toolCallId, result, isError) => {
                         if (cancellationTokenSource.token.isCancellationRequested) return;
                         webviewProvider.postMessage({
@@ -585,7 +572,6 @@ async function fixSingleDiagnostic(
                             payload: { toolCallId, result, isError }
                         });
                     },
-
                     onDiff: (filePath, oldText, newText, toolCallId) => {
                         if (cancellationTokenSource.token.isCancellationRequested) return;
                         webviewProvider.postMessage({
@@ -593,58 +579,61 @@ async function fixSingleDiagnostic(
                             payload: { path: filePath, oldText, newText, toolCallId }
                         });
                     },
-                });
+                };
 
-                if (!cancellationTokenSource.token.isCancellationRequested && agentResult) {
-                    if (fs.existsSync(resolvedPath)) {
-                        const newContent = fs.readFileSync(resolvedPath, 'utf-8');
+                const fixResult = await backend.executeFix(
+                    diagnostic,
+                    { workspaceRoot, extensionContext },
+                    callbacks,
+                );
+
+                if (!cancellationTokenSource.token.isCancellationRequested) {
+                    if (fixResult.fileChanged && fixResult.originalContent !== undefined && fixResult.newContent !== undefined) {
                         const outputChannel = getOutputChannel();
-                        outputChannel.appendLine(`[DEBUG] Original length: ${originalContent.length}, New length: ${newContent.length}`);
-                        outputChannel.appendLine(`[DEBUG] Files differ: ${originalContent !== newContent}`);
-                        
-                        if (originalContent !== newContent) {
-                            outputChannel.appendLine(`[DEBUG] Sending final_diff message`);
-                            webviewProvider.postMessage({
-                                type: 'final_diff',
-                                payload: { 
-                                    path: resolvedPath,
-                                    oldContent: originalContent,
-                                    newContent: newContent,
-                                    message: agentResult.finalMessage 
-                                }
-                            });
-                        } else {
-                            outputChannel.appendLine(`[DEBUG] No changes detected`);
-                            webviewProvider.postMessage({
-                                type: 'error',
-                                payload: { message: 'No changes were made to the file. The LLM may not have called edit_file correctly.' }
-                            });
-                        }
-                    } else {
+                        outputChannel.appendLine(`[DEBUG] Original length: ${fixResult.originalContent.length}, New length: ${fixResult.newContent.length}`);
+                        outputChannel.appendLine(`[DEBUG] Files differ: ${fixResult.originalContent !== fixResult.newContent}`);
+                        outputChannel.appendLine(`[DEBUG] Sending final_diff message`);
+                        webviewProvider.postMessage({
+                            type: 'final_diff',
+                            payload: {
+                                path: resolvedPath,
+                                oldContent: fixResult.originalContent,
+                                newContent: fixResult.newContent,
+                                message: fixResult.finalMessage
+                            }
+                        });
+                    } else if (!fixResult.success) {
+                        outputChannel.appendLine(`[DEBUG] Fix failed: ${fixResult.finalMessage}`);
                         webviewProvider.postMessage({
                             type: 'error',
-                            payload: { message: `File not found: ${resolvedPath}` }
+                            payload: { message: fixResult.finalMessage }
+                        });
+                    } else {
+                        outputChannel.appendLine(`[DEBUG] No changes detected`);
+                        webviewProvider.postMessage({
+                            type: 'error',
+                            payload: { message: 'No changes were made to the file. The LLM may not have called edit_file correctly.' }
                         });
                     }
                     webviewProvider.postMessage({
                         type: 'message_complete',
                         payload: { messageId: webviewProvider.nextMessageId() }
                     });
-                } else if (cancellationTokenSource.token.isCancellationRequested) {
+                } else {
                     webviewProvider.postMessage({
                         type: 'error',
                         payload: { message: 'Fix stopped.' }
                     });
                 }
 
-                return agentResult;
+                return fixResult;
             },
         );
 
         if (cancellationTokenSource.token.isCancellationRequested) {
             return { status: 'stopped' };
         }
-        if (!result) {
+        if (!result.success) {
             return { status: 'failed' };
         }
         return { status: 'completed' };
@@ -658,7 +647,7 @@ async function fixSingleDiagnostic(
     }
 }
 
-function showFixDetails(diagnostic: SanitizerDiagnostic, result: AgentResult) {
+function showFixDetails(diagnostic: SanitizerDiagnostic, result: FixResult) {
     const channel = getOutputChannel();
     const workspaceRoot = vscode.workspace.rootPath || '.';
     const resolvedPath = resolveFilePath(diagnostic.fileName, workspaceRoot);
