@@ -1,38 +1,19 @@
 import * as vscode from 'vscode';
+import { LLMConfig, resolveLLMConfig, ConfigReader, AgentMode, Provider } from './configResolver';
 
-export type AgentMode = 'builtin' | 'opencode';
-
-export interface LLMConfig {
-    agentMode: AgentMode;
-    endpoint: string;
-    modelName: string;
-    apiKey: string;
-    temperature: number;
-    maxTokens: number;
-    timeoutMs: number;
-    opencodeCliPath: string;
-}
+export { LLMConfig, resolveLLMConfig, ConfigReader, AgentMode, Provider };
 
 export function getLLMConfig(): LLMConfig {
     const cfg = vscode.workspace.getConfiguration('msagent');
-    return {
-        agentMode: cfg.get<'builtin' | 'opencode'>('agentMode') || 'builtin',
-        endpoint: cfg.get<string>('modelEndpoint') || 'http://localhost:11434',
-        modelName: cfg.get<string>('modelName') || 'qwen3:8b',
-        apiKey: cfg.get<string>('apiKey') || '',
-        temperature: cfg.get<number>('temperature') ?? 0.1,
-        maxTokens: cfg.get<number>('maxTokens') ?? 4096,
-        timeoutMs: cfg.get<number>('timeoutMs') ?? 300000,
-        opencodeCliPath: cfg.get<string>('opencodeCliPath') || 'opencode',
-    };
+    return resolveLLMConfig(cfg);
 }
 
 export async function updateLLMConfig(updates: Partial<LLMConfig>): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('msagent');
     const promises: Thenable<void>[] = [];
 
-    if (updates.agentMode !== undefined) {
-        promises.push(cfg.update('agentMode', updates.agentMode, true));
+    if (updates.provider !== undefined) {
+        promises.push(cfg.update('provider', updates.provider, true));
     }
     if (updates.endpoint !== undefined) {
         promises.push(cfg.update('modelEndpoint', updates.endpoint, true));
@@ -52,8 +33,20 @@ export async function updateLLMConfig(updates: Partial<LLMConfig>): Promise<void
     if (updates.timeoutMs !== undefined) {
         promises.push(cfg.update('timeoutMs', updates.timeoutMs, true));
     }
+    if (updates.opencodeMode !== undefined) {
+        promises.push(cfg.update('opencodeMode', updates.opencodeMode, true));
+    }
+    if (updates.opencodeServePort !== undefined) {
+        promises.push(cfg.update('opencodeServePort', updates.opencodeServePort, true));
+    }
     if (updates.opencodeCliPath !== undefined) {
         promises.push(cfg.update('opencodeCliPath', updates.opencodeCliPath, true));
+    }
+    if (updates.opencodeApiEndpoint !== undefined) {
+        promises.push(cfg.update('opencodeApiEndpoint', updates.opencodeApiEndpoint, true));
+    }
+    if (updates.opencodeApiKey !== undefined) {
+        promises.push(cfg.update('opencodeApiKey', updates.opencodeApiKey, true));
     }
 
     await Promise.all(promises);

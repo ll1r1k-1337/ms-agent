@@ -96,6 +96,15 @@
           "maximum": 600000,
           "description": "LLM request timeout in milliseconds (default: 5 minutes for complex fixes)"
         },
+        "msagent.provider": {
+          "type": "string",
+          "enum": [
+            "openai-compatible",
+            "opencode"
+          ],
+          "default": "openai-compatible",
+          "description": "Fix backend provider: openai-compatible uses your configured LLM with tool calling, opencode delegates to OpenCode CLI"
+        },
         "msagent.agentMode": {
           "type": "string",
           "enum": [
@@ -103,12 +112,36 @@
             "opencode"
           ],
           "default": "builtin",
-          "description": "Fix agent mode: builtin uses your configured LLM with tool calling, opencode delegates to OpenCode CLI"
+          "description": "(Deprecated: use provider instead) Fix agent mode: builtin uses your configured LLM with tool calling, opencode delegates to OpenCode CLI"
+        },
+        "msagent.opencodeMode": {
+          "type": "string",
+          "enum": [
+            "cli",
+            "server"
+          ],
+          "default": "cli",
+          "description": "OpenCode execution mode: cli runs opencode CLI directly, server connects to an opencode server"
+        },
+        "msagent.opencodeServePort": {
+          "type": "number",
+          "default": 7325,
+          "description": "Port for OpenCode server mode"
         },
         "msagent.opencodeCliPath": {
           "type": "string",
           "default": "opencode",
-          "description": "Path to OpenCode CLI executable (only used when agentMode is opencode)"
+          "description": "Path to OpenCode CLI executable (only used when provider is opencode)"
+        },
+        "msagent.opencodeApiEndpoint": {
+          "type": "string",
+          "default": "http://localhost:7325",
+          "description": "OpenCode API endpoint for server mode"
+        },
+        "msagent.opencodeApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API key for OpenCode server mode"
         }
       }
     },

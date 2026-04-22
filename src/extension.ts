@@ -145,14 +145,18 @@ export async function activate(context: vscode.ExtensionContext) {
     const openSettingsCmd = vscode.commands.registerCommand('msagent.openSettings', () => {
         const config = getLLMConfig();
         const settingsPayload = {
-            agentMode: config.agentMode,
+            provider: config.provider,
             modelEndpoint: config.endpoint,
             modelName: config.modelName,
             apiKey: config.apiKey,
             temperature: config.temperature,
             maxTokens: config.maxTokens,
             timeoutMs: config.timeoutMs,
+            opencodeMode: config.opencodeMode,
+            opencodeServePort: config.opencodeServePort,
             opencodeCliPath: config.opencodeCliPath,
+            opencodeApiEndpoint: config.opencodeApiEndpoint,
+            opencodeApiKey: config.opencodeApiKey,
         };
         if (!settingsProvider) {
             import('./webview/settingsPanelProvider').then(({ SettingsPanelProvider }) => {
@@ -225,7 +229,7 @@ async function validateLLMConfiguration(context: vscode.ExtensionContext): Promi
         return;
     }
 
-    if (config.agentMode === 'opencode') {
+    if (config.provider === 'opencode') {
         outputChannel.appendLine('OpenCode mode selected - skipping auto-validation (user must install OpenCode)');
         return;
     }
