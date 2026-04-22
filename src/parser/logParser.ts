@@ -102,7 +102,8 @@ function groupLines(content: string): RawGroup[] {
     const groups: RawGroup[] = [];
     let current: RawGroup | null = null;
 
-    for (const line of lines) {
+    for (const rawLine of lines) {
+        const line = rawLine.replace(/\r$/, '');
         // Skip obviously binary lines containing null byte
         if (line.includes('\0')) continue;
         const headerMatch = line.match(HEADER_RE);

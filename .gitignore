@@ -3,4 +3,6 @@ out/
 .vscode-test/
 *.vsix
 .DS_Store*.backup
+
+.codemate
 .idea
