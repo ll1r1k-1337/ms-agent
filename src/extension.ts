@@ -1,10 +1,22 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as http from 'http';
+import * as https from 'https';
+import { URL } from 'url';
 import * as vscode from 'vscode';
 import { DiagnosticsManager } from './vscode/diagnosticsManager';
-import { fixDiagnostic, fixProblem, fixAllDiagnostics } from './vscode/fixService';
+import {
+    fixDiagnostic,
+    fixProblem,
+    fixAllDiagnostics,
+    showFixDetailsPanel,
+    getAiFixQueueSnapshot,
+    getAiFixQueueStates,
+    resetAiFixHistory,
+    type FixProblemOptions,
+    type FixProblemResult,
+} from './vscode/fixService';
 import { registerFixActions } from './vscode/codeActionProvider';
-import { OpenAICompatProvider } from './llm/openaiCompatProvider';
 import { getLLMConfig } from './llm/config';
 import { Severity } from './parser/types';
 import type { ParseResult } from './parser/types';
@@ -25,6 +37,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
     (global as any).msAgentContext = context;
     (global as any).msAgentOutputChannel = outputChannel;
+    /** Same extension-host process as mstt; avoids executeCommand quirks while fixProblem is in flight. */
+    (globalThis as any).__msAgentGetAiFixQueueSnapshot = () => getAiFixQueueSnapshot();
+    (globalThis as any).__msAgentGetAiFixQueueStates = () => getAiFixQueueStates();
 
     DiagnosticsManager.activate(context);
 
@@ -65,18 +80,44 @@ export async function activate(context: vscode.ExtensionContext) {
         },
     );
 
-    /** Fix problem at index (0-based) from the last parse. executeCommand('msagent.fixProblem', index) */
+    /** Fix problem at index (0-based) from the last parse. executeCommand('msagent.fixProblem', index, options?) */
     const fixProblemCmd = vscode.commands.registerCommand(
         'msagent.fixProblem',
-        async (index: number | string | undefined): Promise<boolean> => {
+        async (
+            index: number | string | undefined,
+            options?: FixProblemOptions,
+        ): Promise<FixProblemResult> => {
             const idx = parseProblemIndex(index);
+            outputChannel.appendLine(`[CMD] msagent.fixProblem rawIndex=${String(index)} parsedIndex=${idx === null ? 'invalid' : idx}`);
             if (idx === null) {
                 vscode.window.showErrorMessage(
                     'msAgent: fixProblem requires a 0-based problem index (number or numeric string).',
                 );
-                return false;
+                return { status: 'invalid_index' };
             }
-            return fixProblem(idx);
+            const result = await fixProblem(idx, options ?? {});
+            outputChannel.appendLine(`[CMD] msagent.fixProblem index=${idx} status=${result.status}`);
+            return result;
+        },
+    );
+    const showFixDetailsCmd = vscode.commands.registerCommand('msagent.showFixDetails', () => {
+        showFixDetailsPanel();
+    });
+
+    const getAiFixQueueStatesCmd = vscode.commands.registerCommand(
+        'msagent.getAiFixQueueStates',
+        () => {
+            const states = getAiFixQueueStates();
+            outputChannel.appendLine(`[CMD] msagent.getAiFixQueueStates ${JSON.stringify(states)}`);
+            return states;
+        },
+    );
+    const getAiFixQueueSnapshotCmd = vscode.commands.registerCommand(
+        'msagent.getAiFixQueueSnapshot',
+        () => {
+            const snapshot = getAiFixQueueSnapshot();
+            outputChannel.appendLine(`[CMD] msagent.getAiFixQueueSnapshot ${JSON.stringify(snapshot)}`);
+            return snapshot;
         },
     );
 
@@ -144,6 +185,9 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         parseLogCmd,
         fixProblemCmd,
+        showFixDetailsCmd,
+        getAiFixQueueStatesCmd,
+        getAiFixQueueSnapshotCmd,
         fixAllCmd,
         fixDiagnosticCmd,
         clearDiagsCmd,
@@ -160,18 +204,9 @@ async function validateLLMConfiguration(context: vscode.ExtensionContext): Promi
         return;
     }
 
-    try {
-        const provider = new OpenAICompatProvider({
-            endpoint: config.endpoint,
-            modelName: config.modelName,
-            timeoutMs: 30000,
-        });
-
-        await provider.chat(
-            [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
-            [],
-        );
-    } catch (error) {
+    const endpointTimeoutMs = Math.min(Math.max(config.timeoutMs, 5000), 15000);
+    const reachable = await isEndpointReachable(config.endpoint, endpointTimeoutMs);
+    if (!reachable) {
         const action = await vscode.window.showWarningMessage(
             `msAgent: Cannot connect to LLM at ${config.endpoint}. Would you like to configure it now?`,
             'Configure',
@@ -187,7 +222,51 @@ async function validateLLMConfiguration(context: vscode.ExtensionContext): Promi
     }
 }
 
+async function isEndpointReachable(endpoint: string, timeoutMs: number): Promise<boolean> {
+    return new Promise((resolve) => {
+        let settled = false;
+        const finish = (reachable: boolean): void => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            resolve(reachable);
+        };
+
+        try {
+            const parsedUrl = new URL(endpoint);
+            const client = parsedUrl.protocol === 'https:' ? https : http;
+            const req = client.request(
+                {
+                    hostname: parsedUrl.hostname,
+                    port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
+                    path: (parsedUrl.pathname || '/') + parsedUrl.search,
+                    method: 'GET',
+                    timeout: timeoutMs,
+                },
+                (res) => {
+                    // Any HTTP response means the endpoint is reachable.
+                    res.resume();
+                    res.on('error', () => finish(false));
+                    res.on('end', () => finish(true));
+                },
+            );
+
+            req.on('error', () => finish(false));
+            req.on('timeout', () => {
+                req.destroy();
+                finish(false);
+            });
+            req.end();
+        } catch {
+            finish(false);
+        }
+    });
+}
+
 export function deactivate() {
+    delete (globalThis as any).__msAgentGetAiFixQueueSnapshot;
+    delete (globalThis as any).__msAgentGetAiFixQueueStates;
     if (outputChannel) {
         outputChannel.appendLine('msAgent extension deactivated');
     }
@@ -226,6 +305,7 @@ function resolveLogInputToFsPath(uriOrPath: vscode.Uri | string | undefined): st
 }
 
 function parseLogAtPathAndNotify(fsPath: string, suppressMessage?: boolean): ParseResult {
+    resetAiFixHistory();
     const result = DiagnosticsManager.parseFileAndPublish(fsPath);
     if (!suppressMessage) {
         const count = result.diagnostics.length;
