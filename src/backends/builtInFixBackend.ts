@@ -35,6 +35,7 @@ export class BuiltInFixBackend implements FixBackend {
         callbacks?: FixCallbacks,
     ): Promise<FixResult> {
         this.abortController = new AbortController();
+        callbacks?.onEvent?.('session_start', { backend: 'builtin', mode: 'openai-compatible' });
         const config = getLLMConfig();
         const workspaceRoot = context.workspaceRoot;
 
@@ -52,6 +53,8 @@ export class BuiltInFixBackend implements FixBackend {
         if (skillContent) {
             prompt += '\n\n## Additional Context\n' + skillContent;
         }
+
+        callbacks?.onEvent?.('status', { phase: 'running', message: 'Analyzing error with built-in agent...' });
 
         const toolContext: ToolContext = {
             workspaceRoot,
@@ -78,11 +81,13 @@ export class BuiltInFixBackend implements FixBackend {
                 },
 
                 onToolCall: (name, params, toolCallId) => {
+                    callbacks?.onEvent?.('step_update', { step: 'tool_call', detail: name });
                     if (this.abortController?.signal.aborted) return;
                     callbacks?.onToolCall?.(name, params, toolCallId);
                 },
 
                 onToolResult: (toolCallId, result, isError) => {
+                    callbacks?.onEvent?.('step_update', { step: 'tool_result', detail: isError ? 'error' : 'success' });
                     if (this.abortController?.signal.aborted) return;
                     callbacks?.onToolResult?.(toolCallId, result, isError);
                 },
@@ -93,12 +98,19 @@ export class BuiltInFixBackend implements FixBackend {
                 },
             });
 
+            callbacks?.onEvent?.('status', { phase: 'finalizing', message: 'Applying fix...' });
+
             let newContent = '';
             let fileChanged = false;
             if (fs.existsSync(resolvedPath)) {
                 newContent = fs.readFileSync(resolvedPath, 'utf-8');
                 fileChanged = originalContent !== newContent;
             }
+
+            callbacks?.onEvent?.('session_end', {
+                success: true,
+                finalMessage: agentResult.finalMessage,
+            });
 
             return {
                 success: true,
@@ -109,6 +121,10 @@ export class BuiltInFixBackend implements FixBackend {
                 newContent,
             };
         } catch (e) {
+            callbacks?.onEvent?.('session_end', {
+                success: false,
+                finalMessage: e instanceof Error ? e.message : String(e),
+            });
             throw e;
         }
     }
