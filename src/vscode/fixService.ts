@@ -1,10 +1,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import * as vscode from 'vscode';
-import { AgentResult } from '../agent/agentLoop';
 import { DiagnosticsManager } from './diagnosticsManager';
-import { OpenAICompatProvider } from '../llm/openaiCompatProvider';
-import { LLMProvider } from '../llm/provider';
 import { LLMProviderError } from '../llm/openaiCompatProvider';
 import { getLLMConfig } from '../llm/config';
 import { loadSkill } from '../skills/skillLoader';
@@ -453,7 +450,7 @@ async function fixSingleDiagnostic(
     externalCancellationTokenSource?: vscode.CancellationTokenSource,
 ): Promise<FixProblemResult> {
     const config = getLLMConfig();
-    const backend = createFixBackend();
+    const backend = createFixBackend(config);
     const workspaceRoot = vscode.workspace.rootPath || '.';
     const skillContent = loadSkill('memcheck-skills') || '';
 

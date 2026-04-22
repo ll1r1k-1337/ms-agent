@@ -81,14 +81,18 @@ export class SettingsPanelProvider {
             case 'settings_reset': {
                 this.resetSettings().then(() => {
                     const defaults = {
-                        agentMode: 'builtin',
+                        provider: 'openai-compatible',
                         modelEndpoint: 'http://localhost:11434',
                         modelName: 'qwen3:8b',
                         apiKey: '',
                         temperature: 0.1,
                         maxTokens: 4096,
                         timeoutMs: 300000,
+                        opencodeMode: 'cli',
+                        opencodeServePort: 7325,
                         opencodeCliPath: 'opencode',
+                        opencodeApiEndpoint: 'http://localhost:7325',
+                        opencodeApiKey: '',
                     };
                     this.panel?.webview.postMessage({
                         type: 'settings_init',
@@ -117,14 +121,18 @@ export class SettingsPanelProvider {
     private async resetSettings(): Promise<void> {
         const cfg = vscode.workspace.getConfiguration('msagent');
         const keys = [
-            'agentMode',
+            'provider',
             'modelEndpoint',
             'modelName',
             'apiKey',
             'temperature',
             'maxTokens',
             'timeoutMs',
+            'opencodeMode',
+            'opencodeServePort',
             'opencodeCliPath',
+            'opencodeApiEndpoint',
+            'opencodeApiKey',
         ];
         for (const key of keys) {
             await cfg.update(key, undefined, true);
@@ -132,9 +140,9 @@ export class SettingsPanelProvider {
     }
 
     private async testConnection(settings: Record<string, unknown>): Promise<{ success: boolean; message: string }> {
-        const agentMode = settings.agentMode as string;
+        const provider = settings.provider as string;
 
-        if (agentMode === 'opencode') {
+        if (provider === 'opencode') {
             return { success: true, message: 'OpenCode 模式跳过连接测试，请确保 OpenCode 已正确安装。' };
         }
 
@@ -392,18 +400,18 @@ export class SettingsPanelProvider {
     <div class="section">
         <div class="section-title"><span class="section-icon">🔧</span> 修复引擎</div>
         <div class="form-row">
-            <label>Agent Mode</label>
-            <div class="radio-group" id="agentModeGroup">
+            <label>Provider</label>
+            <div class="radio-group" id="providerGroup">
                 <label class="radio-option selected">
-                    <input type="radio" name="agentMode" value="builtin" checked>
-                    <span>内置 Agent (Builtin)</span>
+                    <input type="radio" name="provider" value="openai-compatible" checked>
+                    <span>OpenAI Compatible</span>
                 </label>
                 <label class="radio-option">
-                    <input type="radio" name="agentMode" value="opencode">
+                    <input type="radio" name="provider" value="opencode">
                     <span>OpenCode</span>
                 </label>
             </div>
-            <div class="hint">选择修复后端模式。内置模式使用用户配置的 LLM；OpenCode 模式使用 OpenCode CLI。</div>
+            <div class="hint">选择修复后端。openai-compatible 使用用户配置的 LLM；opencode 使用 OpenCode CLI。</div>
         </div>
     </div>
 
@@ -486,9 +494,10 @@ export class SettingsPanelProvider {
         }
 
         function collectSettings() {
-            const agentModeEl = document.querySelector('input[name="agentMode"]:checked');
+            const providerEl = document.querySelector('input[name="provider"]:checked');
             return {
-                agentMode: agentModeEl ? agentModeEl.value : 'builtin',
+                ...currentSettings,
+                provider: providerEl ? providerEl.value : 'openai-compatible',
                 modelEndpoint: getValue('modelEndpoint') || 'http://localhost:11434',
                 modelName: getValue('modelName') || 'qwen3:8b',
                 apiKey: getValue('apiKey') || '',
@@ -500,11 +509,11 @@ export class SettingsPanelProvider {
         }
 
         function updateVisibility() {
-            const agentMode = document.querySelector('input[name="agentMode"]:checked')?.value || 'builtin';
+            const provider = document.querySelector('input[name="provider"]:checked')?.value || 'openai-compatible';
             const modelSection = document.getElementById('modelSection');
             const opencodeSection = document.getElementById('opencodeSection');
 
-            if (agentMode === 'builtin') {
+            if (provider === 'openai-compatible') {
                 modelSection.classList.remove('hidden');
                 opencodeSection.classList.add('hidden');
             } else {
@@ -547,9 +556,9 @@ export class SettingsPanelProvider {
             }
         }
 
-        document.querySelectorAll('input[name="agentMode"]').forEach(function(radio) {
+        document.querySelectorAll('input[name="provider"]').forEach(function(radio) {
             radio.addEventListener('change', function() {
-                updateRadioSelection('agentMode', this.value);
+                updateRadioSelection('provider', this.value);
                 updateVisibility();
             });
         });
@@ -598,7 +607,7 @@ export class SettingsPanelProvider {
                 setValue('timeoutMs', s.timeoutMs);
                 setValue('opencodeCliPath', s.opencodeCliPath);
                 document.getElementById('tempValue').textContent = s.temperature ?? 0.1;
-                updateRadioSelection('agentMode', s.agentMode || 'builtin');
+                updateRadioSelection('provider', s.provider || 'openai-compatible');
                 updateVisibility();
             } else if (msg.type === 'settings_test_result') {
                 setLoading(document.getElementById('testBtn'), false);

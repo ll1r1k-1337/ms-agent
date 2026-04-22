@@ -91,14 +91,18 @@ export interface QueueStatePayload {
 }
 
 export interface SettingsInitPayload {
-    agentMode: string;
+    provider: string;
     modelEndpoint: string;
     modelName: string;
     apiKey: string;
     temperature: number;
     maxTokens: number;
     timeoutMs: number;
+    opencodeMode: string;
+    opencodeServePort: number;
     opencodeCliPath: string;
+    opencodeApiEndpoint: string;
+    opencodeApiKey: string;
 }
 
 export interface SettingsUpdatePayload {
