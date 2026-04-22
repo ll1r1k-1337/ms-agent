@@ -620,7 +620,7 @@ async function fixSingleDiagnostic(
                     payload: {
                         backend: backend.name,
                         mode: config.provider === 'opencode' ? (config.opencodeMode || 'cli') : 'openai-compatible',
-                        degraded: false,
+                        degraded: config.provider === 'opencode' && config.opencodeMode === 'cli',
                     },
                 });
 

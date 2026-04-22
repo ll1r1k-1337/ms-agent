@@ -1,4 +1,6 @@
 import * as child_process from 'child_process';
+import * as http from 'http';
+import * as https from 'https';
 
 export interface OpenCodeTransport {
     /** Start the transport with the initial prompt. */
@@ -251,19 +253,98 @@ class CliTransport implements OpenCodeTransport {
 
 class ServeTransport implements OpenCodeTransport {
     private readonly config: OpenCodeTransportConfig;
+    private readonly logger?: TransportLogger;
+    private eventCallback: ((event: unknown) => void) | null = null;
     private errorCallback: ((error: Error) => void) | null = null;
     private closeCallback: ((exitCode: number | null) => void) | null = null;
+    private request: http.ClientRequest | null = null;
+    private timeoutId: NodeJS.Timeout | null = null;
+    private disposed = false;
+    private buffer = '';
 
-    constructor(config: OpenCodeTransportConfig) {
+    constructor(config: OpenCodeTransportConfig, logger?: TransportLogger) {
         this.config = config;
+        this.logger = logger;
     }
 
-    start(): void {
-        this.errorCallback?.(new Error('Serve mode not yet implemented'));
+    start(prompt: string): void {
+        if (this.disposed) {
+            this.emitError(new Error('Transport has been disposed'));
+            return;
+        }
+
+        const port = this.config.servePort;
+        if (port === undefined) {
+            this.emitError(new Error('Serve port is required for serve mode'));
+            return;
+        }
+
+        const endpoint = `http://localhost:${port}/v1/chat/completions`;
+        const postData = JSON.stringify({
+            model: 'default',
+            messages: [{ role: 'user', content: prompt }],
+            stream: true,
+        });
+
+        const url = new URL(endpoint);
+        const options: http.RequestOptions = {
+            hostname: url.hostname,
+            port: url.port,
+            path: url.pathname + url.search,
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(postData),
+                'Accept': 'text/event-stream',
+            },
+        };
+
+        if (this.config.apiKey) {
+            options.headers = {
+                ...options.headers,
+                Authorization: `Bearer ${this.config.apiKey}`,
+            };
+        }
+
+        this.request = http.request(options, (res) => {
+            if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {
+                this.emitError(new Error(`Serve mode returned HTTP ${res.statusCode}`));
+                this.emitClose(res.statusCode);
+                return;
+            }
+
+            res.setEncoding('utf8');
+            res.on('data', (chunk: string) => {
+                this.buffer += chunk;
+                this.processSSEBuffer();
+            });
+
+            res.on('end', () => {
+                this.clearTimeout();
+                this.emitClose(0);
+            });
+
+            res.on('error', (err: Error) => {
+                this.clearTimeout();
+                this.emitError(new Error(`Serve mode response error: ${err.message}`));
+                this.emitClose(1);
+            });
+        });
+
+        this.request.on('error', (err: Error) => {
+            this.clearTimeout();
+            this.emitError(new Error(`Serve mode request error: ${err.message}`));
+            this.emitClose(1);
+        });
+
+        this.setupTimeout();
+
+        this.request.write(postData);
+        this.request.end();
     }
 
-    onEvent(): void {
-        // no-op
+    onEvent(callback: (event: unknown) => void): void {
+        this.eventCallback = callback;
     }
 
     onError(callback: (error: Error) => void): void {
@@ -275,34 +356,193 @@ class ServeTransport implements OpenCodeTransport {
     }
 
     send(): void {
-        // no-op
+        this.emitError(new Error('Serve mode does not support multi-turn via send'));
     }
 
     cancel(): void {
-        this.closeCallback?.(null);
+        if (this.request) {
+            this.request.destroy();
+            this.request = null;
+        }
+        this.clearTimeout();
     }
 
     dispose(): void {
+        if (this.disposed) {
+            return;
+        }
+        this.disposed = true;
+        this.cancel();
+        this.eventCallback = null;
         this.errorCallback = null;
         this.closeCallback = null;
+    }
+
+    private processSSEBuffer(): void {
+        const normalized = this.buffer.replace(/\r\n/g, '\n');
+        const chunks = normalized.split('\n\n');
+        this.buffer = chunks.pop() ?? '';
+
+        for (const chunk of chunks) {
+            const lines = chunk.split('\n');
+            for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                    const data = line.slice(6);
+                    if (data === '[DONE]') {
+                        continue;
+                    }
+                    try {
+                        const event = JSON.parse(data);
+                        this.emitEvent(event);
+                    } catch {
+                        this.logger?.(
+                            `OpenCode serve transport: failed to parse SSE data: ${data.substring(0, 200)}`,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    private setupTimeout(): void {
+        this.timeoutId = setTimeout(() => {
+            this.cancel();
+            this.emitError(
+                new Error(
+                    `Serve mode reached hard timeout after ${this.config.timeoutMs / 1000}s. If the model is slow, increase timeoutMs in settings.`,
+                ),
+            );
+        }, this.config.timeoutMs);
+    }
+
+    private clearTimeout(): void {
+        if (this.timeoutId) {
+            clearTimeout(this.timeoutId);
+            this.timeoutId = null;
+        }
+    }
+
+    private emitEvent(event: unknown): void {
+        this.eventCallback?.(event);
+    }
+
+    private emitError(error: Error): void {
+        this.errorCallback?.(error);
+    }
+
+    private emitClose(exitCode: number | null): void {
+        this.closeCallback?.(exitCode);
     }
 }
 
 class ApiTransport implements OpenCodeTransport {
     private readonly config: OpenCodeTransportConfig;
+    private readonly logger?: TransportLogger;
+    private eventCallback: ((event: unknown) => void) | null = null;
     private errorCallback: ((error: Error) => void) | null = null;
     private closeCallback: ((exitCode: number | null) => void) | null = null;
+    private request: http.ClientRequest | null = null;
+    private timeoutId: NodeJS.Timeout | null = null;
+    private disposed = false;
+    private responseBuffer = '';
 
-    constructor(config: OpenCodeTransportConfig) {
+    constructor(config: OpenCodeTransportConfig, logger?: TransportLogger) {
         this.config = config;
+        this.logger = logger;
     }
 
-    start(): void {
-        this.errorCallback?.(new Error('API mode not yet implemented'));
+    start(prompt: string): void {
+        if (this.disposed) {
+            this.emitError(new Error('Transport has been disposed'));
+            return;
+        }
+
+        const endpoint = this.config.apiEndpoint;
+        if (!endpoint) {
+            this.emitError(new Error('API endpoint is required for API mode'));
+            return;
+        }
+
+        const postData = JSON.stringify({
+            model: 'default',
+            messages: [{ role: 'user', content: prompt }],
+        });
+
+        const url = new URL(endpoint);
+        const isHttps = url.protocol === 'https:';
+        const requestModule = isHttps ? https : http;
+
+        const options: http.RequestOptions = {
+            hostname: url.hostname,
+            port: url.port,
+            path: url.pathname + url.search,
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(postData),
+            },
+        };
+
+        if (this.config.apiKey) {
+            options.headers = {
+                ...options.headers,
+                Authorization: `Bearer ${this.config.apiKey}`,
+            };
+        }
+
+        this.request = requestModule.request(options, (res) => {
+            if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {
+                this.emitError(new Error(`API mode returned HTTP ${res.statusCode}`));
+                this.emitClose(res.statusCode);
+                return;
+            }
+
+            res.setEncoding('utf8');
+            res.on('data', (chunk: string) => {
+                this.responseBuffer += chunk;
+            });
+
+            res.on('end', () => {
+                this.clearTimeout();
+                try {
+                    const response = JSON.parse(this.responseBuffer);
+                    const content = response?.choices?.[0]?.message?.content;
+                    if (typeof content === 'string') {
+                        this.emitEvent({ text: content });
+                    } else {
+                        this.emitError(new Error('API response missing expected content field'));
+                    }
+                } catch {
+                    this.emitError(
+                        new Error(
+                            `Failed to parse API response: ${this.responseBuffer.substring(0, 200)}`,
+                        ),
+                    );
+                }
+                this.emitClose(0);
+            });
+
+            res.on('error', (err: Error) => {
+                this.clearTimeout();
+                this.emitError(new Error(`API mode response error: ${err.message}`));
+                this.emitClose(1);
+            });
+        });
+
+        this.request.on('error', (err: Error) => {
+            this.clearTimeout();
+            this.emitError(new Error(`API mode request error: ${err.message}`));
+            this.emitClose(1);
+        });
+
+        this.setupTimeout();
+
+        this.request.write(postData);
+        this.request.end();
     }
 
-    onEvent(): void {
-        // no-op
+    onEvent(callback: (event: unknown) => void): void {
+        this.eventCallback = callback;
     }
 
     onError(callback: (error: Error) => void): void {
@@ -314,16 +554,56 @@ class ApiTransport implements OpenCodeTransport {
     }
 
     send(): void {
-        // no-op
+        this.emitError(new Error('API mode does not support multi-turn via send'));
     }
 
     cancel(): void {
-        this.closeCallback?.(null);
+        if (this.request) {
+            this.request.destroy();
+            this.request = null;
+        }
+        this.clearTimeout();
     }
 
     dispose(): void {
+        if (this.disposed) {
+            return;
+        }
+        this.disposed = true;
+        this.cancel();
+        this.eventCallback = null;
         this.errorCallback = null;
         this.closeCallback = null;
+    }
+
+    private setupTimeout(): void {
+        this.timeoutId = setTimeout(() => {
+            this.cancel();
+            this.emitError(
+                new Error(
+                    `API mode reached hard timeout after ${this.config.timeoutMs / 1000}s. If the model is slow, increase timeoutMs in settings.`,
+                ),
+            );
+        }, this.config.timeoutMs);
+    }
+
+    private clearTimeout(): void {
+        if (this.timeoutId) {
+            clearTimeout(this.timeoutId);
+            this.timeoutId = null;
+        }
+    }
+
+    private emitEvent(event: unknown): void {
+        this.eventCallback?.(event);
+    }
+
+    private emitError(error: Error): void {
+        this.errorCallback?.(error);
+    }
+
+    private emitClose(exitCode: number | null): void {
+        this.closeCallback?.(exitCode);
     }
 }
 
@@ -335,9 +615,9 @@ export function createTransport(
         case 'cli':
             return new CliTransport(config, logger);
         case 'serve':
-            return new ServeTransport(config);
+            return new ServeTransport(config, logger);
         case 'api':
-            return new ApiTransport(config);
+            return new ApiTransport(config, logger);
         default:
             throw new Error(`Unknown transport mode: ${(config as OpenCodeTransportConfig).mode}`);
     }

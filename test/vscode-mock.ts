@@ -10,6 +10,12 @@ export const window = {
     showErrorMessage: () => Promise.resolve(undefined),
     showWarningMessage: () => Promise.resolve(undefined),
     createOutputChannel: () => ({ appendLine: () => {}, clear: () => {}, show: () => {} }),
+    createWebviewPanel: () => ({
+        webview: { html: '', onDidReceiveMessage: () => {}, postMessage: () => Promise.resolve(true), cspSource: 'vscode-resource:' },
+        onDidDispose: () => {},
+        reveal: () => {},
+        dispose: () => {},
+    }),
     withProgress: async (_options: unknown, task: (p: unknown, token: unknown) => Promise<unknown>) =>
         task({ report: () => {} }, { onCancellationRequested: () => {} }),
 };
@@ -23,7 +29,7 @@ export const Uri = {
     parse: (uri: string) => ({ fsPath: uri.replace('file://', '') }),
 };
 
-export const ViewColumn = { One: 1 };
+export const ViewColumn = { One: 1, Beside: -2 };
 
 export const ProgressLocation = { Notification: 15, Window: 10 };
 
