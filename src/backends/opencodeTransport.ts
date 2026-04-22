@@ -20,7 +20,7 @@ export interface OpenCodeTransport {
 }
 
 export interface OpenCodeTransportConfig {
-    mode: 'cli' | 'serve' | 'api';
+    mode: 'cli' | 'server' | 'api';
     cliPath?: string;
     servePort?: number;
     apiEndpoint?: string;
@@ -275,11 +275,11 @@ class ServeTransport implements OpenCodeTransport {
 
         const port = this.config.servePort;
         if (port === undefined) {
-            this.emitError(new Error('Serve port is required for serve mode'));
+            this.emitError(new Error('Server port is required for server mode'));
             return;
         }
 
-        const endpoint = `http://localhost:${port}/v1/chat/completions`;
+        const endpoint = `http://127.0.0.1:${port}/v1/chat/completions`;
         const postData = JSON.stringify({
             model: 'default',
             messages: [{ role: 'user', content: prompt }],
@@ -326,14 +326,16 @@ class ServeTransport implements OpenCodeTransport {
 
             res.on('error', (err: Error) => {
                 this.clearTimeout();
-                this.emitError(new Error(`Serve mode response error: ${err.message}`));
+                const errMsg = (err as any).code || err.message || String(err);
+                this.emitError(new Error(`Server mode response error: ${errMsg}`));
                 this.emitClose(1);
             });
         });
 
         this.request.on('error', (err: Error) => {
             this.clearTimeout();
-            this.emitError(new Error(`Serve mode request error: ${err.message}`));
+            const errMsg = (err as any).code || err.message || String(err);
+            this.emitError(new Error(`Server mode request error: ${errMsg}`));
             this.emitClose(1);
         });
 
@@ -396,7 +398,7 @@ class ServeTransport implements OpenCodeTransport {
                         this.emitEvent(event);
                     } catch {
                         this.logger?.(
-                            `OpenCode serve transport: failed to parse SSE data: ${data.substring(0, 200)}`,
+                            `OpenCode server transport: failed to parse SSE data: ${data.substring(0, 200)}`,
                         );
                     }
                 }
@@ -524,14 +526,16 @@ class ApiTransport implements OpenCodeTransport {
 
             res.on('error', (err: Error) => {
                 this.clearTimeout();
-                this.emitError(new Error(`API mode response error: ${err.message}`));
+                const errMsg = (err as any).code || err.message || String(err);
+                this.emitError(new Error(`API mode response error: ${errMsg}`));
                 this.emitClose(1);
             });
         });
 
         this.request.on('error', (err: Error) => {
             this.clearTimeout();
-            this.emitError(new Error(`API mode request error: ${err.message}`));
+            const errMsg = (err as any).code || err.message || String(err);
+            this.emitError(new Error(`API mode request error: ${errMsg}`));
             this.emitClose(1);
         });
 
@@ -614,7 +618,7 @@ export function createTransport(
     switch (config.mode) {
         case 'cli':
             return new CliTransport(config, logger);
-        case 'serve':
+        case 'server':
             return new ServeTransport(config, logger);
         case 'api':
             return new ApiTransport(config, logger);
