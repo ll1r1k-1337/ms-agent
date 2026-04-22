@@ -28,7 +28,7 @@ src/
 │   └── message.ts      # Message types: TextContent, ToolCallContent, ToolResultContent
 ├── llm/                # LLM provider abstraction
 │   ├── provider.ts     # Interface + toApiTool/toApiMessages converters
-│   ├── openaiCompatProvider.ts  # OpenAI-compatible HTTP impl (Ollama, vLLM, Volcano)
+│   ├── openaiCompatProvider.ts  # OpenAI-compatible HTTP impl (Ollama, vLLM)
 │   ├── config.ts       # VSCode settings reader
 │   └── types.ts        # StreamChunk, StreamingLLMProvider
 ├── opencode/           # OpenCode provider (alternative LLM backend)
