@@ -7,6 +7,8 @@ export interface FixCallbacks {
     onToolResult?: (toolCallId: string, result: string, isError: boolean) => void;
     onDiff?: (filePath: string, oldText: string, newText: string, toolCallId: string) => void;
     onTextResponse?: (text: string) => void;
+    // NEW for PR-C: generic event callback for extensibility
+    onEvent?: (type: string, payload: unknown) => void;
 }
 
 export interface FixContext {

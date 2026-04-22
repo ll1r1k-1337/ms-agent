@@ -13,7 +13,13 @@ export type WebviewMessageType =
     | 'settings_save'
     | 'settings_test_connection'
     | 'settings_test_result'
-    | 'settings_reset';
+    | 'settings_reset'
+    // NEW for PR-C:
+    | 'session_start'
+    | 'session_end'
+    | 'status'
+    | 'backend_info'
+    | 'step_update';
 
 export type WebviewPayload =
     | TextStreamPayload
@@ -28,7 +34,13 @@ export type WebviewPayload =
     | SettingsUpdatePayload
     | SettingsSavePayload
     | SettingsTestResultPayload
-    | SettingsResetPayload;
+    | SettingsResetPayload
+    // NEW for PR-C:
+    | SessionStartPayload
+    | SessionEndPayload
+    | StatusPayload
+    | BackendInfoPayload
+    | StepUpdatePayload;
 
 export interface WebviewMessage {
     type: WebviewMessageType;
@@ -120,3 +132,30 @@ export interface SettingsTestResultPayload {
 }
 
 export interface SettingsResetPayload {}
+
+// NEW for PR-C:
+export interface SessionStartPayload {
+    backend: string;
+    mode?: string;
+}
+
+export interface SessionEndPayload {
+    success: boolean;
+    finalMessage: string;
+}
+
+export interface StatusPayload {
+    phase: string;
+    message?: string;
+}
+
+export interface BackendInfoPayload {
+    backend: string;
+    mode: string;
+    degraded?: boolean;
+}
+
+export interface StepUpdatePayload {
+    step: string;
+    detail?: string;
+}

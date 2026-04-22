@@ -19,6 +19,7 @@ export interface OpenCodeSessionCallbacks {
     onToolCall?: (name: string, params: Record<string, unknown>, toolCallId: string) => void;
     onToolResult?: (toolCallId: string, result: string, isError: boolean) => void;
     onDiff?: (filePath: string, oldText: string, newText: string, toolCallId: string) => void;
+    onEvent?: (type: string, payload: unknown) => void;
 }
 
 export class OpenCodeSession {
@@ -58,6 +59,11 @@ export class OpenCodeSession {
 
         const messageId = options.messageId || `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
+        this.callbacks?.onEvent?.('session_start', {
+            backend: 'opencode',
+            mode: 'cli',
+        });
+
         return new Promise<FixResult>((resolve) => {
             let parsedText = '';
             const errorMessages: string[] = [];
@@ -80,6 +86,10 @@ export class OpenCodeSession {
 
             const finalize = (): void => {
                 if (this.cancelled || this.abortController.signal.aborted) {
+                    this.callbacks?.onEvent?.('session_end', {
+                        success: false,
+                        finalMessage: 'Fix cancelled by user',
+                    });
                     doResolve({
                         success: false,
                         finalMessage: 'Fix cancelled by user',
@@ -90,6 +100,10 @@ export class OpenCodeSession {
                 }
 
                 if (transportError) {
+                    this.callbacks?.onEvent?.('session_end', {
+                        success: false,
+                        finalMessage: `Transport error: ${transportError.message}`,
+                    });
                     doResolve({
                         success: false,
                         finalMessage: `Transport error: ${transportError.message}`,
@@ -100,6 +114,10 @@ export class OpenCodeSession {
                 }
 
                 if (errorMessages.length > 0) {
+                    this.callbacks?.onEvent?.('session_end', {
+                        success: false,
+                        finalMessage: errorMessages.join('; '),
+                    });
                     doResolve({
                         success: false,
                         finalMessage: errorMessages.join('; '),
@@ -111,6 +129,10 @@ export class OpenCodeSession {
 
                 const codeMatch = parsedText.match(/```(?:cpp|c\+\+|c)?\s*\n?([\s\S]*?)```/);
                 if (!codeMatch) {
+                    this.callbacks?.onEvent?.('session_end', {
+                        success: false,
+                        finalMessage: 'OpenCode did not return a valid code block. The response may not have contained the fixed file content.',
+                    });
                     doResolve({
                         success: false,
                         finalMessage: 'OpenCode did not return a valid code block. The response may not have contained the fixed file content.',
@@ -125,6 +147,10 @@ export class OpenCodeSession {
                 const normalizedFixed = fixedCode.replace(/\r\n/g, '\n').trim();
 
                 if (normalizedOriginal === normalizedFixed) {
+                    this.callbacks?.onEvent?.('session_end', {
+                        success: false,
+                        finalMessage: 'OpenCode returned the same code. No changes were made.',
+                    });
                     doResolve({
                         success: false,
                         finalMessage: 'OpenCode returned the same code. No changes were made.',
@@ -137,6 +163,10 @@ export class OpenCodeSession {
                 fs.writeFileSync(options.resolvedPath, fixedCode, 'utf-8');
                 this.callbacks?.onDiff?.(options.resolvedPath, options.originalContent, fixedCode, 'opencode_fix');
 
+                this.callbacks?.onEvent?.('session_end', {
+                    success: true,
+                    finalMessage: 'Fix applied successfully using OpenCode.',
+                });
                 doResolve({
                     success: true,
                     finalMessage: 'Fix applied successfully using OpenCode.',
@@ -149,6 +179,10 @@ export class OpenCodeSession {
 
             const timeoutId = setTimeout(() => {
                 this.cancel();
+                this.callbacks?.onEvent?.('session_end', {
+                    success: false,
+                    finalMessage: `Fix timed out after ${options.timeoutMs}ms`,
+                });
                 doResolve({
                     success: false,
                     finalMessage: `Fix timed out after ${options.timeoutMs}ms`,
@@ -158,6 +192,10 @@ export class OpenCodeSession {
             }, options.timeoutMs);
 
             this.abortController.signal.addEventListener('abort', () => {
+                this.callbacks?.onEvent?.('session_end', {
+                    success: false,
+                    finalMessage: 'Fix cancelled by user',
+                });
                 doResolve({
                     success: false,
                     finalMessage: 'Fix cancelled by user',
@@ -193,6 +231,10 @@ export class OpenCodeSession {
                     toolCallCount++;
                     const toolCallId = toolCallInfo.toolCallId || `tc_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
                     this.callbacks?.onToolCall?.(toolCallInfo.name, toolCallInfo.params, toolCallId);
+                    this.callbacks?.onEvent?.('step_update', {
+                        step: 'tool_call',
+                        detail: `${toolCallInfo.name}`,
+                    });
 
                     void (async (): Promise<void> => {
                         const result = await executeTool(toolCallInfo.name, toolCallInfo.params, toolContext);
@@ -223,12 +265,20 @@ export class OpenCodeSession {
                         toolResultInfo.result,
                         toolResultInfo.isError,
                     );
+                    this.callbacks?.onEvent?.('step_update', {
+                        step: 'tool_result',
+                        detail: toolResultInfo.isError ? 'error' : 'success',
+                    });
                     if (toolResultInfo.isError) {
                         errorMessages.push(`Tool failed: ${toolResultInfo.result}`);
                     }
                 }
 
                 if (isCompletionEvent(e)) {
+                    this.callbacks?.onEvent?.('status', {
+                        phase: 'finalizing',
+                        message: 'Processing fix result...',
+                    });
                     finalize();
                 }
             });
@@ -243,6 +293,11 @@ export class OpenCodeSession {
             });
 
             this.transport.start(options.prompt);
+
+            this.callbacks?.onEvent?.('status', {
+                phase: 'running',
+                message: 'Waiting for OpenCode response...',
+            });
         });
     }
 }
