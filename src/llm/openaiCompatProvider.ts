@@ -23,6 +23,7 @@ export class LLMProviderError extends Error {
 export interface OpenAICompatConfig {
     endpoint: string;
     modelName: string;
+    apiKey?: string;
     temperature?: number;
     maxTokens?: number;
     timeoutMs?: number;

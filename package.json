@@ -2,7 +2,7 @@
   "name": "msagent",
   "displayName": "msAgent",
   "description": "Agentic auto-fix for mssanitizer Ascend NPU operator memory errors",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "msagent",
   "engines": {
     "vscode": "^1.85.0"
@@ -96,46 +96,19 @@
           "maximum": 600000,
           "description": "LLM request timeout in milliseconds (default: 5 minutes for complex fixes)"
         },
-        "msagent.provider": {
+        "msagent.agentMode": {
           "type": "string",
           "enum": [
-            "openai-compatible",
+            "builtin",
             "opencode"
           ],
-          "default": "openai-compatible",
-          "description": "Underlying agent provider to use (openai-compatible or opencode)"
-        },
-        "msagent.opencodeMode": {
-          "type": "string",
-          "enum": [
-            "cli",
-            "api",
-            "serve"
-          ],
-          "default": "serve",
-          "description": "OpenCode connection mode: cli for direct CLI calls, api for remote API, serve for local HTTP server (recommended)"
-        },
-        "msagent.opencodeServePort": {
-          "type": "number",
-          "default": 4096,
-          "minimum": 1024,
-          "maximum": 65535,
-          "description": "Port for OpenCode serve mode (default: 4096)"
+          "default": "builtin",
+          "description": "Fix agent mode: builtin uses your configured LLM with tool calling, opencode delegates to OpenCode CLI"
         },
         "msagent.opencodeCliPath": {
           "type": "string",
           "default": "opencode",
-          "description": "Path to OpenCode CLI executable (only for cli mode)"
-        },
-        "msagent.opencodeApiEndpoint": {
-          "type": "string",
-          "default": "https://api.opencode.com",
-          "description": "OpenCode API endpoint URL (only for api mode)"
-        },
-        "msagent.opencodeApiKey": {
-          "type": "string",
-          "default": "",
-          "description": "OpenCode API key (only for api mode)"
+          "description": "Path to OpenCode CLI executable (only used when agentMode is opencode)"
         }
       }
     },

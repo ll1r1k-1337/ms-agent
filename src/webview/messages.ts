@@ -7,19 +7,32 @@ export type WebviewMessageType =
     | 'message_complete'
     | 'error'
     | 'clear'
-    | 'queue_state';
+    | 'queue_state'
+    | 'settings_init'
+    | 'settings_update'
+    | 'settings_save'
+    | 'settings_test_connection'
+    | 'settings_test_result'
+    | 'settings_reset';
+
+export type WebviewPayload =
+    | TextStreamPayload
+    | ToolCallPayload
+    | ToolResultPayload
+    | DiffPayload
+    | FinalDiffPayload
+    | ErrorPayload
+    | ClearPayload
+    | QueueStatePayload
+    | SettingsInitPayload
+    | SettingsUpdatePayload
+    | SettingsSavePayload
+    | SettingsTestResultPayload
+    | SettingsResetPayload;
 
 export interface WebviewMessage {
     type: WebviewMessageType;
-    payload:
-        | TextStreamPayload
-        | ToolCallPayload
-        | ToolResultPayload
-        | DiffPayload
-        | FinalDiffPayload
-        | ErrorPayload
-        | ClearPayload
-        | QueueStatePayload;
+    payload: WebviewPayload;
 }
 
 export interface TextStreamPayload {
@@ -76,3 +89,30 @@ export interface QueueStatePayload {
     hasPendingTasks: boolean;
     items: QueueStateItem[];
 }
+
+export interface SettingsInitPayload {
+    agentMode: string;
+    modelEndpoint: string;
+    modelName: string;
+    apiKey: string;
+    temperature: number;
+    maxTokens: number;
+    timeoutMs: number;
+    opencodeCliPath: string;
+}
+
+export interface SettingsUpdatePayload {
+    field: string;
+    value: string | number;
+}
+
+export interface SettingsSavePayload {
+    settings: SettingsInitPayload;
+}
+
+export interface SettingsTestResultPayload {
+    success: boolean;
+    message: string;
+}
+
+export interface SettingsResetPayload {}
