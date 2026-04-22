@@ -2,5 +2,9 @@ node_modules/
 out/
 .vscode-test/
 *.vsix
-.DS_Store*.backup
+.DS_Store
+*.backup
 .idea
+coverage/
+*.lcov
+.nyc_output
