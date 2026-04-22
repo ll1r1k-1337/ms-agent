@@ -576,7 +576,53 @@ async function fixSingleDiagnostic(
                             payload: { path: filePath, oldText, newText, toolCallId }
                         });
                     },
+                    onEvent: (type: string, payload: unknown) => {
+                        if (cancellationTokenSource.token.isCancellationRequested) return;
+                        switch (type) {
+                            case 'session_start':
+                                webviewProvider.postMessage({
+                                    type: 'session_start',
+                                    payload: payload as { backend: string; mode?: string },
+                                });
+                                break;
+                            case 'session_end':
+                                webviewProvider.postMessage({
+                                    type: 'session_end',
+                                    payload: payload as { success: boolean; finalMessage: string },
+                                });
+                                break;
+                            case 'status':
+                                webviewProvider.postMessage({
+                                    type: 'status',
+                                    payload: payload as { phase: string; message?: string },
+                                });
+                                break;
+                            case 'backend_info':
+                                webviewProvider.postMessage({
+                                    type: 'backend_info',
+                                    payload: payload as { backend: string; mode: string; degraded?: boolean },
+                                });
+                                break;
+                            case 'step_update':
+                                webviewProvider.postMessage({
+                                    type: 'step_update',
+                                    payload: payload as { step: string; detail?: string },
+                                });
+                                break;
+                            default:
+                                break;
+                        }
+                    },
                 };
+
+                webviewProvider.postMessage({
+                    type: 'backend_info',
+                    payload: {
+                        backend: backend.name,
+                        mode: config.provider === 'opencode' ? (config.opencodeMode || 'cli') : 'openai-compatible',
+                        degraded: false,
+                    },
+                });
 
                 const fixResult = await backend.executeFix(
                     diagnostic,
