@@ -17,6 +17,7 @@
     "onCommand:msagent.parseLog",
     "onCommand:msagent.fixProblem",
     "onCommand:msagent.fixAll",
+    "onCommand:msagent.getAiFixQueueStates",
     "onCommand:msagent.testWebview"
   ],
   "main": "./out/extension.js",
@@ -30,6 +31,10 @@
       {
         "command": "msagent.fixProblem",
         "title": "msAgent: Fix Problem by Index"
+      },
+      {
+        "command": "msagent.getAiFixQueueStates",
+        "title": "msAgent: Get AI Fix Queue States"
       },
       {
         "command": "msagent.fixAll",
@@ -160,7 +165,8 @@
     "watch": "tsc -watch -p ./",
     "lint": "eslint src --ext ts",
     "test": "mocha",
-    "test:coverage": "c8 mocha"
+    "test:coverage": "c8 mocha",
+    "package": "npm run compile && npx vsce package --baseContentUrl https://gitcode.com/yangchenhua/ms-agent/raw/main/ --baseImagesUrl https://gitcode.com/yangchenhua/ms-agent/raw/main/"
   },
   "devDependencies": {
     "@types/chai": "^5.2.3",

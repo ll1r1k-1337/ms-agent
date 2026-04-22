@@ -17,6 +17,7 @@ export interface AgentRunOptions {
     onToolResult?: (toolCallId: string, result: string, isError: boolean) => void;
     onDiff?: (path: string, oldText: string, newText: string, toolCallId: string) => void;
     useStreaming?: boolean;
+    pauseSignal?: { paused: boolean };
 }
 
 export interface AgentResult {
@@ -26,6 +27,14 @@ export interface AgentResult {
 }
 
 const MAX_CONSECUTIVE_FAILURES = 3;
+
+/** Thrown when the user cancels during streaming so the agent loop exits promptly. */
+export class AgentRunAbortedError extends Error {
+    constructor() {
+        super('Agent run aborted');
+        this.name = 'AgentRunAbortedError';
+    }
+}
 
 function generateToolCallId(): string {
     return `call_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -48,6 +57,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentResult> {
         onToolResult,
         onDiff,
         useStreaming = true,
+        pauseSignal,
     } = options;
 
     const toolDefs = getToolDefinitions();
@@ -58,6 +68,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentResult> {
     const supportsStreaming = useStreaming && 'streamChat' in llm && typeof (llm as any).streamChat === 'function';
 
     for (let round = 0; round < maxToolRounds; round++) {
+        await waitWhilePaused(pauseSignal, options.abortSignal);
         if (options.abortSignal?.aborted) {
             return {
                 finalMessage: 'Aborted',
@@ -67,16 +78,31 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentResult> {
         }
 
         let response;
-        if (supportsStreaming) {
-            response = await handleStreamingLLM(
-                llm as any,
-                messages,
-                toolDefs,
-                systemPrompt,
-                onMessageChunk
-            );
-        } else {
-            response = await llm.chat(messages, toolDefs, systemPrompt);
+        try {
+            if (supportsStreaming) {
+                response = await handleStreamingLLM(
+                    llm as any,
+                    messages,
+                    toolDefs,
+                    systemPrompt,
+                    onMessageChunk,
+                    options.abortSignal,
+                    pauseSignal,
+                );
+            }
+            else {
+                response = await llm.chat(messages, toolDefs, systemPrompt);
+            }
+        }
+        catch (e) {
+            if (e instanceof AgentRunAbortedError) {
+                return {
+                    finalMessage: 'Aborted',
+                    toolCallCount,
+                    messages,
+                };
+            }
+            throw e;
         }
 
         if (options.abortSignal?.aborted) {
@@ -106,6 +132,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentResult> {
         }
 
         for (const block of response.content) {
+            await waitWhilePaused(pauseSignal, options.abortSignal);
             if (block.type === 'tool_use') {
                 if (options.abortSignal?.aborted) {
                     return {
@@ -126,6 +153,14 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentResult> {
                 let result: string;
 
                 try {
+                    await waitWhilePaused(pauseSignal, options.abortSignal);
+                    if (options.abortSignal?.aborted) {
+                        return {
+                            finalMessage: 'Aborted',
+                            toolCallCount,
+                            messages,
+                        };
+                    }
                     result = await executeTool(toolCall.name, toolCall.input, toolContext);
                 } catch (e) {
                     result = `Error: ${e instanceof Error ? e.message : String(e)}`;
@@ -187,11 +222,20 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentResult> {
 }
 
 async function handleStreamingLLM(
-    llm: { streamChat: (messages: Message[], tools: ToolDefinition[], systemPrompt?: string) => AsyncGenerator<StreamChunk> },
+    llm: {
+        streamChat: (
+            messages: Message[],
+            tools: ToolDefinition[],
+            systemPrompt?: string,
+            abortSignal?: { aborted: boolean },
+        ) => AsyncGenerator<StreamChunk>;
+    },
     messages: Message[],
     tools: ToolDefinition[],
     systemPrompt: string | undefined,
-    onMessageChunk?: (chunk: StreamChunk, messageId: string) => void
+    onMessageChunk?: (chunk: StreamChunk, messageId: string) => void,
+    abortSignal?: { aborted: boolean },
+    pauseSignal?: { paused: boolean },
 ): Promise<{ content: any[]; stopReason: string }> {
     const messageId = generateMessageId();
     const content: any[] = [];
@@ -199,7 +243,11 @@ async function handleStreamingLLM(
     const toolCalls = new Map<string, { id: string; name: string; input: string | Record<string, unknown> }>();
 
     try {
-        for await (const chunk of llm.streamChat(messages, tools, systemPrompt)) {
+        for await (const chunk of llm.streamChat(messages, tools, systemPrompt, abortSignal)) {
+            await waitWhilePaused(pauseSignal, abortSignal);
+            if (abortSignal?.aborted) {
+                throw new AgentRunAbortedError();
+            }
             if (onMessageChunk) {
                 onMessageChunk(chunk, messageId);
             }
@@ -262,4 +310,16 @@ async function handleStreamingLLM(
         content,
         stopReason: toolCalls.size > 0 ? 'tool_use' : 'end_turn'
     };
+}
+
+async function waitWhilePaused(
+    pauseSignal?: { paused: boolean },
+    abortSignal?: { aborted: boolean },
+): Promise<void> {
+    while (pauseSignal?.paused) {
+        if (abortSignal?.aborted) {
+            throw new AgentRunAbortedError();
+        }
+        await new Promise((resolve) => setTimeout(resolve, 75));
+    }
 }

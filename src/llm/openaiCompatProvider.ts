@@ -205,6 +205,7 @@ export class OpenAICompatProvider implements LLMProvider {
         messages: Message[],
         tools: ToolDefinition[],
         systemPrompt?: string,
+        abortSignal?: { aborted: boolean },
     ): AsyncGenerator<StreamChunk> {
         const endpoint = this.config.endpoint.replace(/\/$/, '');
         const url = `${endpoint}/v1/chat/completions`;
@@ -227,8 +228,32 @@ export class OpenAICompatProvider implements LLMProvider {
         let resolveNext: ((value: IteratorResult<StreamChunk>) => void) | null = null;
         let rejectNext: ((error: any) => void) | null = null;
         let done = false;
+        let abortPollTimer: ReturnType<typeof setInterval> | undefined;
+        let req: http.ClientRequest | undefined;
 
-        const req = client.request(
+        const closeForAbort = () => {
+            if (done) {
+                return;
+            }
+            done = true;
+            req?.destroy();
+            if (resolveNext) {
+                resolveNext({ value: { type: 'done' }, done: false });
+                resolveNext = null;
+            } else {
+                chunks.push({ type: 'done' });
+            }
+        };
+
+        if (abortSignal) {
+            abortPollTimer = setInterval(() => {
+                if (abortSignal.aborted) {
+                    closeForAbort();
+                }
+            }, 50);
+        }
+
+        req = client.request(
             {
                 hostname: parsedUrl.hostname,
                 port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
@@ -239,6 +264,10 @@ export class OpenAICompatProvider implements LLMProvider {
             },
             (res) => {
                 if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+                    if (abortPollTimer) {
+                        clearInterval(abortPollTimer);
+                        abortPollTimer = undefined;
+                    }
                     const err = new LLMProviderError(`HTTP ${res.statusCode}`, 'HTTP_ERROR');
                     if (rejectNext) rejectNext(err);
                     else chunks.push({ type: 'error', error: err.message });
@@ -350,6 +379,10 @@ export class OpenAICompatProvider implements LLMProvider {
                 });
 
                 res.on('end', () => {
+                    if (abortPollTimer) {
+                        clearInterval(abortPollTimer);
+                        abortPollTimer = undefined;
+                    }
                     done = true;
                     if (resolveNext) {
                         resolveNext({ value: { type: 'done' }, done: true });
@@ -358,6 +391,13 @@ export class OpenAICompatProvider implements LLMProvider {
                 });
 
                 res.on('error', (err) => {
+                    if (abortPollTimer) {
+                        clearInterval(abortPollTimer);
+                        abortPollTimer = undefined;
+                    }
+                    if (abortSignal?.aborted) {
+                        return;
+                    }
                     const llmErr = new LLMProviderError(`Stream error: ${err.message}`, 'HTTP_ERROR');
                     if (rejectNext) rejectNext(llmErr);
                     else chunks.push({ type: 'error', error: llmErr.message });
@@ -367,6 +407,13 @@ export class OpenAICompatProvider implements LLMProvider {
         );
 
         req.on('error', (err: any) => {
+            if (abortPollTimer) {
+                clearInterval(abortPollTimer);
+                abortPollTimer = undefined;
+            }
+            if (abortSignal?.aborted) {
+                return;
+            }
             const code = err?.code === 'ECONNREFUSED' ? 'CONNECTION_REFUSED' : 'HTTP_ERROR';
             const message = code === 'CONNECTION_REFUSED'
                 ? 'Connection refused. Is the LLM server running?'
@@ -378,6 +425,10 @@ export class OpenAICompatProvider implements LLMProvider {
         });
 
         req.on('timeout', () => {
+            if (abortPollTimer) {
+                clearInterval(abortPollTimer);
+                abortPollTimer = undefined;
+            }
             req.destroy();
             const llmErr = new LLMProviderError('LLM request timed out.', 'TIMEOUT');
             if (rejectNext) rejectNext(llmErr);
@@ -397,6 +448,10 @@ export class OpenAICompatProvider implements LLMProvider {
                     rejectNext = reject;
                 });
             }
+        }
+        if (abortPollTimer) {
+            clearInterval(abortPollTimer);
+            abortPollTimer = undefined;
         }
     }
 }
