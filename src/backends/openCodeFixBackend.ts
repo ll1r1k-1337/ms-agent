@@ -82,7 +82,7 @@ export class OpenCodeFixBackend implements FixBackend {
         const prompt = buildOpenCodePrompt(diagnostic, originalContent);
 
         const transportConfig: OpenCodeTransportConfig = {
-            mode: (config.opencodeMode || 'cli') as 'cli' | 'serve' | 'api',
+            mode: (config.opencodeMode || 'cli') as 'cli' | 'server' | 'api',
             cliPath: config.opencodeCliPath,
             servePort: config.opencodeServePort,
             apiEndpoint: config.opencodeApiEndpoint,
