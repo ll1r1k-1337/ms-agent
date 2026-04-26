@@ -1,6 +1,7 @@
 import {
   WebviewMessage,
   SessionStartPayload,
+  SessionMetadataPayload,
   BackendInfoPayload,
   StatusPayload,
   StepUpdatePayload,
@@ -16,6 +17,8 @@ import {
 export interface SessionState {
   backend: string;
   mode: string;
+  model: string;
+  opencodeSessionId: string;
   degraded: boolean;
   phase: string;
   phaseMessage: string;
@@ -23,6 +26,7 @@ export interface SessionState {
   diffCards: DiffCardState[];
   completed: boolean;
   success: boolean | undefined;
+  outcome: 'applied' | 'no_change' | 'failed' | undefined;
   finalMessage: string;
   startedAt: number;
 }
@@ -48,6 +52,8 @@ export function createInitialState(): SessionState {
   return {
     backend: '',
     mode: '',
+    model: '',
+    opencodeSessionId: '',
     degraded: false,
     phase: 'idle',
     phaseMessage: '',
@@ -55,6 +61,7 @@ export function createInitialState(): SessionState {
     diffCards: [],
     completed: false,
     success: undefined,
+    outcome: undefined,
     finalMessage: '',
     startedAt: 0,
   };
@@ -68,9 +75,20 @@ export function reduceSessionState(state: SessionState, message: WebviewMessage)
         ...state,
         backend: payload.backend,
         mode: payload.mode ?? '',
+        model: payload.model ?? state.model,
+        opencodeSessionId: '',
         completed: false,
         success: undefined,
+        outcome: undefined,
         startedAt: Date.now(),
+      };
+    }
+
+    case 'session_metadata': {
+      const payload = message.payload as SessionMetadataPayload;
+      return {
+        ...state,
+        opencodeSessionId: payload.opencodeSessionId ?? state.opencodeSessionId,
       };
     }
 
@@ -80,7 +98,8 @@ export function reduceSessionState(state: SessionState, message: WebviewMessage)
         ...state,
         backend: payload.backend,
         mode: payload.mode,
-        degraded: payload.degraded ?? false,
+        model: payload.model ?? state.model,
+        degraded: false,
       };
     }
 
@@ -192,6 +211,7 @@ export function reduceSessionState(state: SessionState, message: WebviewMessage)
         ...state,
         completed: true,
         success: payload.success,
+        outcome: payload.outcome,
         finalMessage: payload.finalMessage,
       };
     }

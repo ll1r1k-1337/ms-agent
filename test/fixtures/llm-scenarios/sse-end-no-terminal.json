@@ -1,0 +1,9 @@
+{
+  "description": "Regression for the serve-mode 'session terminates early' bug. The model emits a SYNTACTICALLY COMPLETE cpp code block (closing fence present, size large enough to dodge the placeholder/size guards) but NEVER emits a hard terminal event. The transport then closes via server.disconnect. Under the new contract the session MUST NOT write this code-block to disk: without a hard terminal the model is not actually done, and the candidate patch may be partial/wrong. The original file must be preserved.",
+  "steps": [
+    { "kind": "event", "event": { "type": "text", "part": { "text": "Looking at the issue at line 2.\n\n" } } },
+    { "kind": "event", "event": { "type": "text", "part": { "text": "I'll apply this patch:\n\n```cpp\nint function_0_REWRITTEN() { return 0 * 2; }\nint function_1_REWRITTEN() { return 1 * 2; }\nint function_2_REWRITTEN() { return 2 * 2; }\nint function_3_REWRITTEN() { return 3 * 2; }\nint function_4_REWRITTEN() { return 4 * 2; }\nint function_5_REWRITTEN() { return 5 * 2; }\nint function_6_REWRITTEN() { return 6 * 2; }\nint function_7_REWRITTEN() { return 7 * 2; }\n```" } } },
+    { "kind": "event", "event": { "type": "server.disconnect" } },
+    { "kind": "close", "exitCode": 0 }
+  ]
+}

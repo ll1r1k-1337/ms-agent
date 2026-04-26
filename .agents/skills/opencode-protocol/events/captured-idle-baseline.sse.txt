@@ -1,0 +1,6 @@
+data: {"type":"server.connected","properties":{}}
+
+data: {"type":"session.created","properties":{"sessionID":"ses_<REDACTED>","info":{"id":"ses_<REDACTED>","slug":"<REDACTED>","version":"1.14.25","projectID":"global","directory":"/path/to/workspace","title":"<REDACTED>","time":{"created":<TS_MS>,"updated":<TS_MS>}}}}
+
+data: {"type":"session.updated","properties":{"sessionID":"ses_<REDACTED>","info":{"id":"ses_<REDACTED>","slug":"<REDACTED>","version":"1.14.25","projectID":"global","directory":"/path/to/workspace","title":"<REDACTED>","time":{"created":<TS_MS>,"updated":<TS_MS>}}}}
+

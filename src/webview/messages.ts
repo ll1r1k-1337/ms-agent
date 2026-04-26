@@ -1,5 +1,6 @@
 export type WebviewMessageType =
     | 'text_stream'
+    | 'user_message'
     | 'tool_call'
     | 'tool_result'
     | 'diff'
@@ -8,14 +9,9 @@ export type WebviewMessageType =
     | 'error'
     | 'clear'
     | 'queue_state'
-    | 'settings_init'
-    | 'settings_update'
-    | 'settings_save'
-    | 'settings_test_connection'
-    | 'settings_test_result'
-    | 'settings_reset'
     // NEW for PR-C:
     | 'session_start'
+    | 'session_metadata'
     | 'session_end'
     | 'status'
     | 'backend_info'
@@ -23,20 +19,18 @@ export type WebviewMessageType =
 
 export type WebviewPayload =
     | TextStreamPayload
+    | UserMessagePayload
     | ToolCallPayload
     | ToolResultPayload
     | DiffPayload
     | FinalDiffPayload
+    | MessageCompletePayload
     | ErrorPayload
     | ClearPayload
     | QueueStatePayload
-    | SettingsInitPayload
-    | SettingsUpdatePayload
-    | SettingsSavePayload
-    | SettingsTestResultPayload
-    | SettingsResetPayload
     // NEW for PR-C:
     | SessionStartPayload
+    | SessionMetadataPayload
     | SessionEndPayload
     | StatusPayload
     | BackendInfoPayload
@@ -50,6 +44,11 @@ export interface WebviewMessage {
 export interface TextStreamPayload {
     messageId: string;
     delta: string;
+}
+
+export interface UserMessagePayload {
+    messageId: string;
+    text: string;
 }
 
 export interface ToolCallPayload {
@@ -102,45 +101,20 @@ export interface QueueStatePayload {
     items: QueueStateItem[];
 }
 
-export interface SettingsInitPayload {
-    provider: string;
-    modelEndpoint: string;
-    modelName: string;
-    apiKey: string;
-    temperature: number;
-    maxTokens: number;
-    timeoutMs: number;
-    opencodeMode: string;
-    opencodeServePort: number;
-    opencodeCliPath: string;
-    opencodeApiEndpoint: string;
-    opencodeApiKey: string;
-}
-
-export interface SettingsUpdatePayload {
-    field: string;
-    value: string | number;
-}
-
-export interface SettingsSavePayload {
-    settings: SettingsInitPayload;
-}
-
-export interface SettingsTestResultPayload {
-    success: boolean;
-    message: string;
-}
-
-export interface SettingsResetPayload {}
-
 // NEW for PR-C:
 export interface SessionStartPayload {
     backend: string;
     mode?: string;
+    model?: string;
+}
+
+export interface SessionMetadataPayload {
+    opencodeSessionId?: string;
 }
 
 export interface SessionEndPayload {
     success: boolean;
+    outcome: 'applied' | 'no_change' | 'failed';
     finalMessage: string;
 }
 
@@ -152,7 +126,7 @@ export interface StatusPayload {
 export interface BackendInfoPayload {
     backend: string;
     mode: string;
-    degraded?: boolean;
+    model?: string;
 }
 
 export interface StepUpdatePayload {

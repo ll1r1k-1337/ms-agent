@@ -1,0 +1,30 @@
+{
+  "nodes":[
+    {"id":"sessionState.ts","label":"sessionState.ts","file_type":"code","source_file":"src/webview/sessionState.ts"},
+    {"id":"SessionState","label":"SessionState interface","file_type":"code","source_file":"src/webview/sessionState.ts"},
+    {"id":"reduceSessionState","label":"reduceSessionState function","file_type":"code","source_file":"src/webview/sessionState.ts"},
+    {"id":"formatDiffToLines","label":"formatDiffToLines function","file_type":"code","source_file":"src/webview/sessionState.ts"},
+    {"id":"computeChangeSummary","label":"computeChangeSummary function","file_type":"code","source_file":"src/webview/sessionState.ts"},
+    {"id":"fixDetailsScript.ts","label":"fixDetailsScript.ts","file_type":"code","source_file":"src/webview/fixDetailsScript.ts"},
+    {"id":"settingsPanelProvider.ts","label":"settingsPanelProvider.ts","file_type":"code","source_file":"src/webview/settingsPanelProvider.ts"},
+    {"id":"SettingsPanelProvider","label":"SettingsPanelProvider class","file_type":"code","source_file":"src/webview/settingsPanelProvider.ts"},
+    {"id":"messages.ts","label":"messages.ts","file_type":"code","source_file":"src/webview/messages.ts"},
+    {"id":"openaiCompatProvider.ts","label":"openaiCompatProvider.ts","file_type":"code","source_file":"src/llm/openaiCompatProvider.ts"},
+    {"id":"vscode API","label":"VSCode API","file_type":"external","source_file":"vscode"}
+  ],
+  "edges":[
+    {"source":"sessionState.ts","target":"messages.ts","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"src/webview/sessionState.ts"},
+    {"source":"reduceSessionState","target":"SessionState","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"src/webview/sessionState.ts"},
+    {"source":"reduceSessionState","target":"formatDiffToLines","relation":"calls","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"src/webview/sessionState.ts"},
+    {"source":"reduceSessionState","target":"computeChangeSummary","relation":"calls","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"src/webview/sessionState.ts"},
+    {"source":"fixDetailsScript.ts","target":"sessionState.ts","relation":"references","confidence":"INFERRED","confidence_score":0.9,"source_file":"src/webview/fixDetailsScript.ts"},
+    {"source":"fixDetailsScript.ts","target":"vscode API","relation":"calls","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"src/webview/fixDetailsScript.ts"},
+    {"source":"settingsPanelProvider.ts","target":"messages.ts","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"src/webview/settingsPanelProvider.ts"},
+    {"source":"settingsPanelProvider.ts","target":"vscode API","relation":"calls","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"src/webview/settingsPanelProvider.ts"},
+    {"source":"settingsPanelProvider.ts","target":"openaiCompatProvider.ts","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"src/webview/settingsPanelProvider.ts"},
+    {"source":"SettingsPanelProvider","target":"settingsPanelProvider.ts","relation":"implements","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"src/webview/settingsPanelProvider.ts"}
+  ],
+  "hyperedges":[],
+  "input_tokens":0,
+  "output_tokens":0
+}

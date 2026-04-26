@@ -1,12 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import * as http from 'http';
-import * as https from 'https';
-import { URL } from 'url';
 import * as vscode from 'vscode';
 import { DiagnosticsManager } from './vscode/diagnosticsManager';
 import {
-    fixDiagnostic,
     fixProblem,
     fixAllDiagnostics,
     showFixDetailsPanel,
@@ -17,12 +13,34 @@ import {
     type FixProblemResult,
 } from './vscode/fixService';
 import { registerFixActions } from './vscode/codeActionProvider';
-import { getLLMConfig, LLMConfig } from './llm/config';
-import { OpenAICompatProvider } from './llm/openaiCompatProvider';
 import { Severity } from './parser/types';
 import type { ParseResult } from './parser/types';
+import { disposeAllManagedServers } from './backends/opencodeTransport';
+import { getLLMConfig } from './llm/config';
+import {
+    loadOpenCodeModelCatalog,
+    OpenCodeModelEntry,
+} from './llm/opencodeModelCatalog';
 
 let outputChannel: vscode.OutputChannel;
+
+export const _deps = {
+    existsSync: fs.existsSync,
+    statSync: fs.statSync,
+    readFileSync: fs.readFileSync,
+    loadOpenCodeModelCatalog,
+};
+
+export function _setTestDeps(deps: Partial<typeof _deps>) {
+    Object.assign(_deps, deps);
+}
+
+export function _resetTestDeps() {
+    _deps.existsSync = fs.existsSync;
+    _deps.statSync = fs.statSync;
+    _deps.readFileSync = fs.readFileSync;
+    _deps.loadOpenCodeModelCatalog = loadOpenCodeModelCatalog;
+}
 
 export async function activate(context: vscode.ExtensionContext) {
     console.log('msAgent extension is now active');
@@ -43,8 +61,6 @@ export async function activate(context: vscode.ExtensionContext) {
     (globalThis as any).__msAgentGetAiFixQueueStates = () => getAiFixQueueStates();
 
     DiagnosticsManager.activate(context);
-
-    await validateLLMConfiguration(context);
 
     /**
      * Parse a sanitizer log and publish diagnostics.
@@ -71,7 +87,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 }
                 fsPath = uri[0].fsPath;
             }
-            if (!fs.existsSync(fsPath) || !fs.statSync(fsPath).isFile()) {
+            if (!_deps.existsSync(fsPath) || !_deps.statSync(fsPath).isFile()) {
                 if (!options?.suppressMessage) {
                     vscode.window.showErrorMessage(`msAgent: log file not found: ${fsPath}`);
                 }
@@ -131,81 +147,13 @@ export async function activate(context: vscode.ExtensionContext) {
         await fixAllDiagnostics(fileUri);
     });
 
-    const fixDiagnosticCmd = vscode.commands.registerCommand('msagent.fixDiagnostic', async (uriStr: string, lineNumber: number) => {
-        await fixDiagnostic(uriStr, lineNumber);
-    });
-
     const clearDiagsCmd = vscode.commands.registerCommand('msagent.clearDiagnostics', () => {
         DiagnosticsManager.clearDiagnostics();
         vscode.window.showInformationMessage('msAgent diagnostics cleared.');
     });
 
-    let settingsProvider: import('./webview/settingsPanelProvider').SettingsPanelProvider | undefined;
-
-    const openSettingsCmd = vscode.commands.registerCommand('msagent.openSettings', () => {
-        const config = getLLMConfig();
-        const settingsPayload = {
-            provider: config.provider,
-            modelEndpoint: config.endpoint,
-            modelName: config.modelName,
-            apiKey: config.apiKey,
-            temperature: config.temperature,
-            maxTokens: config.maxTokens,
-            timeoutMs: config.timeoutMs,
-            opencodeMode: config.opencodeMode,
-            opencodeServePort: config.opencodeServePort,
-            opencodeCliPath: config.opencodeCliPath,
-            opencodeApiEndpoint: config.opencodeApiEndpoint,
-            opencodeApiKey: config.opencodeApiKey,
-        };
-        if (!settingsProvider) {
-            import('./webview/settingsPanelProvider').then(({ SettingsPanelProvider }) => {
-                settingsProvider = new SettingsPanelProvider();
-                settingsProvider.createOrShow(context, settingsPayload);
-            });
-        } else {
-            settingsProvider.createOrShow(context, settingsPayload);
-        }
-    });
-
-    const testWebviewCmd = vscode.commands.registerCommand('msagent.testWebview', () => {
-        const outputChannel = (global as any).msAgentOutputChannel;
-        outputChannel?.appendLine('[TEST] testWebview command called');
-
-        const context = (global as any).msAgentContext;
-        if (!context) {
-            outputChannel?.appendLine('[TEST] ERROR: No context');
-            vscode.window.showErrorMessage('Extension context not available.');
-            return;
-        }
-
-        outputChannel?.appendLine('[TEST] Importing WebviewPanelProvider...');
-        import('./webview/webviewPanelProvider').then(({ WebviewPanelProvider }) => {
-            const provider = new WebviewPanelProvider();
-            outputChannel?.appendLine('[TEST] Provider created');
-
-            outputChannel?.appendLine('[TEST] Calling createOrShow...');
-            provider.createOrShow(context);
-
-            outputChannel?.appendLine('[TEST] Sending test message...');
-            const msgId = provider.nextMessageId();
-            outputChannel?.appendLine('[TEST] Message ID: ' + msgId);
-
-            provider.postMessage({
-                type: 'text_stream',
-                payload: {
-                    messageId: msgId,
-                    delta: '✅ Test message: WebView is working!\n\nIf you see this message, the webview communication is working correctly.\n'
-                }
-            });
-
-            outputChannel?.appendLine('[TEST] Message sent');
-            vscode.window.showInformationMessage('Test message sent to webview. Check Output → msAgent for logs.');
-        }).catch(err => {
-            outputChannel?.appendLine('[TEST] ERROR: ' + err.message);
-            vscode.window.showErrorMessage('Failed to load WebviewPanelProvider: ' + err.message);
-        });
-    });
+    const selectModelCmd = vscode.commands.registerCommand('msagent.selectModel', selectOpenCodeModel);
+    const openSettingsCmd = vscode.commands.registerCommand('msagent.openSettings', openMsAgentSettings);
 
     context.subscriptions.push(
         parseLogCmd,
@@ -214,105 +162,23 @@ export async function activate(context: vscode.ExtensionContext) {
         getAiFixQueueStatesCmd,
         getAiFixQueueSnapshotCmd,
         fixAllCmd,
-        fixDiagnosticCmd,
         clearDiagsCmd,
+        selectModelCmd,
         openSettingsCmd,
-        testWebviewCmd,
         registerFixActions(context),
     );
-}
-
-async function validateLLMConfiguration(context: vscode.ExtensionContext): Promise<void> {
-    const config = getLLMConfig();
-    const dontAskAgain = context.globalState.get<boolean>('msagent.skipConfigValidation', false);
-    if (dontAskAgain) {
-        return;
-    }
-
-    if (config.provider === 'opencode') {
-        outputChannel.appendLine('OpenCode mode selected - skipping auto-validation (user must install OpenCode)');
-        return;
-    }
-
-    try {
-        const provider = new OpenAICompatProvider({
-            endpoint: config.endpoint,
-            modelName: config.modelName,
-            timeoutMs: 30000,
-            apiKey: config.apiKey,
-        });
-
-        await provider.chat(
-            [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
-            [],
-        );
-    } catch (error) {
-        const action = await vscode.window.showWarningMessage(
-            `msAgent: Cannot connect to LLM at ${config.endpoint}. Would you like to configure it now?`,
-            'Configure',
-            'Skip',
-            "Don't Ask Again"
-        );
-
-        if (action === 'Configure') {
-            vscode.commands.executeCommand('msagent.openSettings');
-        } else if (action === "Don't Ask Again") {
-            context.globalState.update('msagent.skipConfigValidation', true);
-        }
-    }
-}
-
-async function isEndpointReachable(endpoint: string, timeoutMs: number): Promise<boolean> {
-    return new Promise((resolve) => {
-        let settled = false;
-        const finish = (reachable: boolean): void => {
-            if (settled) {
-                return;
-            }
-            settled = true;
-            resolve(reachable);
-        };
-
-        try {
-            const parsedUrl = new URL(endpoint);
-            const client = parsedUrl.protocol === 'https:' ? https : http;
-            const req = client.request(
-                {
-                    hostname: parsedUrl.hostname,
-                    port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
-                    path: (parsedUrl.pathname || '/') + parsedUrl.search,
-                    method: 'GET',
-                    timeout: timeoutMs,
-                },
-                (res) => {
-                    // Any HTTP response means the endpoint is reachable.
-                    res.resume();
-                    res.on('error', () => finish(false));
-                    res.on('end', () => finish(true));
-                },
-            );
-
-            req.on('error', () => finish(false));
-            req.on('timeout', () => {
-                req.destroy();
-                finish(false);
-            });
-            req.end();
-        } catch {
-            finish(false);
-        }
-    });
 }
 
 export function deactivate() {
     delete (globalThis as any).__msAgentGetAiFixQueueSnapshot;
     delete (globalThis as any).__msAgentGetAiFixQueueStates;
+    disposeAllManagedServers();
     if (outputChannel) {
         outputChannel.appendLine('msAgent extension deactivated');
     }
 }
 
-function parseProblemIndex(index: number | string | undefined): number | null {
+export function parseProblemIndex(index: number | string | undefined): number | null {
     if (index === undefined || index === '') {
         return null;
     }
@@ -323,7 +189,7 @@ function parseProblemIndex(index: number | string | undefined): number | null {
     return n;
 }
 
-function resolveLogInputToFsPath(uriOrPath: vscode.Uri | string | undefined): string | undefined {
+export function resolveLogInputToFsPath(uriOrPath: vscode.Uri | string | undefined): string | undefined {
     if (uriOrPath === undefined || uriOrPath === null) {
         return undefined;
     }
@@ -342,6 +208,71 @@ function resolveLogInputToFsPath(uriOrPath: vscode.Uri | string | undefined): st
         return undefined;
     }
     return path.normalize(path.join(folder, s));
+}
+
+interface ModelQuickPickItem extends vscode.QuickPickItem {
+    modelID: string;
+}
+
+function getWorkspaceRoots(): string[] {
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    if (folders.length > 0) {
+        return folders.map((folder) => folder.uri.fsPath);
+    }
+    return vscode.workspace.rootPath ? [vscode.workspace.rootPath] : [];
+}
+
+function describeModelEntry(entry: OpenCodeModelEntry): string {
+    switch (entry.source) {
+        case 'workspace':
+            return entry.sourcePath ? `Workspace config: ${entry.sourcePath}` : 'Workspace OpenCode config';
+        case 'user':
+            return entry.sourcePath ? `User config: ${entry.sourcePath}` : 'User OpenCode config';
+        case 'built-in':
+            return 'Built-in free OpenCode model';
+        default:
+            return 'OpenCode model';
+    }
+}
+
+export async function selectOpenCodeModel(): Promise<string | undefined> {
+    const entries = _deps.loadOpenCodeModelCatalog({ workspaceRoots: getWorkspaceRoots() })
+        .slice()
+        .sort((a, b) => a.id.localeCompare(b.id));
+
+    if (entries.length === 0) {
+        vscode.window.showWarningMessage('msAgent: no OpenCode models found in config files or built-in fallback list.');
+        return undefined;
+    }
+
+    const currentModel = getLLMConfig().modelFullName;
+    const items: ModelQuickPickItem[] = entries.map((entry) => ({
+        label: entry.id,
+        description: entry.id === currentModel ? 'Current' : entry.source,
+        detail: describeModelEntry(entry),
+        modelID: entry.id,
+    }));
+
+    const selected = await vscode.window.showQuickPick(items, {
+        title: 'msAgent: Select OpenCode Model',
+        placeHolder: 'Choose the full OpenCode model ID for repair sessions',
+        matchOnDescription: true,
+        matchOnDetail: true,
+    });
+    if (!selected) {
+        return undefined;
+    }
+
+    const target = (vscode.workspace.workspaceFolders?.length ?? 0) > 0
+        ? vscode.ConfigurationTarget.Workspace
+        : vscode.ConfigurationTarget.Global;
+    await vscode.workspace.getConfiguration('msagent').update('modelName', selected.modelID, target);
+    vscode.window.showInformationMessage(`msAgent OpenCode model set to ${selected.modelID}`);
+    return selected.modelID;
+}
+
+export async function openMsAgentSettings(): Promise<void> {
+    await vscode.commands.executeCommand('workbench.action.openSettings', 'msagent');
 }
 
 function parseLogAtPathAndNotify(fsPath: string, suppressMessage?: boolean): ParseResult {

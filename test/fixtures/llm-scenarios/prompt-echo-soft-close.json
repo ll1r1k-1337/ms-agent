@@ -1,0 +1,49 @@
+{
+  "description": "Regression for server-mode prompt echo contamination. The global /event bus first delivers the user prompt text, which contains the instructional example `NO_FIX_NEEDED: <short reason>`, but the assistant never reaches a hard terminal event. The transport soft-closes instead. The session MUST NOT treat the echoed prompt marker as a real model decision; it should preserve the original file and report a protocol failure instead of no_change.",
+  "steps": [
+    {
+      "kind": "event",
+      "event": {
+        "type": "message.updated",
+        "properties": {
+          "sessionID": "ses_prompt_echo",
+          "info": {
+            "id": "msg_user_1",
+            "role": "user",
+            "sessionID": "ses_prompt_echo",
+            "time": {
+              "created": 1000
+            }
+          }
+        }
+      }
+    },
+    {
+      "kind": "event",
+      "event": {
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_prompt_echo",
+          "part": {
+            "type": "text",
+            "text": "If the code is already correct or no safe code change is needed, respond with a single line:\n`NO_FIX_NEEDED: <short reason>`\n",
+            "messageID": "msg_user_1",
+            "sessionID": "ses_prompt_echo",
+            "id": "prt_user_1"
+          },
+          "time": 1001
+        }
+      }
+    },
+    {
+      "kind": "event",
+      "event": {
+        "type": "server.disconnect"
+      }
+    },
+    {
+      "kind": "close",
+      "exitCode": 0
+    }
+  ]
+}

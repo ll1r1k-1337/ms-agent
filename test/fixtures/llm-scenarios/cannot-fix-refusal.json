@@ -1,0 +1,7 @@
+{
+  "description": "Model refuses to fix by returning CANNOT_FIX: <reason> with no code block. Session should report no change, original file must be preserved on disk.",
+  "steps": [
+    { "kind": "event", "event": { "type": "text", "part": { "text": "CANNOT_FIX: I cannot safely patch this kernel without the Ascend C runtime headers." } } },
+    { "kind": "event", "event": { "type": "done" } }
+  ]
+}

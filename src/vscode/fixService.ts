@@ -2,20 +2,21 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as vscode from 'vscode';
 import { DiagnosticsManager } from './diagnosticsManager';
-import { LLMProviderError } from '../llm/openaiCompatProvider';
 import { getLLMConfig } from '../llm/config';
-import { loadSkill } from '../skills/skillLoader';
-import { buildFixPrompt } from '../skills/skillLoader';
-import { ToolContext } from '../tools/toolHandlers';
 import { SanitizerDiagnostic, Severity } from '../parser/types';
 import { WebviewPanelProvider } from '../webview/webviewPanelProvider';
 import { StreamChunk } from '../llm/types';
-import { createFixBackend, FixBackend, FixCallbacks, FixResult } from '../backends/backendFactory';
+import { createFixBackend, FixCallbacks, FixResult } from '../backends/backendFactory';
+
+export const _deps = { existsSync: fs.existsSync };
+export function _setTestDeps(deps: Partial<typeof _deps>) { Object.assign(_deps, deps); }
+export function _resetTestDeps() { _deps.existsSync = fs.existsSync; }
 
 let outputChannel: vscode.OutputChannel | undefined;
 const webviewProvider = new WebviewPanelProvider();
 type FixProblemStatus =
     | 'completed'
+    | 'no_change'
     | 'stopped'
     | 'cancelled'
     | 'failed'
@@ -27,6 +28,7 @@ export interface FixProblemResult {
 }
 export interface FixProblemOptions {
     suppressProgressNotification?: boolean;
+    clearWebview?: boolean;
 }
 type QueuedFixTask = {
     id: string;
@@ -73,8 +75,8 @@ function getOutputChannel(): vscode.OutputChannel {
  * Searches in workspace root and last log directory.
  * Note: Diagnostics are already resolved during parsing, so this is mainly a safety fallback.
  */
-function resolveFilePath(fileName: string, workspaceRoot: string): string {
-    if (path.isAbsolute(fileName) && fs.existsSync(fileName)) {
+export function resolveFilePath(fileName: string, workspaceRoot: string): string {
+    if (path.isAbsolute(fileName) && _deps.existsSync(fileName)) {
         return fileName;
     }
 
@@ -82,7 +84,7 @@ function resolveFilePath(fileName: string, workspaceRoot: string): string {
     for (const dir of searchDirs) {
         if (!dir) continue;
         const fullPath = path.join(dir, fileName);
-        if (fs.existsSync(fullPath)) {
+        if (_deps.existsSync(fullPath)) {
             return fullPath;
         }
     }
@@ -90,11 +92,11 @@ function resolveFilePath(fileName: string, workspaceRoot: string): string {
     return path.join(workspaceRoot, fileName);
 }
 
-function getDiagnosticFixKey(diagnostic: SanitizerDiagnostic): string {
+export function getDiagnosticFixKey(diagnostic: SanitizerDiagnostic): string {
     return `${diagnostic.fileName}:${diagnostic.lineNumber}:${diagnostic.errorType}`;
 }
 
-function getDiagnosticTitle(diagnostic: SanitizerDiagnostic): string {
+export function getDiagnosticTitle(diagnostic: SanitizerDiagnostic): string {
     const file = path.basename(diagnostic.fileName);
     return `${diagnostic.errorType} - ${file}:${diagnostic.lineNumber}`;
 }
@@ -226,6 +228,7 @@ async function processFixQueue(): Promise<void> {
                 undefined,
                 next.options,
                 currentCancellationTokenSource,
+                next.options?.clearWebview,
             );
 
             const wasCancelled = cancelCurrentRequested;
@@ -400,25 +403,6 @@ export async function fixProblem(
     });
 }
 
-export async function fixDiagnostic(
-    documentUri: string,
-    lineNumber: number,
-): Promise<void> {
-    const diagnostics = DiagnosticsManager.getDiagnosticForFile(
-        vscode.Uri.parse(documentUri).fsPath,
-    );
-    if (diagnostics.length === 0) {
-        vscode.window.showWarningMessage('No msAgent diagnostics found for this file.');
-        return;
-    }
-
-    const diagnostic = diagnostics.find(d =>
-        Math.abs(d.lineNumber - (lineNumber + 1)) <= 2
-    ) || diagnostics[0];
-
-    await fixSingleDiagnostic(diagnostic);
-}
-
 export async function fixAllDiagnostics(
     documentUri: string,
 ): Promise<void> {
@@ -433,12 +417,23 @@ export async function fixAllDiagnostics(
     const errorDiags = diagnostics.filter(d => d.severity === Severity.ERROR);
     const fixSet = errorDiags.length > 0 ? errorDiags : diagnostics.slice(0, 1);
 
-    const total = fixSet.length;
-    let completed = 0;
+    const all = DiagnosticsManager.getCurrentDiagnostics();
+    const promises: Promise<FixProblemResult>[] = [];
 
-    for (const diag of fixSet) {
-        completed++;
-        await fixSingleDiagnostic(diag, completed, total);
+    for (let i = 0; i < fixSet.length; i++) {
+        const diag = fixSet[i];
+        const index = all.indexOf(diag);
+        if (index >= 0) {
+            promises.push(fixProblem(index, { clearWebview: i === 0 }));
+        }
+    }
+
+    const results = await Promise.all(promises);
+    const anyFailed = results.some(r => r.status === 'failed');
+    if (anyFailed) {
+        vscode.window.showWarningMessage(
+            'Some fixes failed. Check the msAgent output panel for details.'
+        );
     }
 }
 
@@ -448,21 +443,11 @@ async function fixSingleDiagnostic(
     total?: number,
     options?: FixProblemOptions,
     externalCancellationTokenSource?: vscode.CancellationTokenSource,
+    clearWebview: boolean = true,
 ): Promise<FixProblemResult> {
     const config = getLLMConfig();
     const backend = createFixBackend(config);
     const workspaceRoot = vscode.workspace.rootPath || '.';
-    const skillContent = loadSkill('memcheck-skills') || '';
-
-    let prompt = buildFixPrompt(diagnostic);
-    if (skillContent) {
-        prompt += '\n\n## Additional Context\n' + skillContent;
-    }
-
-    const toolContext: ToolContext = {
-        workspaceRoot,
-        diagnostics: diagnostic,
-    };
 
     const progressTitle = total && current
         ? `msAgent: Fixing ${diagnostic.errorType} (${current}/${total})`
@@ -476,37 +461,25 @@ async function fixSingleDiagnostic(
 
     try {
         const extensionContext = (global as any).msAgentContext as vscode.ExtensionContext;
-        const outputChannel = getOutputChannel();
-        
-        outputChannel.appendLine('[DEBUG] ========== fixDiagnostic called ==========');
-        outputChannel.appendLine('[DEBUG] Diagnostic: ' + diagnostic.errorType + ' at ' + diagnostic.fileName + ':' + diagnostic.lineNumber);
-        outputChannel.appendLine('[DEBUG] Extension context exists: ' + !!extensionContext);
-        
+
+        // Always create the webview — it is the primary UI for fix progress,
+        // diffs, and errors.
         if (extensionContext) {
-            outputChannel.appendLine('[DEBUG] Creating/showing webview...');
             webviewProvider.createOrShow(extensionContext);
-            webviewProvider.clear();
+            if (clearWebview) {
+                webviewProvider.clear();
+            }
             notifyQueueState();
-        } else {
-            outputChannel.appendLine('[DEBUG] ERROR: No extension context!');
         }
 
-        const progressLocation = options?.suppressProgressNotification
-            ? vscode.ProgressLocation.Window
-            : vscode.ProgressLocation.Notification;
+        // Use window progress (status bar) instead of notification popup
         const result = await vscode.window.withProgress(
             {
-                location: progressLocation,
+                location: vscode.ProgressLocation.Window,
                 title: progressTitle,
-                cancellable: !options?.suppressProgressNotification,
+                cancellable: false,
             },
-            async (progress, token) => {
-                if (!options?.suppressProgressNotification) {
-                    token.onCancellationRequested(() => {
-                        cancellationTokenSource.cancel();
-                    });
-                }
-
+            async (progress) => {
                 progress.report({ message: 'Analyzing error...', increment: 0 });
 
                 const resolvedPath = resolveFilePath(diagnostic.fileName, workspaceRoot);
@@ -515,31 +488,37 @@ async function fixSingleDiagnostic(
                     : '';
 
                 const taskId = webviewProvider.nextMessageId();
-                outputChannel.appendLine('[DEBUG] Task ID: ' + taskId);
-                outputChannel.appendLine('[DEBUG] Sending task info to webview...');
+
+                // Show the user prompt in the webview as a user message bubble
+                const userMessageId = webviewProvider.nextMessageId();
+                const userPromptSummary =
+                    '📝 Fix ' + diagnostic.errorType +
+                    ' at ' + path.basename(diagnostic.fileName) + ':' + diagnostic.lineNumber +
+                    (diagnostic.kernelName ? ' (kernel: ' + diagnostic.kernelName + ')' : '');
+                webviewProvider.postMessage({
+                    type: 'user_message',
+                    payload: {
+                        messageId: userMessageId,
+                        text: userPromptSummary,
+                    },
+                });
+
+                // Also stream the task info as assistant context
                 webviewProvider.postMessage({
                     type: 'text_stream',
                     payload: {
                         messageId: taskId,
-                        delta: '📝 Task: Fix ' + diagnostic.errorType + ' at line ' + diagnostic.lineNumber + '\n'
+                        delta: 'Analyzing ' + diagnostic.errorType + ' at line ' + diagnostic.lineNumber + '...\n'
                     }
                 });
 
-                webviewProvider.postMessage({
-                    type: 'text_stream',
-                    payload: {
-                        messageId: taskId,
-                        delta: 'File: ' + path.basename(diagnostic.fileName) + '\n\n'
-                    }
-                });
-
-                outputChannel.appendLine('[DEBUG] Starting backend.executeFix...');
+                const activeMessageIds = new Set<string>();
+                activeMessageIds.add(taskId);
                 const callbacks: FixCallbacks = {
                     onMessageChunk: (chunk: StreamChunk, messageId: string) => {
                         if (cancellationTokenSource.token.isCancellationRequested) return;
-                        outputChannel.appendLine('[DEBUG] onMessageChunk: type=' + chunk.type + ' delta=' + (chunk.delta?.substring(0, 30) || 'null'));
                         if (chunk.type === 'text_delta' && chunk.delta) {
-                            outputChannel.appendLine('[DEBUG] Sending to webview: text_stream');
+                            activeMessageIds.add(messageId);
                             webviewProvider.postMessage({
                                 type: 'text_stream',
                                 payload: { messageId, delta: chunk.delta }
@@ -582,13 +561,19 @@ async function fixSingleDiagnostic(
                             case 'session_start':
                                 webviewProvider.postMessage({
                                     type: 'session_start',
-                                    payload: payload as { backend: string; mode?: string },
+                                    payload: payload as { backend: string; mode?: string; model?: string },
+                                });
+                                break;
+                            case 'session_metadata':
+                                webviewProvider.postMessage({
+                                    type: 'session_metadata',
+                                    payload: payload as { opencodeSessionId?: string },
                                 });
                                 break;
                             case 'session_end':
                                 webviewProvider.postMessage({
                                     type: 'session_end',
-                                    payload: payload as { success: boolean; finalMessage: string },
+                                    payload: payload as { success: boolean; outcome: 'applied' | 'no_change' | 'failed'; finalMessage: string },
                                 });
                                 break;
                             case 'status':
@@ -600,7 +585,7 @@ async function fixSingleDiagnostic(
                             case 'backend_info':
                                 webviewProvider.postMessage({
                                     type: 'backend_info',
-                                    payload: payload as { backend: string; mode: string; degraded?: boolean },
+                                    payload: payload as { backend: string; mode: string; model?: string },
                                 });
                                 break;
                             case 'step_update':
@@ -619,23 +604,29 @@ async function fixSingleDiagnostic(
                     type: 'backend_info',
                     payload: {
                         backend: backend.name,
-                        mode: config.provider === 'opencode' ? (config.opencodeMode || 'cli') : 'openai-compatible',
-                        degraded: config.provider === 'opencode' && config.opencodeMode === 'cli',
+                        mode: config.opencodeMode,
+                        model: config.modelFullName,
                     },
                 });
 
-                const fixResult = await backend.executeFix(
-                    diagnostic,
-                    { workspaceRoot, extensionContext },
-                    callbacks,
-                );
+                let fixResult: FixResult;
+                try {
+                    fixResult = await backend.executeFix(
+                        diagnostic,
+                        { workspaceRoot, extensionContext },
+                        callbacks,
+                    );
 
-                if (!cancellationTokenSource.token.isCancellationRequested) {
-                    if (fixResult.fileChanged && fixResult.originalContent !== undefined && fixResult.newContent !== undefined) {
-                        const outputChannel = getOutputChannel();
-                        outputChannel.appendLine(`[DEBUG] Original length: ${fixResult.originalContent.length}, New length: ${fixResult.newContent.length}`);
-                        outputChannel.appendLine(`[DEBUG] Files differ: ${fixResult.originalContent !== fixResult.newContent}`);
-                        outputChannel.appendLine(`[DEBUG] Sending final_diff message`);
+                    // Note: session_end is already sent by the session via onEvent callback.
+                    // Only send final_diff here; don't send session_end again.
+                    if (
+                        !cancellationTokenSource.token.isCancellationRequested
+                        && fixResult.outcome === 'applied'
+                        && fixResult.success
+                        && fixResult.fileChanged
+                        && fixResult.originalContent !== undefined
+                        && fixResult.newContent !== undefined
+                    ) {
                         webviewProvider.postMessage({
                             type: 'final_diff',
                             payload: {
@@ -645,42 +636,33 @@ async function fixSingleDiagnostic(
                                 message: fixResult.finalMessage
                             }
                         });
-                    } else if (!fixResult.success) {
-                        outputChannel.appendLine(`[DEBUG] Fix failed: ${fixResult.finalMessage}`);
+                    }
+                } finally {
+                    for (const msgId of activeMessageIds) {
                         webviewProvider.postMessage({
-                            type: 'error',
-                            payload: { message: fixResult.finalMessage }
-                        });
-                    } else {
-                        outputChannel.appendLine(`[DEBUG] No changes detected`);
-                        webviewProvider.postMessage({
-                            type: 'error',
-                            payload: { message: 'No changes were made to the file. The LLM may not have called edit_file correctly.' }
+                            type: 'message_complete',
+                            payload: { messageId: msgId }
                         });
                     }
-                    webviewProvider.postMessage({
-                        type: 'message_complete',
-                        payload: { messageId: webviewProvider.nextMessageId() }
-                    });
-                } else {
-                    webviewProvider.postMessage({
-                        type: 'error',
-                        payload: { message: 'Fix stopped.' }
-                    });
                 }
 
-                return fixResult;
+                return fixResult!;
             },
         );
 
         if (cancellationTokenSource.token.isCancellationRequested) {
             return { status: 'stopped' };
         }
+        if (result.outcome === 'no_change') {
+            return { status: 'no_change' };
+        }
         if (!result.success) {
             return { status: 'failed' };
         }
         return { status: 'completed' };
     } catch (e) {
+        // Session already sends session_end via onEvent callback on error.
+        // Just show the VSCode error notification here.
         handleFixError(e, config);
         return { status: 'failed' };
     } finally {
@@ -690,60 +672,87 @@ async function fixSingleDiagnostic(
     }
 }
 
-function showFixDetails(diagnostic: SanitizerDiagnostic, result: FixResult) {
-    const channel = getOutputChannel();
-    const workspaceRoot = vscode.workspace.rootPath || '.';
-    const resolvedPath = resolveFilePath(diagnostic.fileName, workspaceRoot);
-    channel.clear();
-    channel.appendLine(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-    channel.appendLine(`Fix Applied: ${diagnostic.errorType}`);
-    channel.appendLine(`File: ${resolvedPath}:${diagnostic.lineNumber}`);
-    channel.appendLine(`Tool Calls: ${result.toolCallCount}`);
-    channel.appendLine(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-    channel.appendLine('');
-    channel.appendLine('Agent Response:');
-    channel.appendLine(result.finalMessage);
-    channel.appendLine('');
-    channel.appendLine('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    channel.show(true);
+function formatOpenCodeConnectionError(
+    message: string,
+    config: ReturnType<typeof getLLMConfig>,
+): string {
+    const mode = config.opencodeMode;
+    let friendly = '❌ msAgent fix failed\n\n';
+    friendly += `OpenCode ${mode} mode failed.\n\n`;
+    friendly += 'Current configuration:\n';
+    friendly += `• CLI path: ${config.opencodeCliPath}\n`;
+    if (mode === 'server') {
+        friendly += `• Server port: ${config.opencodeServePort}\n`;
+    } else {
+        friendly += `• ACP args: ${config.opencodeAcpArgs.join(' ')}\n`;
+    }
+    friendly += '\n';
+    friendly += 'Underlying error:\n';
+    friendly += `${message}\n\n`;
+    friendly += 'Please ensure:\n';
+    friendly += '• OpenCode is installed and available in your PATH\n';
+    if (mode === 'server') {
+        friendly += `• If using server mode, start OpenCode with \`opencode serve --port ${config.opencodeServePort}\`\n`;
+    } else {
+        friendly += `• If using ACP mode, verify \`${config.opencodeCliPath} ${config.opencodeAcpArgs.join(' ')}\` works in the same environment as VS Code\n`;
+    }
+    friendly += '• Review the msAgent settings if the CLI path, mode, or timeout changed';
+    return friendly;
 }
 
 function handleFixError(e: unknown, config: ReturnType<typeof getLLMConfig>) {
-    if (e instanceof LLMProviderError) {
-        let friendly = '❌ msAgent fix failed\n\n';
-        switch (e.code) {
-            case 'CONNECTION_REFUSED':
-                friendly += `Cannot connect to LLM at ${config.endpoint}.\n\n`;
-                friendly += 'Please ensure:\n';
-                friendly += '• Ollama is running: `ollama serve`\n';
-                friendly += '• Model is pulled: `ollama pull qwen3:8b`\n';
-                friendly += '• Endpoint is correct in settings';
-                break;
-            case 'TIMEOUT':
-                friendly += 'LLM request timed out.\n\n';
-                friendly += 'Suggestions:\n';
-                friendly += '• Use a smaller model (qwen3:8b instead of 30b)\n';
-                friendly += '• Increase timeoutMs setting (current: ' + config.timeoutMs + 'ms)\n';
-                friendly += '• Simplify the fix by fixing one error at a time\n';
-                friendly += '• Check system resources (CPU/memory utilization)';
-                break;
-            case 'HTTP_ERROR':
-                friendly += `LLM returned HTTP error:\n${e.message}`;
-                break;
-            case 'INVALID_RESPONSE':
-                friendly += 'LLM returned an invalid response.\n\n';
-                friendly += 'Try a different model or check model compatibility.';
-                break;
-            default:
-                friendly += e.message;
-        }
-        vscode.window.showErrorMessage(friendly, 'Open Settings').then(action => {
+    const message = e instanceof Error ? e.message : String(e);
+    if (
+        message.includes('Transport error')
+        || message.includes('ECONNREFUSED')
+        || message.includes('request error')
+        || message.includes('response error')
+        || message.includes('OpenCode CLI not found')
+    ) {
+        const friendly = formatOpenCodeConnectionError(message, config);
+        vscode.window.showErrorMessage(friendly, 'Open Settings').then((action) => {
             if (action === 'Open Settings') {
                 vscode.commands.executeCommand('workbench.action.openSettings', 'msagent');
             }
         });
-    } else {
-        const message = e instanceof Error ? e.message : String(e);
-        vscode.window.showErrorMessage(`msAgent fix failed: ${message}`);
+        return;
     }
+
+    vscode.window.showErrorMessage(`msAgent fix failed: ${message}`);
+}
+
+// For tests only
+export function _resetFixState() {
+    fixQueue.length = 0;
+    isProcessingFixQueue = false;
+    activeFixKey = undefined;
+    activeSanitizerIndex = undefined;
+    pauseRequested = false;
+    cancelCurrentRequested = false;
+    clearConversationOnIdleAfterCancel = false;
+    currentCancellationTokenSource = undefined;
+    activeFixTitle = undefined;
+    pausedActiveFixTask = undefined;
+    fixedSanitizerIndices.clear();
+}
+
+export function _enqueueFixTask(task: Omit<QueuedFixTask, 'id'> & { id?: string }) {
+    fixQueue.push({ ...task, id: task.id || `test_${Math.random()}` });
+}
+
+export function _setActiveFix(index: number, title?: string) {
+    activeSanitizerIndex = index;
+    activeFixTitle = title;
+}
+
+export function _setPausedFix(task: QueuedFixTask | undefined) {
+    pausedActiveFixTask = task;
+}
+
+export function _setPauseRequested(v: boolean) {
+    pauseRequested = v;
+}
+
+export function _addFixedIndex(index: number) {
+    fixedSanitizerIndices.add(index);
 }

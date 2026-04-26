@@ -1,0 +1,8 @@
+{
+  "description": "Model echoes the original file without a terminal marker. Session should fail with the unexplained no-op fallback.",
+  "steps": [
+    { "kind": "event", "event": { "type": "text", "part": { "text": "```cpp\nint main() { return 0; }\n```" } } },
+    { "kind": "event", "event": { "type": "done" } },
+    { "kind": "close", "exitCode": 0 }
+  ]
+}

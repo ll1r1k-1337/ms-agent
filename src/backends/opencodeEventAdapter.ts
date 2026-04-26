@@ -1,8 +1,22 @@
 export interface OpenCodeEvent {
     type?: string;
     part?: unknown;
+    properties?: unknown;
     error?: unknown;
     [key: string]: unknown;
+}
+
+function resolvePart(event: unknown): unknown {
+    if (!isRecordLike(event)) { return undefined; }
+    // OpenCode SSE events nest part under properties: { type, properties: { part: {...} } }
+    if (isRecordLike(event.properties) && event.properties.part !== undefined) {
+        return event.properties.part;
+    }
+    // Direct part access (CLI JSON mode)
+    if (event.part !== undefined) {
+        return event.part;
+    }
+    return undefined;
 }
 
 export interface ToolCallInfo {
@@ -19,6 +33,80 @@ export interface ToolResultInfo {
 
 function isRecordLike(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === 'object';
+}
+
+function readStringField(record: Record<string, unknown>, ...keys: string[]): string | undefined {
+    for (const key of keys) {
+        const value = record[key];
+        if (typeof value === 'string' && value.length > 0) {
+            return value;
+        }
+    }
+    return undefined;
+}
+
+export function extractSessionId(event: unknown): string | null {
+    if (!isRecordLike(event)) {
+        return null;
+    }
+    const topLevel = readStringField(event, 'sessionID', 'sessionId');
+    if (topLevel) {
+        return topLevel;
+    }
+    if (isRecordLike(event.properties)) {
+        const nested = readStringField(event.properties, 'sessionID', 'sessionId');
+        if (nested) {
+            return nested;
+        }
+        if (isRecordLike(event.properties.info)) {
+            const fromInfo = readStringField(event.properties.info, 'sessionID', 'sessionId');
+            if (fromInfo) {
+                return fromInfo;
+            }
+        }
+    }
+    const part = resolvePart(event);
+    if (isRecordLike(part)) {
+        return readStringField(part, 'sessionID', 'sessionId') ?? null;
+    }
+    return null;
+}
+
+export function extractMessageRole(event: unknown): string | null {
+    if (!isRecordLike(event)) {
+        return null;
+    }
+    if (typeof event.role === 'string') {
+        return event.role;
+    }
+    if (isRecordLike(event.properties) && isRecordLike(event.properties.info)) {
+        return readStringField(event.properties.info, 'role') ?? null;
+    }
+    return null;
+}
+
+export function extractMessageId(event: unknown): string | null {
+    if (!isRecordLike(event)) {
+        return null;
+    }
+    if (typeof event.messageID === 'string') {
+        return event.messageID;
+    }
+    if (typeof event.messageId === 'string') {
+        return event.messageId;
+    }
+    if (isRecordLike(event.properties) && isRecordLike(event.properties.info)) {
+        return readStringField(event.properties.info, 'id', 'messageID', 'messageId') ?? null;
+    }
+    return null;
+}
+
+export function extractPartMessageId(event: unknown): string | null {
+    const part = resolvePart(event);
+    if (!isRecordLike(part)) {
+        return null;
+    }
+    return readStringField(part, 'messageID', 'messageId') ?? null;
 }
 
 export function safeParseParams(maybeJson: unknown): Record<string, unknown> {
@@ -129,10 +217,16 @@ export function extractToolCall(event: unknown): ToolCallInfo | null {
     }
 
     if (isToolUseEvent(event)) {
-        const part = event.part;
+        const part = resolvePart(event);
         if (isToolUsePart(part)) {
             const name = part.tool || part.toolName || part.name;
             if (name) {
+                if (isRecordLike(part.state)) {
+                    const stateType = readStringField(part.state, 'type', 'status');
+                    if (stateType && stateType !== 'pending') {
+                        return null;
+                    }
+                }
                 let params: Record<string, unknown>;
                 if (isRecordLike(part.state)) {
                     params = safeParseParams(part.state.input);
@@ -153,11 +247,33 @@ export function extractToolCall(event: unknown): ToolCallInfo | null {
         }
     }
 
-    const part = event.part;
+    const part = resolvePart(event);
     if (isToolCallPart(part)) {
-        const name = resolveToolName(part);
+        const tc = part.tool_call || part.toolCall || part;
+        const name = resolveToolName(tc);
         if (name) {
-            return { name, params: resolveToolParams(part), toolCallId: resolveToolCallId(part) };
+            return { name, params: resolveToolParams(tc), toolCallId: resolveToolCallId(tc) };
+        }
+    }
+
+    // Handle OpenAI-style tool_calls array in choices
+    if (isRecordLike(event.choices) && Array.isArray(event.choices) && event.choices.length > 0) {
+        const choice = event.choices[0];
+        if (isRecordLike(choice)) {
+            const message = choice.message || choice.delta;
+            if (isRecordLike(message) && Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
+                const tc = message.tool_calls[0];
+                if (isRecordLike(tc)) {
+                    const fn = tc.function;
+                    if (isRecordLike(fn) && typeof fn.name === 'string') {
+                        return {
+                            name: fn.name,
+                            params: safeParseParams(fn.arguments),
+                            toolCallId: (typeof tc.id === 'string' ? tc.id : undefined) || 'unknown',
+                        };
+                    }
+                }
+            }
         }
     }
 
@@ -196,11 +312,14 @@ export function extractToolResult(event: unknown): ToolResultInfo | null {
     }
 
     if (isToolUseEvent(event)) {
-        const part = event.part;
+        const part = resolvePart(event);
         if (isToolUsePart(part) && isRecordLike(part.state)) {
-            const status = part.state.status;
-            const isError = status === 'error' || status === 'failed';
-            const result = part.state.result ?? part.state.output ?? part.state.data ?? `Status: ${status}`;
+            const stateType = readStringField(part.state, 'type', 'status');
+            if (!stateType || (stateType !== 'completed' && stateType !== 'error' && stateType !== 'failed')) {
+                return null;
+            }
+            const isError = stateType === 'error' || stateType === 'failed' || !!part.state.error;
+            const result = part.state.result ?? part.state.output ?? part.state.data ?? `Status: ${stateType}`;
             const toolCallId =
                 (typeof part.callID === 'string' ? part.callID : undefined) ||
                 (typeof part.callId === 'string' ? part.callId : undefined) ||
@@ -214,17 +333,38 @@ export function extractToolResult(event: unknown): ToolResultInfo | null {
         }
     }
 
-    const part = event.part;
-    if (isToolResultPart(part)) {
+    const part = resolvePart(event);
+    if (isToolUsePart(part) && isRecordLike(part.state)) {
+        const stateType = readStringField(part.state, 'type', 'status');
+        if (!stateType || (stateType !== 'completed' && stateType !== 'error' && stateType !== 'failed')) {
+            return null;
+        }
         const toolCallId =
+            (typeof part.callID === 'string' ? part.callID : undefined) ||
+            (typeof part.callId === 'string' ? part.callId : undefined) ||
+            (typeof part.id === 'string' ? part.id : undefined) ||
+            'unknown';
+        const result = part.state.result ?? part.state.output ?? part.state.data ?? `Status: ${stateType}`;
+        return {
+            toolCallId,
+            result: typeof result === 'string' ? result : JSON.stringify(result),
+            isError: stateType === 'error' || stateType === 'failed' || !!part.state.error,
+        };
+    }
+    if (isToolResultPart(part)) {
+        const trRaw = part.tool_result || part.toolResult || part;
+        const tr = isRecordLike(trRaw) ? trRaw : {};
+        const toolCallId =
+            (typeof tr.toolCallId === 'string' ? tr.toolCallId : undefined) ||
+            (typeof tr.id === 'string' ? tr.id : undefined) ||
+            (typeof tr.tool_call_id === 'string' ? tr.tool_call_id : undefined) ||
             (typeof part.toolCallId === 'string' ? part.toolCallId : undefined) ||
             (typeof part.id === 'string' ? part.id : undefined) ||
-            (typeof part.tool_call_id === 'string' ? part.tool_call_id : undefined) ||
             'unknown';
         return {
             toolCallId,
-            result: resolveResultValue(part),
-            isError: !!(part.isError || part.error),
+            result: resolveResultValue(tr),
+            isError: !!(tr.isError || tr.error),
         };
     }
 
@@ -252,39 +392,176 @@ export function parseEventLine(line: string): OpenCodeEvent | null {
 }
 
 export function extractTextDelta(event: OpenCodeEvent): string | null {
-    if (isRecordLike(event.part) && typeof event.part.text === 'string') {
-        return event.part.text;
+    // 1. Check properties.part (OpenCode SSE bus event format)
+    const part = resolvePart(event);
+    if (isRecordLike(part)) {
+        if (typeof part.text === 'string') {
+            return part.text;
+        }
+        if (typeof part.content === 'string') {
+            return part.content;
+        }
+        if (typeof part.delta === 'string') {
+            return part.delta;
+        }
+        if (typeof part.output === 'string') {
+            return part.output;
+        }
+        if (typeof part.message === 'string') {
+            return part.message;
+        }
+        if (isRecordLike(part.delta) && typeof part.delta.content === 'string') {
+            return part.delta.content;
+        }
     }
+
+    // 2. Check properties directly (alternative nesting)
+    if (isRecordLike(event.properties)) {
+        const props = event.properties;
+        if (typeof props.text === 'string') { return props.text; }
+        if (typeof props.content === 'string') { return props.content; }
+        if (typeof props.delta === 'string') { return props.delta; }
+        if (typeof props.message === 'string') { return props.message; }
+    }
+
+    // 3. Check parts array (OpenCode message response format)
+    if (isRecordLike(event.parts) && Array.isArray(event.parts) && event.parts.length > 0) {
+        const firstPart = event.parts[0];
+        if (isRecordLike(firstPart)) {
+            if (typeof firstPart.text === 'string') { return firstPart.text; }
+            if (typeof firstPart.content === 'string') { return firstPart.content; }
+            if (typeof firstPart.delta === 'string') { return firstPart.delta; }
+        }
+    }
+
+    // 4. Check top-level fields
     if (typeof event.text === 'string') {
         return event.text;
+    }
+    if (typeof event.content === 'string') {
+        return event.content;
+    }
+    if (typeof event.delta === 'string') {
+        return event.delta;
+    }
+    if (typeof event.output === 'string') {
+        return event.output;
+    }
+    if (typeof event.message === 'string') {
+        return event.message;
+    }
+    if (typeof event.response === 'string') {
+        return event.response;
+    }
+
+    // 5. Check OpenAI-style choices
+    if (isRecordLike(event.choices) && Array.isArray(event.choices) && event.choices.length > 0) {
+        const choice = event.choices[0];
+        if (isRecordLike(choice)) {
+            if (isRecordLike(choice.delta) && typeof choice.delta.content === 'string') {
+                return choice.delta.content;
+            }
+            if (isRecordLike(choice.message) && typeof choice.message.content === 'string') {
+                return choice.message.content;
+            }
+        }
     }
     return null;
 }
 
 export function extractErrorMessage(event: OpenCodeEvent): string | null {
-    if (event.error === undefined) {
-        return null;
-    }
-    if (typeof event.error === 'string') {
-        return event.error;
-    }
-    if (isRecordLike(event.error)) {
-        const data = event.error.data;
-        if (isRecordLike(data) && typeof data.message === 'string') {
-            return data.message;
-        }
-        if (typeof event.error.message === 'string') {
-            return event.error.message;
+    const candidates: unknown[] = [event.error];
+    if (isRecordLike(event.properties)) {
+        candidates.push(event.properties.error);
+        if (isRecordLike(event.properties.info)) {
+            candidates.push(event.properties.info.error);
         }
     }
-    try {
-        return JSON.stringify(event.error);
-    } catch {
-        return String(event.error);
+
+    for (const candidate of candidates) {
+        if (candidate === undefined) {
+            continue;
+        }
+        if (typeof candidate === 'string') {
+            return candidate;
+        }
+        if (isRecordLike(candidate)) {
+            const data = candidate.data;
+            if (isRecordLike(data) && typeof data.message === 'string') {
+                return data.message;
+            }
+            if (typeof candidate.message === 'string') {
+                return candidate.message;
+            }
+        }
+        try {
+            return JSON.stringify(candidate);
+        } catch {
+            return String(candidate);
+        }
     }
+
+    return null;
 }
 
+/**
+ * Hard, protocol-level terminal events. These are the ONLY signals that may
+ * advance the session to applying_patch. Soft-close signals such as
+ * `session.idle` / `server.disconnect` are intentionally NOT in this list —
+ * they only mean "the wire went quiet", not "the model is done".
+ */
+const HARD_TERMINAL_TYPES: ReadonlySet<string> = new Set([
+    'step_end',
+    'message_end',
+    'done',
+    'complete',
+    'finish',
+    'stop',
+    'session.end',
+    'session.done',
+]);
+
+const SOFT_CLOSE_TYPES: ReadonlySet<string> = new Set([
+    'session.idle',
+    'session.error',
+    'server.disconnect',
+    'end',
+]);
+
 export function isCompletionEvent(event: OpenCodeEvent): boolean {
-    const completionTypes = ['step_end', 'message_end', 'done', 'complete', 'finish'];
-    return completionTypes.includes(event.type ?? '');
+    const t = event.type ?? '';
+    if (HARD_TERMINAL_TYPES.has(t)) {
+        return true;
+    }
+    if (event.type === 'message.updated' && isRecordLike(event.properties)) {
+        const info = (event.properties as Record<string, unknown>).info;
+        if (isRecordLike(info)) {
+            if (info.role !== 'assistant') {
+                return false;
+            }
+            const time = (info as Record<string, unknown>).time;
+            if (isRecordLike(time)) {
+                const completed = (time as Record<string, unknown>).completed;
+                if (typeof completed === 'number' && completed > 0) {
+                    return true;
+                }
+            }
+        }
+    }
+    if (isRecordLike(event.choices) && Array.isArray(event.choices) && event.choices.length > 0) {
+        const choice = event.choices[0];
+        if (isRecordLike(choice) && choice.finish_reason) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Soft-close signals: the wire went quiet but the model has NOT explicitly
+ * said it's done. The session layer maps these to TRANSPORT_CLOSED, which
+ * (per the state machine) becomes an error if no hard terminal was seen.
+ */
+export function isSoftCloseEvent(event: OpenCodeEvent): boolean {
+    return SOFT_CLOSE_TYPES.has(event.type ?? '');
 }

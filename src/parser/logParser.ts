@@ -7,8 +7,8 @@ import {
 export { ParseResult, parseLog, parseLogFile };
 
 const HEADER_RE = /^====== (ERROR|WARNING): (.+)$/;
-const DETAIL_RE = /^======    (.+)$/;
-const LEAK_HEADER_RE = /^======    (Direct leak|WARNING: Unused memory) (.+)$/;
+const DETAIL_RE = /^====== {4}(.+)$/;
+const LEAK_HEADER_RE = /^====== {4}(Direct leak|WARNING: Unused memory) (.+)$/;
 const ADDRESS_RE = /at (0x[0-9a-fA-F]+)/;
 const SPACE_RE = /on (GM|UB|L1|L0A|L0B|L0C)/;
 const KERNEL_RE = /in (\S+)$/;

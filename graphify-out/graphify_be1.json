@@ -1,0 +1,33 @@
+{
+  "nodes": [
+    {"id": "backendFactory.ts", "label": "backendFactory.ts", "file_type": "code", "source_file": "src/backends/backendFactory.ts"},
+    {"id": "fixBackend.ts", "label": "fixBackend.ts", "file_type": "code", "source_file": "src/backends/fixBackend.ts"},
+    {"id": "builtInFixBackend.ts", "label": "builtInFixBackend.ts", "file_type": "code", "source_file": "src/backends/builtInFixBackend.ts"},
+    {"id": "createFixBackend", "label": "createFixBackend", "file_type": "function", "source_file": "src/backends/backendFactory.ts"},
+    {"id": "FixBackend", "label": "FixBackend", "file_type": "interface", "source_file": "src/backends/fixBackend.ts"},
+    {"id": "FixCallbacks", "label": "FixCallbacks", "file_type": "interface", "source_file": "src/backends/fixBackend.ts"},
+    {"id": "FixContext", "label": "FixContext", "file_type": "interface", "source_file": "src/backends/fixBackend.ts"},
+    {"id": "FixResult", "label": "FixResult", "file_type": "interface", "source_file": "src/backends/fixBackend.ts"},
+    {"id": "BuiltInFixBackend", "label": "BuiltInFixBackend", "file_type": "class", "source_file": "src/backends/builtInFixBackend.ts"},
+    {"id": "executeFix", "label": "executeFix", "file_type": "method", "source_file": "src/backends/builtInFixBackend.ts"},
+    {"id": "runAgent", "label": "runAgent", "file_type": "function", "source_file": "src/agent/agentLoop.ts"},
+    {"id": "OpenAICompatProvider", "label": "OpenAICompatProvider", "file_type": "class", "source_file": "src/llm/openaiCompatProvider.ts"}
+  ],
+  "edges": [
+    {"source": "backendFactory.ts", "target": "fixBackend.ts", "relation": "references", "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "src/backends/backendFactory.ts"},
+    {"source": "backendFactory.ts", "target": "builtInFixBackend.ts", "relation": "references", "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "src/backends/backendFactory.ts"},
+    {"source": "createFixBackend", "target": "BuiltInFixBackend", "relation": "calls", "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "src/backends/backendFactory.ts"},
+    {"source": "BuiltInFixBackend", "target": "FixBackend", "relation": "implements", "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "src/backends/builtInFixBackend.ts"},
+    {"source": "builtInFixBackend.ts", "target": "fixBackend.ts", "relation": "references", "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "src/backends/builtInFixBackend.ts"},
+    {"source": "executeFix", "target": "runAgent", "relation": "calls", "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "src/backends/builtInFixBackend.ts"},
+    {"source": "executeFix", "target": "OpenAICompatProvider", "relation": "calls", "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "src/backends/builtInFixBackend.ts"},
+    {"source": "backendFactory.ts", "target": "FixBackend", "relation": "references", "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "src/backends/backendFactory.ts"},
+    {"source": "backendFactory.ts", "target": "BuiltInFixBackend", "relation": "references", "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "src/backends/backendFactory.ts"},
+    {"source": "FixBackend", "target": "FixResult", "relation": "references", "confidence": "INFERRED", "confidence_score": 0.9, "source_file": "src/backends/fixBackend.ts"},
+    {"source": "FixBackend", "target": "FixContext", "relation": "references", "confidence": "INFERRED", "confidence_score": 0.9, "source_file": "src/backends/fixBackend.ts"},
+    {"source": "FixBackend", "target": "FixCallbacks", "relation": "references", "confidence": "INFERRED", "confidence_score": 0.9, "source_file": "src/backends/fixBackend.ts"}
+  ],
+  "hyperedges": [],
+  "input_tokens": 0,
+  "output_tokens": 0
+}

@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src {{cspSource}} 'unsafe-inline'; script-src 'nonce-{{nonce}}'; img-src {{cspSource}} https: data:;">
+    <title>msAgent Fix Details</title>
+    <link nonce="{{nonce}}" rel="stylesheet" href="{{styleUri}}">
+</head>
+<body>
+    <div id="app">
+        <header id="session-header" class="session-header">
+            <div class="session-topline">
+                <div class="session-live">
+                    <span id="live-indicator" class="live-indicator is-waiting"></span>
+                    <span id="session-phase" class="session-phase">等待中</span>
+                    <span id="queue-badge" class="queue-badge hidden">队列 0</span>
+                </div>
+                <div class="session-actions">
+                    <button id="stopBtn" class="ghost-btn hidden" type="button">Pause</button>
+                    <button id="cancelBtn" class="danger-btn hidden" type="button">Cancel</button>
+                </div>
+            </div>
+            <h1 id="session-target" class="session-target">准备开始下一次修复</h1>
+            <p id="session-subtitle" class="session-subtitle">Agent 开始工作后，这里会先告诉你它现在在做什么。</p>
+            <div class="session-meta">
+                <span id="meta-backend" class="meta-pill">Backend: -</span>
+                <span id="meta-mode" class="meta-pill">Mode: -</span>
+                <span id="meta-model" class="meta-pill">Model: -</span>
+                <span id="meta-session" class="meta-pill">OpenCode session: -</span>
+                <span id="meta-elapsed" class="meta-pill">耗时: 00:00</span>
+                <span id="meta-queue" class="meta-pill">队列: 0</span>
+            </div>
+        </header>
+
+        <main id="messages" class="workspace">
+            <section id="waiting-indicator" class="empty-state">
+                <div class="spinner"></div>
+                <div class="empty-title">等待 Agent 开始</div>
+                <div class="empty-detail">执行修复命令后，这里会立即显示当前动作和结果。</div>
+            </section>
+
+            <section id="activity-panel" class="panel hidden">
+                <div class="section-head">
+                    <h2>当前动作</h2>
+                    <span id="current-step-state" class="section-meta">Idle</span>
+                </div>
+                <div class="action-card">
+                    <div id="current-step-title" class="current-step-title">等待修复任务</div>
+                    <div id="current-step-detail" class="current-step-detail">msAgent 会持续更新 Agent 正在分析、编辑或验证的动作。</div>
+                </div>
+            </section>
+
+            <section id="result-panel" class="panel hidden">
+                <div class="section-head">
+                    <h2>结果</h2>
+                    <span id="result-state" class="section-meta">Pending</span>
+                </div>
+                <div id="result-card" class="result-card is-pending">
+                    <div id="result-title" class="result-title">等待结果</div>
+                    <div id="result-message" class="result-message">修复完成后，这里会给出最关键的结果信息。</div>
+                    <div id="result-summary" class="result-summary hidden"></div>
+                    <pre id="result-diff-preview" class="result-diff-preview hidden"></pre>
+                </div>
+            </section>
+
+            <details id="technical-details" class="technical-details">
+                <summary>Technical details</summary>
+                <div id="message-container" class="technical-log"></div>
+            </details>
+        </main>
+    </div>
+
+    <script nonce="{{nonce}}" src="{{scriptUri}}"></script>
+</body>
+</html>

@@ -1,21 +1,23 @@
 import { expect } from 'chai';
-import * as sinon from 'sinon';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import * as toolHandlers from '../tools/toolHandlers';
-import { OpenCodeSession, OpenCodeSessionCallbacks } from './opencodeSession';
+import { OpenCodeSession, OpenCodeSessionCallbacks, detectPlaceholderResponse } from './opencodeSession';
 import { OpenCodeTransport } from './opencodeTransport';
 
 class MockTransport implements OpenCodeTransport {
     private eventCallback?: (event: unknown) => void;
+    private progressCallback?: (message: string) => void;
     private errorCallback?: (error: Error) => void;
     private closeCallback?: (exitCode: number | null) => void;
-    public sent: unknown[] = [];
     public cancelled = false;
 
     onEvent(cb: (event: unknown) => void): void {
         this.eventCallback = cb;
+    }
+
+    onProgress(cb: (message: string) => void): void {
+        this.progressCallback = cb;
     }
 
     onError(cb: (error: Error) => void): void {
@@ -26,19 +28,10 @@ class MockTransport implements OpenCodeTransport {
         this.closeCallback = cb;
     }
 
-    start(_prompt: string): void {
-    }
-
-    send(data: unknown): void {
-        this.sent.push(data);
-    }
-
-    cancel(): void {
-        this.cancelled = true;
-    }
-
-    dispose(): void {
-    }
+    start(_prompt: string): void {}
+    send(_data: unknown): void {}
+    cancel(): void { this.cancelled = true; }
+    dispose(): void {}
 
     emitEvent(event: unknown): void {
         this.eventCallback?.(event);
@@ -56,7 +49,6 @@ class MockTransport implements OpenCodeTransport {
 describe('OpenCodeSession', () => {
     let transport: MockTransport;
     let session: OpenCodeSession;
-    let executeToolStub: sinon.SinonStub;
     let tempDir: string;
     let testFilePath: string;
 
@@ -74,134 +66,198 @@ describe('OpenCodeSession', () => {
         fs.writeFileSync(testFilePath, 'int main() { return 0; }', 'utf-8');
         transport = new MockTransport();
         session = new OpenCodeSession(transport);
-        executeToolStub = sinon.stub(toolHandlers, 'executeTool').resolves('Success');
     });
 
     afterEach(() => {
-        sinon.restore();
         if (fs.existsSync(tempDir)) {
             fs.rmSync(tempDir, { recursive: true, force: true });
         }
     });
 
-    it('should complete successfully with code block', async () => {
-        const callbacks: OpenCodeSessionCallbacks = {
-            onMessageChunk: sinon.stub(),
-            onDiff: sinon.stub(),
-        };
-        session = new OpenCodeSession(transport, callbacks);
-
+    it('preserves the file when the model returns a code block instead of editing with tools', async () => {
         const runPromise = session.run(baseOptions());
         transport.emitEvent({ type: 'text', part: { text: '```cpp\nint main() { return 1; }\n```' } });
         transport.emitEvent({ type: 'done' });
         const result = await runPromise;
 
-        expect(result.success).to.be.true;
-        expect(result.fileChanged).to.be.true;
-        expect(result.toolCallCount).to.equal(0);
-        expect(result.originalContent).to.equal(baseOptions().originalContent);
-        expect(result.newContent).to.equal('int main() { return 1; }');
-        expect((callbacks.onDiff as sinon.SinonStub).calledOnce).to.be.true;
+        expect(result.success).to.equal(false);
+        expect(result.outcome).to.equal('failed');
+        expect(result.fileChanged).to.equal(false);
+        expect(result.finalMessage).to.include('code block');
+        expect(fs.readFileSync(testFilePath, 'utf-8')).to.equal('int main() { return 0; }');
     });
 
-    it('should return success=false when code is identical', async () => {
+    it('preserves the file when only a soft close arrives', async () => {
         const runPromise = session.run(baseOptions());
-        transport.emitEvent({ type: 'text', part: { text: '```cpp\nint main() { return 0; }\n```' } });
+        transport.emitEvent({ type: 'text', part: { text: '```cpp\nint main() { return 7; }\n```' } });
+        transport.emitEvent({ type: 'session.idle' });
+        transport.emitClose(0);
+        const result = await runPromise;
+
+        expect(result.success).to.equal(false);
+        expect(result.outcome).to.equal('failed');
+        expect(result.fileChanged).to.equal(false);
+        expect(fs.readFileSync(testFilePath, 'utf-8')).to.equal('int main() { return 0; }');
+    });
+
+    it('prefers native disk edits over text output when the file changed', async () => {
+        const runPromise = session.run(baseOptions());
+        transport.emitEvent({ type: 'text', part: { text: 'I have updated the file with my native tools.' } });
+        fs.writeFileSync(testFilePath, 'int main() { return 42; }', 'utf-8');
         transport.emitEvent({ type: 'done' });
         const result = await runPromise;
 
-        expect(result.success).to.be.false;
-        expect(result.fileChanged).to.be.false;
-        expect(result.newContent).to.be.undefined;
+        expect(result.success).to.equal(true);
+        expect(result.outcome).to.equal('applied');
+        expect(result.fileChanged).to.equal(true);
+        expect(result.newContent).to.equal('int main() { return 42; }');
     });
 
-    it('should handle tool_call event and send result back', async () => {
+    it('forwards OpenCode transport session metadata without treating it as completion', async () => {
+        const events: Array<{ type: string; payload: unknown }> = [];
+        session = new OpenCodeSession(transport, {
+            onEvent: (type, payload) => events.push({ type, payload }),
+        });
+
+        const runPromise = session.run(baseOptions());
+        transport.emitEvent({ type: 'session_start', sessionId: 'ses_metadata' });
+        transport.emitEvent({ type: 'text', part: { text: 'NO_FIX_NEEDED: already bounded.' } });
+        transport.emitEvent({ type: 'done' });
+        const result = await runPromise;
+
+        expect(events).to.deep.include({
+            type: 'session_metadata',
+            payload: { opencodeSessionId: 'ses_metadata' },
+        });
+        expect(result.outcome).to.equal('no_change');
+    });
+
+    it('streams diff events directly to callbacks', async () => {
         const callbacks: OpenCodeSessionCallbacks = {
-            onToolCall: sinon.stub(),
-            onToolResult: sinon.stub(),
+            onDiff: () => {},
+        };
+        let seenDiff: any[] | undefined;
+        callbacks.onDiff = (...args: any[]) => {
+            seenDiff = args;
         };
         session = new OpenCodeSession(transport, callbacks);
-        executeToolStub.resolves('File content here');
 
         const runPromise = session.run(baseOptions());
         transport.emitEvent({
-            type: 'tool_call',
-            tool_call: { name: 'read_file', arguments: '{"path":"test.cpp"}', id: 'tc1' },
+            type: 'diff',
+            path: testFilePath,
+            oldText: 'return 0',
+            newText: 'return 9',
+            toolCallId: 'tc_diff_1',
         });
-        await new Promise((r) => setImmediate(r));
-        transport.emitEvent({ type: 'text', part: { text: '```cpp\nint main() { return 2; }\n```' } });
         transport.emitEvent({ type: 'done' });
-        const result = await runPromise;
+        await runPromise;
 
-        expect(result.success).to.be.true;
-        expect(executeToolStub.calledOnce).to.be.true;
-        expect(executeToolStub.firstCall.args[0]).to.equal('read_file');
-        expect(executeToolStub.firstCall.args[1]).to.deep.equal({ path: 'test.cpp' });
-        expect(executeToolStub.firstCall.args[2]).to.deep.equal({ workspaceRoot: tempDir });
-
-        expect(transport.sent.length).to.be.at.least(1);
-        const sent = transport.sent[0] as { type: string; tool_result: { toolCallId: string; result: string; isError: boolean } };
-        expect(sent.type).to.equal('tool_result');
-        expect(sent.tool_result.result).to.equal('File content here');
-        expect(sent.tool_result.isError).to.be.false;
-
-        const onToolCall = callbacks.onToolCall as sinon.SinonStub;
-        const onToolResult = callbacks.onToolResult as sinon.SinonStub;
-        expect(onToolCall.calledOnce).to.be.true;
-        expect(onToolResult.calledOnce).to.be.true;
+        expect(seenDiff?.[0]).to.equal(testFilePath);
+        expect(seenDiff?.[3]).to.equal('tc_diff_1');
     });
 
-    it('should handle error event and return success=false', async () => {
-        const runPromise = session.run(baseOptions());
-        transport.emitEvent({ type: 'error', error: { message: 'Model overloaded' } });
-        transport.emitEvent({ type: 'done' });
-        const result = await runPromise;
-
-        expect(result.success).to.be.false;
-        expect(result.finalMessage).to.include('Model overloaded');
-        expect(result.fileChanged).to.be.false;
-    });
-
-    it('should handle cancel() and return cancellation result', async () => {
+    it('returns a cancellation result when cancel() is called', async () => {
         const runPromise = session.run(baseOptions());
         setTimeout(() => session.cancel(), 10);
         const result = await runPromise;
 
-        expect(result.success).to.be.false;
+        expect(result.success).to.equal(false);
+        expect(result.outcome).to.equal('failed');
         expect(result.finalMessage).to.equal('Fix cancelled by user');
-        expect(transport.cancelled).to.be.true;
-        expect(result.fileChanged).to.be.false;
+        expect(transport.cancelled).to.equal(true);
     });
 
-    it('should return success=false when no code block is found', async () => {
+    it('propagates transport errors', async () => {
         const runPromise = session.run(baseOptions());
-        transport.emitEvent({ type: 'text', part: { text: 'Sorry, I cannot fix this.' } });
+        transport.emitError(new Error('aborted'));
+
+        try {
+            await runPromise;
+            throw new Error('expected rejection');
+        } catch (error) {
+            expect((error as Error).message).to.include('Transport error');
+        }
+    });
+
+    it('deduplicates repeated OpenCode error messages', async () => {
+        const callbacks: OpenCodeSessionCallbacks = {};
+        const streamed: string[] = [];
+        callbacks.onMessageChunk = (chunk) => {
+            if (chunk.type === 'text_delta' && chunk.delta) {
+                streamed.push(chunk.delta);
+            }
+        };
+        session = new OpenCodeSession(transport, callbacks);
+
+        const quotaMessage = 'You have reached your usage limit for this billing cycle.';
+        const runPromise = session.run(baseOptions());
+        transport.emitEvent({ type: 'session.error', error: quotaMessage });
+        transport.emitEvent({ type: 'message.updated', properties: { info: { role: 'assistant', time: { completed: 1 }, error: quotaMessage } } });
+        const result = await runPromise;
+
+        expect(result.success).to.equal(false);
+        expect(result.finalMessage).to.equal(quotaMessage);
+        expect(streamed.filter((delta) => delta.includes(quotaMessage))).to.have.length(1);
+    });
+
+    it('maps NO_FIX_NEEDED to a no_change outcome', async () => {
+        const runPromise = session.run(baseOptions());
+        transport.emitEvent({ type: 'text', part: { text: 'NO_FIX_NEEDED: copyLen is already used on the bounded write path.' } });
         transport.emitEvent({ type: 'done' });
         const result = await runPromise;
 
-        expect(result.success).to.be.false;
-        expect(result.fileChanged).to.be.false;
+        expect(result.success).to.equal(false);
+        expect(result.outcome).to.equal('no_change');
+        expect(result.finalMessage).to.equal('copyLen is already used on the bounded write path.');
+        expect(result.fileChanged).to.equal(false);
     });
 
-    it('should count multiple tool calls correctly', async () => {
-        executeToolStub.resolves('ok');
-
+    it('maps CANNOT_FIX to a failed outcome with the model reason', async () => {
         const runPromise = session.run(baseOptions());
-        transport.emitEvent({
-            type: 'tool_call',
-            tool_call: { name: 'read_file', arguments: '{}', id: 'tc1' },
-        });
-        transport.emitEvent({
-            type: 'tool_call',
-            tool_call: { name: 'edit_file', arguments: '{}', id: 'tc2' },
-        });
-        await new Promise((r) => setImmediate(r));
-        transport.emitEvent({ type: 'text', part: { text: '```cpp\nint main() { return 42; }\n```' } });
+        transport.emitEvent({ type: 'text', part: { text: 'CANNOT_FIX: missing runtime context for the surrounding tensor contract.' } });
         transport.emitEvent({ type: 'done' });
         const result = await runPromise;
 
-        expect(result.success).to.be.true;
-        expect(result.toolCallCount).to.equal(2);
-        expect(executeToolStub.callCount).to.equal(2);
+        expect(result.success).to.equal(false);
+        expect(result.outcome).to.equal('failed');
+        expect(result.finalMessage).to.equal('missing runtime context for the surrounding tensor contract.');
+        expect(result.fileChanged).to.equal(false);
+    });
+
+    it('reports an unexplained no-op when no edits and no terminal marker are produced', async () => {
+        const runPromise = session.run(baseOptions());
+        transport.emitEvent({ type: 'text', part: { text: 'I reviewed the file and stopped.' } });
+        transport.emitEvent({ type: 'done' });
+        const result = await runPromise;
+
+        expect(result.success).to.equal(false);
+        expect(result.outcome).to.equal('failed');
+        expect(result.finalMessage).to.include('did not provide a parseable reason');
+        expect(result.fileChanged).to.equal(false);
+    });
+});
+
+describe('detectPlaceholderResponse', () => {
+    it('detects explicit placeholder phrases', () => {
+        const reason = detectPlaceholderResponse('/* rest of file unchanged */', 'int x = 0;');
+        expect(reason).to.include('placeholder phrase');
+    });
+
+    it('allows diff-like responses', () => {
+        const reason = detectPlaceholderResponse('@@\n- old\n+ new\n', 'old');
+        expect(reason).to.equal('');
+    });
+
+    it('detects focused snippet line markers', () => {
+        const snippet = '>   30 |         DataCopy(zLocal, xLocal, 2* TILE_LENGTH);\n    31 | \n';
+        const reason = detectPlaceholderResponse(snippet, 'int main() { return 0; }');
+        expect(reason).to.include('focused snippet');
+    });
+
+    it('allows normal code even with numbers in it', () => {
+        const code = 'int x = 25;\nfloat y = 30.5;\n';
+        const reason = detectPlaceholderResponse(code, 'int main() { return 0; }');
+        expect(reason).to.equal('');
     });
 });

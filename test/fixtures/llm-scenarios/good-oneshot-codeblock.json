@@ -1,0 +1,7 @@
+{
+  "description": "Regression: model streams a C++ code block instead of editing with OpenCode tools. Session preserves the original file to avoid unsafe full-file replacement.",
+  "steps": [
+    { "kind": "event", "event": { "type": "text", "part": { "text": "```cpp\nint main() { return 1; }\n```" } } },
+    { "kind": "event", "event": { "type": "done" } }
+  ]
+}

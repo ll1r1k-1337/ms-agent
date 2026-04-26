@@ -1,78 +1,93 @@
-# ms-agent Memory Error Fix Patterns
+# msAgent Memory Error Fix Patterns
 
-## IMPORTANT: edit_file Tool Usage
+## Tooling Rules
 
-When using the edit_file tool, you MUST:
-1. **Read the file first** using read_file to get the EXACT content
-2. **Copy the EXACT text** from the file for oldText - do not modify it, do not add/remove spaces
-3. **oldText must match exactly** - including all whitespace, comments, and formatting
-4. **Only change what's necessary** - keep surrounding code identical
+Use OpenCode's native file and terminal capabilities available in the current session.
 
-Example of CORRECT usage:
-```
-1. read_file shows line 30: "        DataCopy(zLocal, xLocal, 2 *  TILE_LENGTH);"
-2. Use oldText: "        DataCopy(zLocal, xLocal, 2 *  TILE_LENGTH);"  (exact match!)
-3. Use newText: "        DataCopy(zLocal, xLocal, TILE_LENGTH);"
-```
+When applying a fix:
 
-Example of WRONG usage (will fail):
-```
-oldText: "DataCopy(zLocal, xLocal, 2 * TILE_LENGTH);"  (missing leading spaces!)
-oldText: "// Line 30: BUG..." (modifying comments, not exact match)
-```
+1. Read the relevant source before editing.
+2. Make the smallest safe change at the failing location.
+3. Preserve unrelated code, comments, whitespace, and formatting.
+4. Prefer targeted edits over whole-file rewrites.
+5. If the context is insufficient, return `CANNOT_FIX: <reason>` and do not modify files.
 
-## Ascend C Kernel Memory Architecture
+Do not:
 
-### Memory Spaces
-- **GM (Global Memory)**: Large, shared across blocks. Access via `GlobalTensor<T>`. Allocated via `GM_ADDR`.
-- **UB (Unified Buffer)**: Per-block, medium size. Access via `LocalTensor<T>`. Used for intermediate computations.
-- **L1 (Level 1)**: Small, per-AICore. Used for DMA staging.
-- **L0A/L0B/L0C**: Even smaller buffers for scalar/vector operations.
+- emit placeholder text such as `...` or `rest of file unchanged`
+- rewrite large regions just for cleanup
+- change unrelated APIs or refactor surrounding code without necessity
 
-### Key APIs
+## Ascend C Memory Architecture
+
+### Memory spaces
+
+- `GM`: global memory
+- `UB`: unified buffer
+- `L1`: level-1 staging memory
+- `L0A` / `L0B` / `L0C`: lower-level compute buffers
+
+### Common APIs
+
 ```cpp
-DataCopy(dst, src, size)  // DMA copy between memory spaces
-pipe.InitBuffer(queue, count, size)  // Initialize pipe buffer
-queue.AllocTensor<T>()  // Allocate from pipe buffer
-pipe.Push(queue, count)  // Push data into pipeline
-pipe.Pop(queue, count)   // Pop data from pipeline
-Add(dst, src1, src2, size)  // Element-wise add
-Duplicate(src, dst, size)  // Data duplication
+DataCopy(dst, src, size)
+pipe.InitBuffer(queue, count, size)
+queue.AllocTensor<T>()
+pipe.Push(queue, count)
+pipe.Pop(queue, count)
+Add(dst, src1, src2, size)
+Duplicate(src, dst, size)
 ```
 
-### Memory Size Rules
-- `pipe.InitBuffer` size must match `AllocTensor` usage
-- `DataCopy` size must NOT exceed the buffer capacity
-- `DataCopy` destination address must be within valid allocation range
-- GM addresses must be properly aligned (typically 32-byte aligned)
+## Repair Heuristics by Error Type
 
-## Fix Strategies by Error Type
+### `ILLEGAL_ADDR_READ` / `ILLEGAL_ADDR_WRITE`
 
-### ILLEGAL_ADDR_READ / ILLEGAL_ADDR_WRITE
-- **Cause**: Reading/writing beyond buffer or GM allocation bounds
-- **Fix**: Ensure `DataCopy` size parameter matches the actual buffer/destination capacity
-- **Common pattern**: Loop boundary exceeds `TILE_LENGTH * num_tiles`, causing last iteration to overflow
+- Check copy sizes against the real tensor capacity
+- Check loop bounds and tail handling
+- Check GM offset calculations for the last tile / block
 
-### OUT_OF_BOUNDS
-- **Cause**: Multiple cores writing to overlapping GM addresses without coordination
-- **Fix**: Add synchronization (e.g., `pipe.InitBuffer` with proper data dependencies, or adjust addressing to avoid overlap)
+### `OUT_OF_BOUNDS`
 
-### MISALIGNED_ACCESS
-- **Cause**: Destination address not properly aligned for the data type (e.g., 32-byte alignment for half vectors)
-- **Fix**: Align addresses using alignment macros or adjust buffer offsets to alignment boundaries
+- Recompute destination range and tile math
+- Verify multi-core addressing does not overlap
 
-### MEM_LEAK
-- **Cause**: GM memory allocated but never freed
-- **Fix**: Add corresponding `free` call for every `malloc_device` allocation, or ensure all GM tensors are properly released
+### `MISALIGNED_ACCESS`
 
-### ILLEGAL_FREE
-- **Cause**: Free called on unallocated memory or double-free
-- **Fix**: Track allocation/free pairs, ensure each allocation is freed exactly once
+- Check alignment assumptions on offsets and tensor base addresses
+- Prefer alignment-safe buffer sizing and offset rounding
 
-### MEM_UNUSED
-- **Cause**: Allocated memory never read from or written to
-- **Fix**: Remove unnecessary allocation, or use the allocated memory for its intended purpose
+### `MEM_LEAK`
 
-### UNINITIALIZED_READ
-- **Cause**: Reading from a buffer that hasn't been written to first (e.g., reading before DataCopy)
-- **Fix**: Ensure DataCopy completes before reading, add proper pipe synchronization (Push/Pop ordering)
+- Match every device allocation with a release path
+- Verify early-return paths do not skip cleanup
+
+### `ILLEGAL_FREE`
+
+- Avoid double free
+- Free only memory that was actually allocated
+
+### `MEM_UNUSED`
+
+- Remove dead allocations or connect them to the intended data path
+
+### `UNINITIALIZED_READ`
+
+- Ensure buffers are written before use
+- Validate pipe ordering and producer/consumer synchronization
+
+## Editing Strategy
+
+Prefer fixes like:
+
+- adjusting a `DataCopy` size
+- correcting loop bounds
+- fixing a GM offset
+- adding missing initialization
+- adding missing cleanup on all exit paths
+
+Avoid fixes like:
+
+- large formatting rewrites
+- speculative refactors
+- renaming unrelated symbols

@@ -1,0 +1,9 @@
+{
+  "description": "Model explicitly reports that no safe edit is required and leaves the file untouched.",
+  "steps": [
+    { "kind": "progress", "message": "Analyzing bounded write path..." },
+    { "kind": "event", "event": { "type": "text", "part": { "text": "NO_FIX_NEEDED: The file already uses the bounded length on the affected write path." } } },
+    { "kind": "event", "event": { "type": "done" } },
+    { "kind": "close", "exitCode": 0 }
+  ]
+}

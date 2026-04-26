@@ -1,0 +1,25 @@
+src/skills/skillLoader.test.ts
+src/skills/skillLoader.ts
+src/vscode/codeActionProvider.test.ts
+src/vscode/diagnosticsManager.test.ts
+src/vscode/codeActionProvider.ts
+src/vscode/fixService.ts
+src/vscode/fixService.test.ts
+src/vscode/diagnosticsManager.ts
+CHANGELOG.md
+README.md
+OPENCODE_SETUP.md
+README_EN.md
+RELEASE_NOTES.md
+SPEC.md
+AGENTS.md
+CLAUDE.md
+docs/SOURCE_GUIDE.md
+docs/TEST_GUIDE.md
+docs/OPENCODE_AGENT_INTEGRATION_PLAN.md
+docs/TEST_PLAN.md
+docs/MSTT_INTEGRATION_ARCHITECTURE.md
+skills/typescript-lsp/SKILL.md
+src/skills/memcheck-skills.md
+src/skills/msagent-patterns.md
+raw/服务器 | OpenCode.pdf

@@ -1,26 +1,13 @@
 import * as vscode from 'vscode';
-import { DiagnosticsManager } from './diagnosticsManager';
-import { SanitizerDiagnostic } from '../parser/types';
-import { runAgent } from '../agent/agentLoop';
-import { OpenAICompatProvider } from '../llm/openaiCompatProvider';
-import { LLMProvider } from '../llm/provider';
-import { getLLMConfig } from '../llm/config';
-import { loadSkill } from '../skills/skillLoader';
-import { buildFixPrompt } from '../skills/skillLoader';
-import { ToolContext } from '../tools/toolHandlers';
 
 export class FixActionProvider implements vscode.CodeActionProvider {
-    private context: vscode.ExtensionContext;
-
-    constructor(context: vscode.ExtensionContext) {
-        this.context = context;
-    }
+    constructor(_context: vscode.ExtensionContext) {}
 
     provideCodeActions(
-        document: vscode.TextDocument,
-        range: vscode.Range,
+        _document: vscode.TextDocument,
+        _range: vscode.Range,
         context: vscode.CodeActionContext,
-        token: vscode.CancellationToken,
+        _token: vscode.CancellationToken,
     ): vscode.ProviderResult<vscode.CodeAction[]> {
         const diagnostics = context.diagnostics.filter(
             d => d.source === 'msagent',
@@ -29,17 +16,27 @@ export class FixActionProvider implements vscode.CodeActionProvider {
             return [];
         }
 
-        const diagnostic = diagnostics[0];
-        const title = diagnostic.message.replace('[msAgent] ', '');
-        return [{
-            title: `Fix: ${title}`,
-            kind: vscode.CodeActionKind.QuickFix,
-            command: {
-                command: 'msagent.fixDiagnostic',
+        const actions: vscode.CodeAction[] = [];
+        for (const diagnostic of diagnostics) {
+            const index = (diagnostic as any).msAgentIndex;
+            if (typeof index !== 'number') {
+                continue;
+            }
+
+            const title = diagnostic.message.replace('[msAgent] ', '');
+            const action = new vscode.CodeAction(
+                `Fix: ${title}`,
+                vscode.CodeActionKind.QuickFix,
+            );
+            action.diagnostics = [diagnostic];
+            action.command = {
+                command: 'msagent.fixProblem',
                 title: `Fix: ${title}`,
-                arguments: [document.uri.toString(), diagnostic.range.start.line],
-            },
-        }];
+                arguments: [index, { clearWebview: true }],
+            };
+            actions.push(action);
+        }
+        return actions;
     }
 }
 

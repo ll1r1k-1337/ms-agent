@@ -31,10 +31,10 @@ export function buildFixPrompt(diagnostic: {
 ${diagnostic.kernelName ? `- **Kernel**: ${diagnostic.kernelName}` : ''}
 
 ## Instructions
-1. Read the file using read_file to understand the surrounding code context
+1. Read the file with OpenCode's native file/context tools to understand the surrounding code context
 2. Identify the root cause of the memory error
-3. Apply a fix using edit_file that addresses the root cause
+3. Apply a minimal native edit that addresses the root cause
 4. Explain what was wrong and how your fix resolves it
 5. Do NOT make unnecessary changes to surrounding code
-6. If the error requires understanding the full file, read it first before making edits`;
+6. If the error requires understanding the full file, inspect it first before making edits`;
 }

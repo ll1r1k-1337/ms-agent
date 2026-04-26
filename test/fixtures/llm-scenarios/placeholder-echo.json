@@ -1,0 +1,7 @@
+{
+  "description": "Regression for 2026-04-24 bug: model literally echoes the prompt's example placeholder. The detectPlaceholderResponse guard must reject the write and preserve the original file.",
+  "steps": [
+    { "kind": "event", "event": { "type": "text", "part": { "text": "```cpp\n// ... complete fixed file content ...\n```" } } },
+    { "kind": "event", "event": { "type": "done" } }
+  ]
+}
