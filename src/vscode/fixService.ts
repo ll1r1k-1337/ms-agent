@@ -503,12 +503,14 @@ async function fixSingleDiagnostic(
                     },
                 });
 
-                // Also stream the task info as assistant context
+                // Surface task info as a step (not a text_stream): text_stream is
+                // the assistant's natural-language explanation channel and must not
+                // be polluted with host-generated narration.
                 webviewProvider.postMessage({
-                    type: 'text_stream',
+                    type: 'step_update',
                     payload: {
-                        messageId: taskId,
-                        delta: 'Analyzing ' + diagnostic.errorType + ' at line ' + diagnostic.lineNumber + '...\n'
+                        step: 'Analyzing ' + diagnostic.errorType,
+                        detail: 'line ' + diagnostic.lineNumber,
                     }
                 });
 
