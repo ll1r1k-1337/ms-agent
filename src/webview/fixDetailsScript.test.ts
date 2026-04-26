@@ -19,22 +19,39 @@ describe('fixDetailsScript string inclusion', () => {
     expect(fixDetailsScript).to.include('updateQueueState');
   });
 
+  it('contains card-based render entry points', () => {
+    expect(fixDetailsScript).to.include('renderStrip');
+    expect(fixDetailsScript).to.include('renderStatusCard');
+    expect(fixDetailsScript).to.include('renderSteps');
+    expect(fixDetailsScript).to.include('renderFiles');
+    expect(fixDetailsScript).to.include('renderExplanation');
+    expect(fixDetailsScript).to.include('renderEmptyState');
+    expect(fixDetailsScript).to.include('renderInlineMarkdown');
+    expect(fixDetailsScript).to.include('formatDiffLines');
+  });
+
   it('contains all DOM element IDs', () => {
     const ids = [
       'messages',
       'waiting-indicator',
       'message-container',
       'session-target',
-      'session-subtitle',
       'meta-model',
       'meta-session',
-      'current-step-title',
-      'current-step-detail',
-      'result-panel',
-      'result-title',
-      'result-message',
-      'result-summary',
-      'result-diff-preview',
+      'meta-backend',
+      'meta-mode',
+      'session-phase',
+      'status-pill',
+      'status-label',
+      'steps-card',
+      'steps-list',
+      'steps-meta',
+      'files-card',
+      'files-list',
+      'files-meta',
+      'explanation-card',
+      'explanation-body',
+      'explanation-meta',
       'stopBtn',
       'cancelBtn',
       'queue-badge',
@@ -118,9 +135,22 @@ describe('fixDetailsScript string inclusion', () => {
   });
 
   it('contains task-panel specific state', () => {
-    expect(fixDetailsScript).to.include('currentStepTitle');
     expect(fixDetailsScript).to.include('sessionStartedAt');
     expect(fixDetailsScript).to.include('changes');
-    expect(fixDetailsScript).to.include('resultDiffPreview');
+    expect(fixDetailsScript).to.include('explanation');
+    expect(fixDetailsScript).to.include('steps');
+  });
+
+  it('contains multi-file diff rendering markers', () => {
+    expect(fixDetailsScript).to.include('files-list');
+    expect(fixDetailsScript).to.include('file-item');
+    expect(fixDetailsScript).to.include('file-diff');
+    expect(fixDetailsScript).to.include('line-add');
+    expect(fixDetailsScript).to.include('line-del');
+  });
+
+  it('contains explanation accumulation from text_stream', () => {
+    expect(fixDetailsScript).to.include('state.explanation');
+    expect(fixDetailsScript).to.include('state.explanation += delta');
   });
 });
