@@ -3,4 +3,5 @@ require:
   - test/setup.ts
 spec:
   - src/**/*.test.ts
+  - test/integration/**/*.test.ts
 timeout: 10000

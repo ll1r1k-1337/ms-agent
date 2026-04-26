@@ -1,0 +1,9 @@
+{
+  "description": "OpenCode applies a minimal bounded write edit directly on disk for add_custom.cpp.",
+  "steps": [
+    { "kind": "progress", "message": "Inspecting add_custom.cpp around the out-of-bounds write..." },
+    { "kind": "fsWrite", "relPath": "add_custom.cpp", "content": "#include \"kernel_operator.h\"\nusing namespace AscendC;\n\n#define TILE_LENGTH 32\n#define TOTAL_ELEMENTS 256\n\nextern \"C\" __global__ __aicore__ void add_custom(GM_ADDR x, GM_ADDR y, GM_ADDR z) {\n    TPipe pipe;\n    TQue<QuePos::VECIN, 1> inQueueX, inQueueY;\n    TQue<QuePos::VECOUT, 1> outQueue;\n\n    pipe.InitBuffer(inQueueX, 1, TILE_LENGTH * sizeof(half));\n    pipe.InitBuffer(inQueueY, 1, TILE_LENGTH * sizeof(half));\n    pipe.InitBuffer(outQueue, 1, TILE_LENGTH * sizeof(half));\n\n    GlobalTensor<half> xGlobal = x;\n    GlobalTensor<half> yGlobal = y;\n    GlobalTensor<half> zGlobal = z;\n\n    for (int progress = 0; progress < TOTAL_ELEMENTS; progress += TILE_LENGTH) {\n        LocalTensor<half> xLocal = inQueueX.AllocTensor<half>();\n        LocalTensor<half> yLocal = inQueueY.AllocTensor<half>();\n        LocalTensor<half> zLocal = outQueue.AllocTensor<half>();\n\n        int copyLen = (progress + TILE_LENGTH > TOTAL_ELEMENTS) ? (TOTAL_ELEMENTS - progress) : TILE_LENGTH;\n        DataCopy(xLocal, xGlobal[progress], copyLen);\n\n        DataCopy(zLocal, xLocal, TILE_LENGTH);\n\n        DataCopy(zGlobal[progress], zLocal, copyLen);\n\n        DataCopy(yLocal, yGlobal[progress], copyLen);\n\n        Add(zLocal, xLocal, yLocal, TILE_LENGTH);\n\n        pipe.Push(inQueueX, 1);\n        pipe.Push(inQueueY, 1);\n    }\n}\n" },
+    { "kind": "event", "event": { "type": "done" } },
+    { "kind": "close", "exitCode": 0 }
+  ]
+}

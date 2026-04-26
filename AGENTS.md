@@ -1,77 +1,121 @@
 # AGENTS.md
 
-This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
+This file provides guidance to Codex when working with code in this repository.
 
 ## Project Overview
 
-msAgent is a VSCode extension for intelligent memory error repair of Ascend NPU operators based on mssanitizer. It uses local LLMs via Ollama or OpenAI-compatible APIs to automatically analyze and fix memory errors in Ascend C kernel code.
+msAgent is a VS Code extension for parsing `mssanitizer --tool=memcheck` logs and repairing Ascend C / C++ memory issues through **OpenCode**.
 
-## Build, Lint & Test Commands
+The repository is now **OpenCode-only**:
+
+- no built-in OpenAI-compatible backend
+- no host-side custom tool executor
+- no settings webview
+- no OpenCode `cli` or `api` transport mode
+
+## Build, Lint, and Test
 
 | Command | Description |
-|---------|-------------|
+|---|---|
 | `npm install` | Install dependencies |
-| `npm run compile` | Compile TypeScript to JavaScript |
-| `npm run watch` | Watch mode (recompile on changes) |
-| `npm run lint` | ESLint check |
+| `npm run compile` | Compile TypeScript |
+| `npm run watch` | Watch mode |
+| `npm run lint` | ESLint |
+| `npm test` | Run unit and integration tests |
+| `npm run test:coverage` | Run tests with coverage |
 
 ## Key Configuration
 
-The extension contributes these VSCode settings:
-- `msagent.modelEndpoint` - LLM API endpoint (default: `http://localhost:11434`)
-- `msagent.modelName` - Model name (default: `qwen3:8b`)
-- `msagent.temperature` - Sampling temperature (default: `0.1`)
-- `msagent.maxTokens` - Max tokens per response (default: `4096`)
-- `msagent.timeoutMs` - Request timeout in milliseconds (default: `300000`)
+The extension reads settings from `workspace.getConfiguration('msagent')`.
+
+- `msagent.modelName`
+- `msagent.timeoutMs`
+- `msagent.opencodeMode` — `server` or `acp`
+- `msagent.opencodeServePort`
+- `msagent.opencodeCliPath`
+- `msagent.opencodeAcpArgs`
+- `msagent.opencodeApiKey`
 
 ## Source Code Architecture
 
-```
+```text
 src/
-├── extension.ts                    # Extension entry point, command registration
+├── extension.ts                    # Command registration and lifecycle
 ├── parser/
-│   ├── types.ts                    # 8 memory error type definitions
-│   └── logParser.ts                # mssanitizer log parser (regex-based)
-├── agent/
-│   ├── agentLoop.ts                # Agent loop core (LLM ↔ Tool interaction)
-│   └── message.ts                  # Message type definitions
+│   ├── types.ts                    # Sanitizer types
+│   └── logParser.ts                # Log parser
 ├── llm/
-│   ├── provider.ts                 # LLM Provider interface
-│   ├── openaiCompatProvider.ts     # OpenAI-compatible HTTP implementation
-│   ├── config.ts                   # VSCode settings reader
-│   └── types.ts                    # Streaming and tool call types
-├── tools/
-│   └── toolHandlers.ts             # Tool implementations: read_file, edit_file, list_files, read_diagnostics
+│   ├── config.ts                   # VS Code config reader
+│   ├── configResolver.ts           # OpenCode-only config normalization
+│   └── types.ts                    # Stream chunk types
+├── backends/
+│   ├── fixBackend.ts               # Backend interface
+│   ├── backendFactory.ts           # Always returns OpenCodeFixBackend
+│   ├── openCodeFixBackend.ts       # Prompt + backend entrypoint
+│   ├── opencodeTransport.ts        # OpenCode server/acp transports
+│   ├── opencodeSession.ts          # Session lifecycle and finalize safety
+│   └── opencodeEventAdapter.ts     # Event normalization helpers
 ├── skills/
-│   ├── memcheck-skills.md          # Ascend C memory error repair knowledge base
-│   └── skillLoader.ts              # Skill loading and prompt building
+│   ├── memcheck-skills.md          # Repair heuristics
+│   ├── msagent-patterns.md         # Repo conventions
+│   └── skillLoader.ts              # Prompt assembly
 ├── vscode/
-│   ├── diagnosticsManager.ts       # Diagnostics management (log → Problems panel)
-│   ├── codeActionProvider.ts       # CodeAction quick fix provider
-│   └── fixService.ts               # Fix orchestration and WebView management
+│   ├── diagnosticsManager.ts       # Problems panel publishing
+│   ├── codeActionProvider.ts       # Quick Fix actions
+│   └── fixService.ts               # Queue, orchestration, webview updates
 └── webview/
-    ├── messages.ts                 # WebView ↔ Extension message definitions
-    └── webviewPanelProvider.ts     # WebView panel lifecycle and messaging
+    ├── messages.ts                 # Webview message protocol
+    ├── sessionState.ts             # Fix Details reducer/state
+    ├── fixDetailsScript.ts         # Webview client script
+    └── webviewPanelProvider.ts     # Panel lifecycle
 ```
 
-## Supported Memory Error Types
+## OpenCode Protocol — Read First
 
-1. **OUT_OF_BOUNDS** - Buffer overflow/underflow
-2. **ILLEGAL_ADDR_READ** - Read from invalid memory
-3. **ILLEGAL_ADDR_WRITE** - Write to invalid memory
-4. **MISALIGNED_ACCESS** - Unaligned memory access
-5. **MEM_LEAK** - Memory not freed
-6. **ILLEGAL_FREE** - Invalid free operation
-7. **MEM_UNUSED** - Allocated but never used
-8. **UNINITIALIZED_READ** - Read from uninitialized memory
+Before editing ANY of:
 
-## Test Files
+- `src/backends/opencodeTransport.ts`
+- `src/backends/opencodeSession.ts`
+- `src/backends/opencodeEventAdapter.ts`
+- `src/backends/openCodeFixBackend.ts`
+- `test/fixtures/llm-scenarios/*.json`
 
-Test fixtures are located in `test/` with various log files for each error type. The test guide at `docs/TEST_GUIDE.md` documents test cases T1-T6.
+You MUST first read `.claude/skills/opencode-protocol/SKILL.md` (or invoke
+the `opencode-protocol` skill). It contains the wire-truth contract anchored
+to evidence captured locally against opencode 1.14.25:
 
-## Important Notes
+- real SSE format `{type, properties}` (NOT the `{type, part}` / `{type, tool_call}`
+  shapes that fixtures use after adapter normalization)
+- terminal predicate: `message.updated` with `info.role==="assistant"` and
+  `info.time.completed` set — NOT `session.idle`, NOT `server.heartbeat`,
+  NOT a code-block in text
+- 32-event SDK union plus the undocumented `server.heartbeat`
+- 19+ HTTP endpoints (the `/doc` OpenAPI declares only 2)
 
-- The extension activates on opening C++ files or running any `msagent.*` command
-- LLM configuration is validated on startup with a ping test
-- The agent loop uses a streaming WebView to show real-time LLM reasoning
-- No Cursor/Copilot rules exist - follow existing TypeScript/VSCode extension patterns
+State which Hard Rule (R1–R6) and which trap your change touches before
+writing code. Add a fixture in `test/fixtures/llm-scenarios/` BEFORE
+implementation when changing finalize logic.
+
+## Important Behavioral Notes
+
+- `DiagnosticsManager` attaches a stable `msAgentIndex` to each diagnostic.
+- `codeActionProvider.ts` routes Quick Fix directly through `msagent.fixProblem(index)`.
+- `OpenCodeSession` must not finalize success on soft-close signals such as `session.idle` or `server.disconnect`. See `opencode-protocol` skill, R2.
+- `OpenCodeFixBackend` disposes transport only after `session.run()` settles. See `opencode-protocol` skill, R3.
+
+## Test Layout
+
+- `src/**/*.test.ts` for unit tests
+- `test/fixtures/*.log` for log fixtures
+- `test/fixtures-src/*.cpp` for source fixtures
+- `test/fixtures/llm-scenarios/*.json` for OpenCode event/session scenarios
+
+## graphify
+
+This project maintains a graphify knowledge graph at `graphify-out/`.
+
+Rules:
+
+- Before answering architecture or codebase questions, read `graphify-out/GRAPH_REPORT.md`
+- If `graphify-out/wiki/index.md` exists, prefer that over raw file traversal
+- After modifying code in the session, run `graphify update .`

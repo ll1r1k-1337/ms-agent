@@ -14,6 +14,7 @@ function clearConfig() {
 }
 
 const workspace = {
+  workspaceFolders: undefined as any,
   getConfiguration(section: string) {
     const map = configuration.get(section);
     return {
@@ -23,6 +24,7 @@ const workspace = {
         }
         return defaultValue;
       },
+      update: () => Promise.resolve(),
     };
   },
 };
@@ -46,12 +48,14 @@ const window = {
   showErrorMessage: () => Promise.resolve(),
   showWarningMessage: () => Promise.resolve(),
   showInformationMessage: () => Promise.resolve(),
+  showQuickPick: () => Promise.resolve(),
   createOutputChannel: () => ({ appendLine: () => {}, dispose: () => {} }),
   createWebviewPanel: () => ({ webview: { html: '', onDidReceiveMessage: () => {} }, dispose: () => {} }),
   activeTextEditor: undefined,
 };
 
 const DiagnosticSeverity = { Error: 0, Warning: 1, Information: 2, Hint: 3 };
+const ConfigurationTarget = { Global: 1, Workspace: 2, WorkspaceFolder: 3 };
 
 const CodeActionKind = {
   QuickFix: { value: 'quickfix' },
@@ -64,6 +68,7 @@ export const vscodeMock = {
   commands,
   window,
   DiagnosticSeverity,
+  ConfigurationTarget,
   CodeActionKind,
   initConfig,
   clearConfig,

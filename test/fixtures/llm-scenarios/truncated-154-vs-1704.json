@@ -1,0 +1,7 @@
+{
+  "description": "Regression for 2026-04-24 bug: model returns a drastically truncated response (tiny code block) against a large original file. The size-ratio branch of detectPlaceholderResponse must reject the write and preserve the original file.",
+  "steps": [
+    { "kind": "event", "event": { "type": "text", "part": { "text": "Here is my fix:\n\n```cpp\nint main() { return 0; }\n```" } } },
+    { "kind": "event", "event": { "type": "done" } }
+  ]
+}

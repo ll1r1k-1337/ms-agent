@@ -1,19 +1,23 @@
-export type AgentMode = 'builtin' | 'opencode';
+export type OpenCodeMode = 'server' | 'acp';
 
-export type Provider = 'openai-compatible' | 'opencode';
+export const DEFAULT_OPENCODE_MODEL = 'opencode/big-pickle';
 
 export interface LLMConfig {
-    provider: Provider;
-    endpoint: string;
+    /** Full OpenCode model ID persisted in settings, for example "provider/model". */
     modelName: string;
-    apiKey: string;
-    temperature: number;
-    maxTokens: number;
+    /** Provider portion of modelName. Required by OpenCode server prompt requests. */
+    providerID?: string;
+    /** Model portion of modelName, without the provider prefix. */
+    modelID: string;
+    /** Alias for modelName used by transport/UI code that needs an explicit full ID. */
+    modelFullName: string;
+    /** Warning emitted when a legacy non-provider-qualified value is configured. */
+    modelWarning?: string;
     timeoutMs: number;
-    opencodeMode: string;
+    opencodeMode: OpenCodeMode;
     opencodeServePort: number;
     opencodeCliPath: string;
-    opencodeApiEndpoint: string;
+    opencodeAcpArgs: string[];
     opencodeApiKey: string;
 }
 
@@ -21,30 +25,58 @@ export interface ConfigReader {
     get<T>(key: string): T | undefined;
 }
 
-export function resolveLLMConfig(cfg: ConfigReader): LLMConfig {
-    let provider = cfg.get<Provider>('provider');
+function normalizeOpenCodeMode(mode: string | undefined): OpenCodeMode {
+    return mode === 'acp' ? 'acp' : 'server';
+}
 
-    if (!provider) {
-        const agentMode = cfg.get<'builtin' | 'opencode'>('agentMode');
-        if (agentMode === 'opencode') {
-            provider = 'opencode';
-        } else {
-            provider = 'openai-compatible';
-        }
+function normalizeArgs(args: string[] | undefined): string[] {
+    if (!Array.isArray(args) || args.length === 0) {
+        return ['acp'];
+    }
+    return args.filter((value) => typeof value === 'string' && value.trim().length > 0);
+}
+
+export function parseModelName(raw: string | undefined): {
+    modelName: string;
+    providerID?: string;
+    modelID: string;
+    modelFullName: string;
+    modelWarning?: string;
+} {
+    const modelName = raw?.trim() || DEFAULT_OPENCODE_MODEL;
+    const slashIndex = modelName.indexOf('/');
+    if (slashIndex > 0 && slashIndex < modelName.length - 1) {
+        const providerID = modelName.substring(0, slashIndex);
+        const modelID = modelName.substring(slashIndex + 1);
+        return {
+            modelName,
+            providerID,
+            modelID,
+            modelFullName: modelName,
+        };
     }
 
     return {
-        provider: provider || 'openai-compatible',
-        endpoint: cfg.get<string>('modelEndpoint') || 'http://localhost:11434',
-        modelName: cfg.get<string>('modelName') || 'qwen3:8b',
-        apiKey: cfg.get<string>('apiKey') || '',
-        temperature: cfg.get<number>('temperature') ?? 0.1,
-        maxTokens: cfg.get<number>('maxTokens') ?? 4096,
+        modelName,
+        modelID: modelName,
+        modelFullName: modelName,
+        modelWarning: `msagent.modelName must be a full OpenCode model ID like "provider/model"; current value "${modelName}" has no provider prefix.`,
+    };
+}
+
+export function resolveLLMConfig(cfg: ConfigReader): LLMConfig {
+    const model = parseModelName(cfg.get<string>('modelName'));
+    return {
+        modelName: model.modelName,
+        providerID: model.providerID,
+        modelID: model.modelID,
+        modelFullName: model.modelFullName,
+        modelWarning: model.modelWarning,
         timeoutMs: cfg.get<number>('timeoutMs') ?? 300000,
-        opencodeMode: cfg.get<string>('opencodeMode') || 'cli',
+        opencodeMode: normalizeOpenCodeMode(cfg.get<string>('opencodeMode')),
         opencodeServePort: cfg.get<number>('opencodeServePort') ?? 7325,
         opencodeCliPath: cfg.get<string>('opencodeCliPath') || 'opencode',
-        opencodeApiEndpoint: cfg.get<string>('opencodeApiEndpoint') || 'http://localhost:7325',
+        opencodeAcpArgs: normalizeArgs(cfg.get<string[]>('opencodeAcpArgs')),
         opencodeApiKey: cfg.get<string>('opencodeApiKey') || '',
     };
 }

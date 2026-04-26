@@ -2,7 +2,7 @@
   "name": "msagent",
   "displayName": "msAgent",
   "description": "Agentic auto-fix for mssanitizer Ascend NPU operator memory errors",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "msagent",
   "engines": {
     "vscode": "^1.85.0"
@@ -17,8 +17,9 @@
     "onCommand:msagent.parseLog",
     "onCommand:msagent.fixProblem",
     "onCommand:msagent.fixAll",
-    "onCommand:msagent.getAiFixQueueStates",
-    "onCommand:msagent.testWebview"
+    "onCommand:msagent.selectModel",
+    "onCommand:msagent.openSettings",
+    "onCommand:msagent.getAiFixQueueStates"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -42,106 +43,129 @@
         "icon": "$(beaker)"
       },
       {
-        "command": "msagent.clearDiagnostics",
-        "title": "msAgent: Clear Diagnostics",
-        "icon": "$(clear-all)"
+        "command": "msagent.selectModel",
+        "title": "msAgent: Select OpenCode Model",
+        "icon": "$(server-environment)"
       },
       {
         "command": "msagent.openSettings",
         "title": "msAgent: Open Settings",
-        "icon": "$(gear)"
+        "icon": "$(settings-gear)"
       },
       {
-        "command": "msagent.testWebview",
-        "title": "msAgent: Test WebView",
-        "icon": "$(check)"
+        "command": "msagent.clearDiagnostics",
+        "title": "msAgent: Clear Diagnostics",
+        "icon": "$(clear-all)"
       }
     ],
     "configuration": {
       "title": "msAgent",
       "properties": {
-        "msagent.modelEndpoint": {
-          "type": "string",
-          "default": "http://localhost:11434",
-          "description": "LLM API endpoint URL (OpenAI-compatible, e.g. Ollama, vLLM)"
-        },
         "msagent.modelName": {
           "type": "string",
-          "default": "qwen3:8b",
-          "description": "Model name (e.g. qwen3:8b for Ollama)"
-        },
-        "msagent.apiKey": {
-          "type": "string",
-          "default": "",
-          "description": "API key for cloud providers. Leave empty for local providers like Ollama."
-        },
-        "msagent.temperature": {
-          "type": "number",
-          "default": 0.1,
-          "minimum": 0,
-          "maximum": 2,
-          "description": "LLM temperature for fix generation"
-        },
-        "msagent.maxTokens": {
-          "type": "number",
-          "default": 4096,
-          "minimum": 256,
-          "maximum": 32768,
-          "description": "Max tokens for LLM response"
+          "default": "opencode/big-pickle",
+          "enum": [
+            "opencode/big-pickle",
+            "opencode/gpt-5-nano",
+            "opencode/hy3-preview-free",
+            "opencode/ling-2.6-flash-free",
+            "opencode/minimax-m2.5-free",
+            "opencode/nemotron-3-super-free",
+            "bailian-coding-plan/glm-4.7",
+            "bailian-coding-plan/glm-5",
+            "bailian-coding-plan/kimi-k2.5",
+            "bailian-coding-plan/MiniMax-M2.5",
+            "bailian-coding-plan/qwen3-coder-next",
+            "bailian-coding-plan/qwen3-coder-plus",
+            "bailian-coding-plan/qwen3-max-2026-01-23",
+            "bailian-coding-plan/qwen3.5-plus",
+            "moonshot/kimi-k2.6",
+            "volcengine-plan/ark-code-latest",
+            "volcengine-plan/deepseek-v3.2",
+            "volcengine-plan/doubao-seed-2.0-code",
+            "volcengine-plan/doubao-seed-2.0-lite",
+            "volcengine-plan/doubao-seed-2.0-pro",
+            "volcengine-plan/doubao-seed-code",
+            "volcengine-plan/glm-4.7",
+            "volcengine-plan/glm-5.1",
+            "volcengine-plan/kimi-k2.5",
+            "volcengine-plan/kimi-k2.6",
+            "volcengine-plan/minimax-m2.5",
+            "zhipuai-coding-plan/glm-4.5-air",
+            "zhipuai-coding-plan/glm-4.7",
+            "zhipuai-coding-plan/glm-5-turbo",
+            "zhipuai-coding-plan/glm-5.1"
+          ],
+          "markdownEnumDescriptions": [
+            "OpenCode: Big Pickle (free)",
+            "OpenCode: GPT-5 Nano (free)",
+            "OpenCode: HY3 Preview (free)",
+            "OpenCode: Ling 2.6 Flash (free)",
+            "OpenCode: MiniMax M2.5 (free)",
+            "OpenCode: Nemotron 3 Super (free)",
+            "Bailian Coding: GLM 4.7",
+            "Bailian Coding: GLM 5",
+            "Bailian Coding: Kimi K2.5",
+            "Bailian Coding: MiniMax M2.5",
+            "Bailian Coding: Qwen3 Coder Next",
+            "Bailian Coding: Qwen3 Coder Plus",
+            "Bailian Coding: Qwen3 Max 2026-01-23",
+            "Bailian Coding: Qwen3.5 Plus",
+            "Moonshot: Kimi K2.6",
+            "Volcengine: Ark Code Latest",
+            "Volcengine: DeepSeek V3.2",
+            "Volcengine: Doubao Seed 2.0 Code",
+            "Volcengine: Doubao Seed 2.0 Lite",
+            "Volcengine: Doubao Seed 2.0 Pro",
+            "Volcengine: Doubao Seed Code",
+            "Volcengine: GLM 4.7",
+            "Volcengine: GLM 5.1",
+            "Volcengine: Kimi K2.5",
+            "Volcengine: Kimi K2.6",
+            "Volcengine: MiniMax M2.5",
+            "ZhipuAI Coding: GLM 4.5 Air",
+            "ZhipuAI Coding: GLM 4.7",
+            "ZhipuAI Coding: GLM 5 Turbo",
+            "ZhipuAI Coding: GLM 5.1"
+          ],
+          "description": "OpenCode full model ID used for repair sessions. Use msAgent: Select OpenCode Model to include models from your OpenCode config files."
         },
         "msagent.timeoutMs": {
           "type": "number",
           "default": 300000,
           "minimum": 30000,
           "maximum": 600000,
-          "description": "LLM request timeout in milliseconds (default: 5 minutes for complex fixes)"
-        },
-        "msagent.provider": {
-          "type": "string",
-          "enum": [
-            "openai-compatible",
-            "opencode"
-          ],
-          "default": "openai-compatible",
-          "description": "Fix backend provider: openai-compatible uses your configured LLM with tool calling, opencode delegates to OpenCode CLI"
-        },
-        "msagent.agentMode": {
-          "type": "string",
-          "enum": [
-            "builtin",
-            "opencode"
-          ],
-          "default": "builtin",
-          "description": "(Deprecated: use provider instead) Fix agent mode: builtin uses your configured LLM with tool calling, opencode delegates to OpenCode CLI"
+          "description": "Timeout for a single OpenCode repair session in milliseconds."
         },
         "msagent.opencodeMode": {
           "type": "string",
           "enum": [
-            "cli",
-            "server"
+            "server",
+            "acp"
           ],
-          "default": "cli",
-          "description": "OpenCode execution mode: cli runs opencode CLI directly, server connects to an opencode server"
+          "default": "server",
+          "description": "OpenCode transport mode: server uses opencode serve, acp uses Agent Client Protocol over stdio."
         },
         "msagent.opencodeServePort": {
           "type": "number",
           "default": 7325,
-          "description": "Port for OpenCode server mode"
+          "description": "Port for OpenCode server mode."
         },
         "msagent.opencodeCliPath": {
           "type": "string",
           "default": "opencode",
-          "description": "Path to OpenCode CLI executable (only used when provider is opencode)"
+          "description": "Path to the OpenCode executable."
         },
-        "msagent.opencodeApiEndpoint": {
-          "type": "string",
-          "default": "http://localhost:7325",
-          "description": "OpenCode API endpoint for server mode"
+        "msagent.opencodeAcpArgs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["acp"],
+          "description": "Arguments passed to OpenCode in ACP mode."
         },
         "msagent.opencodeApiKey": {
           "type": "string",
           "default": "",
-          "description": "API key for OpenCode server mode"
+          "description": "Optional API key for authenticating to OpenCode server mode."
         }
       }
     },
@@ -170,8 +194,9 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "lint": "eslint src --ext ts",
-    "test": "mocha",
-    "test:coverage": "c8 mocha",
+    "test": "mocha --exclude 'test/integration/localOpencode.integration.test.ts'",
+    "test:integration": "mocha --spec 'test/integration/**/*.test.ts'",
+    "test:coverage": "c8 mocha --exclude 'test/integration/localOpencode.integration.test.ts'",
     "package": "npm run compile && npx vsce package --baseContentUrl https://gitcode.com/yangchenhua/ms-agent/raw/main/ --baseImagesUrl https://gitcode.com/yangchenhua/ms-agent/raw/main/"
   },
   "devDependencies": {
@@ -180,15 +205,23 @@
     "@types/node": "^20.0.0",
     "@types/sinon": "^21.0.1",
     "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^8.59.0",
+    "@typescript-eslint/parser": "^8.59.0",
     "@vscode/test-electron": "^2.3.0",
     "c8": "^11.0.0",
     "chai": "^6.2.2",
+    "eslint": "^9.39.4",
     "mocha": "^11.7.5",
+    "proxyquire": "^2.1.3",
     "sinon": "^21.1.2",
     "ts-node": "^10.9.2",
-    "typescript": "^5.3.0"
+    "typescript": "^5.3.0",
+    "typescript-eslint": "^8.59.0"
   },
   "dependencies": {
-    "claude-code": "^1.0.0"
+    "@types/marked": "^5.0.2",
+    "claude-code": "^1.0.0",
+    "clean": "^4.0.2",
+    "marked": "^18.0.2"
   }
 }

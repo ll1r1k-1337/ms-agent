@@ -16,8 +16,11 @@ export interface FixContext {
     extensionContext?: import('vscode').ExtensionContext;
 }
 
+export type FixOutcome = 'applied' | 'no_change' | 'failed';
+
 export interface FixResult {
     success: boolean;
+    outcome: FixOutcome;
     finalMessage: string;
     toolCallCount: number;
     fileChanged: boolean;

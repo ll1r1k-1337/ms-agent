@@ -1,18 +1,82 @@
 import * as fs from 'fs';
-import { FixResult } from './fixBackend';
+import { FixOutcome, FixResult } from './fixBackend';
 import { OpenCodeTransport } from './opencodeTransport';
-import { executeTool, ToolContext } from '../tools/toolHandlers';
 import { StreamChunk } from '../llm/types';
 import {
     extractToolCall,
     extractToolResult,
     extractTextDelta,
     extractErrorMessage,
+    extractSessionId,
     isCompletionEvent,
+    extractMessageId,
+    extractMessageRole,
+    extractPartMessageId,
     ToolCallInfo,
     ToolResultInfo,
     OpenCodeEvent,
 } from './opencodeEventAdapter';
+import { SessionStateMachine } from '../agent/sessionStateMachine';
+import { DisposableStore } from '../agent/disposableStore';
+
+// Guard against models that echo the prompt's example placeholder or emit a
+// truncated summary instead of the full file. Writing such a response would
+// destroy the original file. When this returns a non-empty reason, the caller
+// MUST NOT overwrite the target file.
+export function detectPlaceholderResponse(
+    fixedCode: string,
+    _originalContent: string,
+): string {
+    const trimmed = fixedCode.trim();
+    if (trimmed.length === 0) {
+        return 'Extracted code block is empty';
+    }
+
+    const lower = trimmed.toLowerCase();
+    const placeholderPhrases = [
+        'complete fixed file content',
+        'fixed file content',
+        'entire file content',
+        'rest of file unchanged',
+        'rest of the file',
+        'file content here',
+    ];
+    for (const phrase of placeholderPhrases) {
+        if (lower.includes(phrase)) {
+            return `Response contains placeholder phrase "${phrase}"`;
+        }
+    }
+
+    const nonEmptyLines = trimmed.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
+    const ellipsisOnlyPattern = /^(?:\/\/|\/\*|\*|#|<!--)\s*\.{2,}.*$/;
+    const isAllEllipsisComments =
+        nonEmptyLines.length > 0 && nonEmptyLines.every((l) => ellipsisOnlyPattern.test(l));
+    if (isAllEllipsisComments) {
+        return 'Response contains only ellipsis placeholder comments';
+    }
+
+    // Detect focused-snippet echo: lines that look like the prompt's focused
+    // snippet (e.g. "    25 | " or ">   30 | ") are not actual code.
+    const snippetLinePattern = /^[ >]\s*\d+\s+\| /m;
+    if (snippetLinePattern.test(trimmed)) {
+        return 'Response contains focused snippet line markers instead of actual code';
+    }
+
+    // The 20% length heuristic was removed because a valid fix can be a
+    // one-line change in a large file (e.g. a diff or patch). Length alone
+    // is not a reliable indicator of truncation. We now rely on structural
+    // completeness checks and placeholder detection instead.
+    const hasCodeBlocks = trimmed.includes('```');
+    const diffLikeLines = trimmed.split('\n').filter((l) =>
+        /^\s*(?:[+\-@]|diff\s|index\s)/.test(l),
+    );
+    const looksLikeDiff = diffLikeLines.length >= 2;
+    if (hasCodeBlocks || looksLikeDiff) {
+        return '';
+    }
+
+    return '';
+}
 
 export interface OpenCodeSessionCallbacks {
     onMessageChunk?: (chunk: StreamChunk, messageId: string) => void;
@@ -20,6 +84,19 @@ export interface OpenCodeSessionCallbacks {
     onToolResult?: (toolCallId: string, result: string, isError: boolean) => void;
     onDiff?: (filePath: string, oldText: string, newText: string, toolCallId: string) => void;
     onEvent?: (type: string, payload: unknown) => void;
+}
+
+function extractTerminalReason(
+    parsedText: string,
+    marker: 'NO_FIX_NEEDED' | 'CANNOT_FIX',
+): string | null {
+    const regex = new RegExp(`${marker}:\\s*(.+)`, 'i');
+    const match = parsedText.match(regex);
+    if (!match) {
+        return null;
+    }
+    const reason = match[1].trim();
+    return reason.length > 0 ? reason : null;
 }
 
 export class OpenCodeSession {
@@ -47,10 +124,13 @@ export class OpenCodeSession {
         originalContent: string;
         timeoutMs: number;
         messageId?: string;
+        mode?: string;
+        model?: string;
     }): Promise<FixResult> {
         if (this.cancelled) {
             return {
                 success: false,
+                outcome: 'failed',
                 finalMessage: 'Fix cancelled by user',
                 toolCallCount: 0,
                 fileChanged: false,
@@ -61,37 +141,107 @@ export class OpenCodeSession {
 
         this.callbacks?.onEvent?.('session_start', {
             backend: 'opencode',
-            mode: 'cli',
+            mode: options.mode || 'server',
+            model: options.model,
         });
 
-        return new Promise<FixResult>((resolve) => {
+        return new Promise<FixResult>((resolve, reject) => {
             let parsedText = '';
+            const messageTexts = new Map<string, string>();
             const errorMessages: string[] = [];
+            const seenErrorMessages = new Set<string>();
+            const assistantMessageIds = new Set<string>();
+            const seenToolCallIds = new Set<string>();
             let toolCallCount = 0;
             let finalized = false;
             let transportError: Error | null = null;
 
-            const toolContext: ToolContext = {
-                workspaceRoot: options.workspaceRoot,
+            // Single source of truth: SessionStateMachine. All lifecycle
+            // signals (events, transport close, abort, timeout, errors) are
+            // dispatched into the SM. The SM's state is then read by code
+            // paths that previously relied on parallel boolean flags.
+            // DisposableStore unifies cleanup of timer, SM subscription, and
+            // abort-signal listener so resource release is single-step.
+            const sm = new SessionStateMachine();
+            const store = new DisposableStore();
+
+            const recordErrorMessage = (message: string): boolean => {
+                const normalized = message.trim();
+                if (!normalized || seenErrorMessages.has(normalized)) {
+                    return false;
+                }
+                seenErrorMessages.add(normalized);
+                errorMessages.push(normalized);
+                return true;
             };
+
+            // Derived: a HARD protocol terminal was seen iff the SM ever
+            // transitioned into 'applying_patch' (the only entry path is via
+            // a TERMINAL_EVENT dispatch from streaming/awaiting_tool). This
+            // flag is set inside the SM observer below; never written
+            // anywhere else, so SM state remains the single source of truth.
+            let observedHardTerminal = false;
+            const sawHardTerminal = (): boolean => observedHardTerminal;
+
+            const unsubscribeSm = sm.subscribe((snap) => {
+                if (snap.state === 'applying_patch') {
+                    observedHardTerminal = true;
+                }
+                this.callbacks?.onEvent?.('lifecycle_state', {
+                    state: snap.state,
+                    previous: snap.previous,
+                });
+            });
+            store.add(unsubscribeSm);
+            sm.dispatch({ kind: 'START', detail: options.mode });
 
             const doResolve = (result: FixResult): void => {
                 if (finalized) {
                     return;
                 }
                 finalized = true;
-                clearTimeout(timeoutId);
+                // Drive SM through its terminal sequence so observers see the
+                // final state. Best-effort: SM may already be in a terminal
+                // state via earlier dispatch (e.g. PROTOCOL_ERROR), in which
+                // case ENTER_TERMINAL is the only valid next step.
+                if (!sm.isTerminal() && sm.state() !== 'cleanup') {
+                    if (result.success) {
+                        sm.dispatch({
+                            kind: 'PATCH_APPLIED',
+                            result: {
+                                success: result.success,
+                                fileChanged: result.fileChanged,
+                                finalMessage: result.finalMessage,
+                                toolCallCount: result.toolCallCount,
+                                originalContent: result.originalContent,
+                                newContent: result.newContent,
+                            },
+                        });
+                    }
+                }
+                sm.dispatch({ kind: 'ENTER_TERMINAL' });
+                sm.dispatch({ kind: 'DISPOSED' });
+                store.dispose();
                 resolve(result);
             };
 
-            const finalize = (): void => {
-                if (this.cancelled || this.abortController.signal.aborted) {
+            const finalize = async (): Promise<void> => {
+                if (finalized) {
+                    return;
+                }
+                const emitSessionEnd = (outcome: FixOutcome, finalMessage: string): void => {
                     this.callbacks?.onEvent?.('session_end', {
-                        success: false,
-                        finalMessage: 'Fix cancelled by user',
+                        success: outcome === 'applied',
+                        outcome,
+                        finalMessage,
                     });
+                };
+
+                if (this.cancelled || this.abortController.signal.aborted) {
+                    emitSessionEnd('failed', 'Fix cancelled by user');
                     doResolve({
                         success: false,
+                        outcome: 'failed',
                         finalMessage: 'Fix cancelled by user',
                         toolCallCount,
                         fileChanged: false,
@@ -100,12 +250,10 @@ export class OpenCodeSession {
                 }
 
                 if (transportError) {
-                    this.callbacks?.onEvent?.('session_end', {
-                        success: false,
-                        finalMessage: `Transport error: ${transportError.message}`,
-                    });
+                    emitSessionEnd('failed', `Transport error: ${transportError.message}`);
                     doResolve({
                         success: false,
+                        outcome: 'failed',
                         finalMessage: `Transport error: ${transportError.message}`,
                         toolCallCount,
                         fileChanged: false,
@@ -114,12 +262,10 @@ export class OpenCodeSession {
                 }
 
                 if (errorMessages.length > 0) {
-                    this.callbacks?.onEvent?.('session_end', {
-                        success: false,
-                        finalMessage: errorMessages.join('; '),
-                    });
+                    emitSessionEnd('failed', errorMessages.join('; '));
                     doResolve({
                         success: false,
+                        outcome: 'failed',
                         finalMessage: errorMessages.join('; '),
                         toolCallCount,
                         fileChanged: false,
@@ -127,81 +273,184 @@ export class OpenCodeSession {
                     return;
                 }
 
-                const codeMatch = parsedText.match(/```(?:cpp|c\+\+|c)?\s*\n?([\s\S]*?)```/);
-                if (!codeMatch) {
-                    this.callbacks?.onEvent?.('session_end', {
-                        success: false,
-                        finalMessage: 'OpenCode did not return a valid code block. The response may not have contained the fixed file content.',
+                if (!sawHardTerminal()) {
+                    const msg =
+                        'Transport closed before hard terminal event; original file preserved (protocol incomplete).';
+                    sm.dispatch({
+                        kind: 'PROTOCOL_ERROR',
+                        reason: 'Transport closed before terminal event',
                     });
+                    emitSessionEnd('failed', msg);
                     doResolve({
                         success: false,
-                        finalMessage: 'OpenCode did not return a valid code block. The response may not have contained the fixed file content.',
+                        outcome: 'failed',
+                        finalMessage: msg,
                         toolCallCount,
                         fileChanged: false,
                     });
                     return;
                 }
 
-                const fixedCode = codeMatch[1].trim();
+                // Give OpenCode a brief grace window to flush native file edits
+                // before we compare the on-disk content.
+                await new Promise((resolve) => setTimeout(resolve, 150));
+
                 const normalizedOriginal = options.originalContent.replace(/\r\n/g, '\n').trim();
-                const normalizedFixed = fixedCode.replace(/\r\n/g, '\n').trim();
 
-                if (normalizedOriginal === normalizedFixed) {
-                    this.callbacks?.onEvent?.('session_end', {
-                        success: false,
-                        finalMessage: 'OpenCode returned the same code. No changes were made.',
-                    });
+                let diskContent: string | null = null;
+                try {
+                    diskContent = fs.readFileSync(options.resolvedPath, 'utf-8');
+                } catch (err) {
+                }
+
+                if (diskContent !== null) {
+                    const normalizedDisk = diskContent.replace(/\r\n/g, '\n').trim();
+                    if (normalizedDisk !== normalizedOriginal) {
+                        this.callbacks?.onDiff?.(options.resolvedPath, options.originalContent, diskContent, 'opencode_edit');
+                        emitSessionEnd('applied', 'Fix applied via OpenCode edit tools.');
+                        doResolve({
+                            success: true,
+                            outcome: 'applied',
+                            finalMessage: 'Fix applied via OpenCode edit tools.',
+                            toolCallCount,
+                            fileChanged: true,
+                            originalContent: options.originalContent,
+                            newContent: diskContent,
+                        });
+                        return;
+                    }
+                }
+
+                // Find ALL code blocks and use the LAST one (models typically put final answer last)
+                const codeBlockRegex = /```(?:cpp|c\+\+|c)\s*\n([\s\S]*?)```/g;
+                let lastMatch: RegExpExecArray | null = null;
+                let match: RegExpExecArray | null;
+                while ((match = codeBlockRegex.exec(parsedText)) !== null) {
+                    lastMatch = match;
+                }
+
+                if (lastMatch) {
+                    const fixedCode = lastMatch[1].trim();
+                    const normalizedFixed = fixedCode.replace(/\r\n/g, '\n').trim();
+
+                    if (normalizedOriginal !== normalizedFixed) {
+                        // Preservation invariant: never overwrite the file from a
+                        // code block when no hard protocol terminal was observed.
+                        // The wire may have closed mid-stream; the candidate patch
+                        // is not trustworthy. The placeholder/size guards below
+                        // catch obvious cases, but a syntactically-complete
+                        // suspect block would slip through without this check.
+                        if (!sawHardTerminal()) {
+                            const msg =
+                                'Transport closed before hard terminal event; original file preserved (protocol incomplete).';
+                            sm.dispatch({
+                                kind: 'PROTOCOL_ERROR',
+                                reason: 'Transport closed before terminal event',
+                            });
+                            emitSessionEnd('failed', msg);
+                            doResolve({
+                                success: false,
+                                outcome: 'failed',
+                                finalMessage: msg,
+                                toolCallCount,
+                                fileChanged: false,
+                            });
+                            return;
+                        }
+
+                        const placeholderReason = detectPlaceholderResponse(fixedCode, options.originalContent);
+                        const msg = placeholderReason
+                            ? `Model returned a placeholder or truncated response; original file preserved (${placeholderReason}).`
+                            : 'OpenCode returned a C/C++ code block instead of applying an edit tool; original file preserved to avoid replacing the whole file with partial model output.';
+                        emitSessionEnd('failed', msg);
+                        doResolve({
+                            success: false,
+                            outcome: 'failed',
+                            finalMessage: msg,
+                            toolCallCount,
+                            fileChanged: false,
+                        });
+                        return;
+                    }
+                }
+
+                // Even when no C++ code block was found, the model may have
+                // returned a placeholder or echoed the focused snippet.
+                if (!lastMatch) {
+                    const placeholderReason = detectPlaceholderResponse(parsedText, options.originalContent);
+                    if (placeholderReason) {
+                        const msg = `Model returned a placeholder or truncated response; original file preserved (${placeholderReason}).`;
+                        emitSessionEnd('failed', msg);
+                        doResolve({
+                            success: false,
+                            outcome: 'failed',
+                            finalMessage: msg,
+                            toolCallCount,
+                            fileChanged: false,
+                        });
+                        return;
+                    }
+                }
+
+                const noFixNeededReason = extractTerminalReason(parsedText, 'NO_FIX_NEEDED');
+                if (noFixNeededReason) {
+                    emitSessionEnd('no_change', noFixNeededReason);
                     doResolve({
                         success: false,
-                        finalMessage: 'OpenCode returned the same code. No changes were made.',
+                        outcome: 'no_change',
+                        finalMessage: noFixNeededReason,
                         toolCallCount,
                         fileChanged: false,
                     });
                     return;
                 }
 
-                fs.writeFileSync(options.resolvedPath, fixedCode, 'utf-8');
-                this.callbacks?.onDiff?.(options.resolvedPath, options.originalContent, fixedCode, 'opencode_fix');
+                const cannotFixReason = extractTerminalReason(parsedText, 'CANNOT_FIX');
+                if (cannotFixReason) {
+                    emitSessionEnd('failed', cannotFixReason);
+                    doResolve({
+                        success: false,
+                        outcome: 'failed',
+                        finalMessage: cannotFixReason,
+                        toolCallCount,
+                        fileChanged: false,
+                    });
+                    return;
+                }
 
-                this.callbacks?.onEvent?.('session_end', {
-                    success: true,
-                    finalMessage: 'Fix applied successfully using OpenCode.',
-                });
+                const noChangeMsg = lastMatch
+                    ? 'OpenCode finished without a native edit; original file preserved for safety because it returned the original code without explaining why.'
+                    : 'OpenCode finished without a native edit; original file preserved for safety because it did not provide a parseable reason.';
+                emitSessionEnd('failed', noChangeMsg);
                 doResolve({
-                    success: true,
-                    finalMessage: 'Fix applied successfully using OpenCode.',
+                    success: false,
+                    outcome: 'failed',
+                    finalMessage: noChangeMsg,
                     toolCallCount,
-                    fileChanged: true,
-                    originalContent: options.originalContent,
-                    newContent: fixedCode,
+                    fileChanged: false,
                 });
             };
 
             const timeoutId = setTimeout(() => {
-                this.cancel();
-                this.callbacks?.onEvent?.('session_end', {
-                    success: false,
-                    finalMessage: `Fix timed out after ${options.timeoutMs}ms`,
-                });
-                doResolve({
-                    success: false,
-                    finalMessage: `Fix timed out after ${options.timeoutMs}ms`,
-                    toolCallCount,
-                    fileChanged: false,
-                });
+                transportError = new Error(`Fix timed out after ${options.timeoutMs}ms`);
+                sm.dispatch({ kind: 'TIMEOUT_INACTIVE', afterMs: options.timeoutMs });
+                this.transport.cancel();
+                void finalize();
             }, options.timeoutMs);
+            store.addTimer(timeoutId);
 
-            this.abortController.signal.addEventListener('abort', () => {
-                this.callbacks?.onEvent?.('session_end', {
-                    success: false,
-                    finalMessage: 'Fix cancelled by user',
-                });
-                doResolve({
-                    success: false,
-                    finalMessage: 'Fix cancelled by user',
-                    toolCallCount,
-                    fileChanged: false,
-                });
+            // Abort listener registers via DisposableStore so the listener is
+            // explicitly removed during cleanup, preventing stale callback
+            // delivery (e.g. when a later cancel fires after this run resolved).
+            const onAbort = (): void => {
+                sm.dispatch({ kind: 'USER_CANCEL' });
+                if (!finalized) {
+                    void finalize();
+                }
+            };
+            this.abortController.signal.addEventListener('abort', onAbort);
+            store.add(() => {
+                this.abortController.signal.removeEventListener('abort', onAbort);
             });
 
             this.transport.onEvent((event: unknown) => {
@@ -210,56 +459,83 @@ export class OpenCodeSession {
                 }
 
                 const e = event as OpenCodeEvent;
+                if (e.type === 'session_start') {
+                    const opencodeSessionId = extractSessionId(e);
+                    if (opencodeSessionId) {
+                        this.callbacks?.onEvent?.('session_metadata', { opencodeSessionId });
+                    }
+                }
+
+                const messageRole = extractMessageRole(e);
+                const eventMessageId = extractMessageId(e);
+                if (messageRole === 'assistant' && eventMessageId) {
+                    assistantMessageIds.add(eventMessageId);
+                }
+                const partMessageId = extractPartMessageId(e);
+                const isAssistantScopedPart = partMessageId
+                    ? assistantMessageIds.has(partMessageId)
+                    : true;
 
                 const textDelta = extractTextDelta(e);
-                if (textDelta) {
-                    parsedText += textDelta;
-                    this.callbacks?.onMessageChunk?.({ type: 'text_delta', delta: textDelta }, messageId);
+                if (textDelta && isAssistantScopedPart) {
+                    // Promote SM from sending -> streaming on first meaningful chunk.
+                    // The SM ignores TEXT_DELTA in states that don't accept it.
+                    sm.dispatch({ kind: 'TEXT_DELTA', chunk: textDelta });
+                    if (e.type !== 'reasoning') {
+                        const prev = messageTexts.get(messageId) || '';
+                        if (textDelta.startsWith(prev) && textDelta.length > prev.length) {
+                            const delta = textDelta.substring(prev.length);
+                            messageTexts.set(messageId, textDelta);
+                            parsedText += delta;
+                            this.callbacks?.onMessageChunk?.({ type: 'text_delta', delta }, messageId);
+                        } else if (textDelta !== prev) {
+                            messageTexts.set(messageId, prev + textDelta);
+                            parsedText += textDelta;
+                            this.callbacks?.onMessageChunk?.({ type: 'text_delta', delta: textDelta }, messageId);
+                        }
+                    } else {
+                        this.callbacks?.onMessageChunk?.({ type: 'text_delta', delta: textDelta }, messageId + '_reasoning');
+                    }
+                } else {
                 }
 
                 const errorMsg = extractErrorMessage(e);
                 if (errorMsg) {
-                    errorMessages.push(errorMsg);
-                    this.callbacks?.onMessageChunk?.(
-                        { type: 'text_delta', delta: `\n❌ OpenCode error: ${errorMsg}\n` },
-                        messageId,
-                    );
+                    if (recordErrorMessage(errorMsg)) {
+                        this.callbacks?.onMessageChunk?.(
+                            { type: 'text_delta', delta: `\n❌ OpenCode error: ${errorMsg}\n` },
+                            messageId,
+                        );
+                    }
                 }
 
                 const toolCallInfo: ToolCallInfo | null = extractToolCall(e);
-                if (toolCallInfo) {
-                    toolCallCount++;
-                    const toolCallId = toolCallInfo.toolCallId || `tc_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-                    this.callbacks?.onToolCall?.(toolCallInfo.name, toolCallInfo.params, toolCallId);
-                    this.callbacks?.onEvent?.('step_update', {
-                        step: 'tool_call',
-                        detail: `${toolCallInfo.name}`,
-                    });
-
-                    void (async (): Promise<void> => {
-                        const result = await executeTool(toolCallInfo.name, toolCallInfo.params, toolContext);
-                        const isError = result.startsWith('Error:');
-
-                        this.transport.send({
-                            type: 'tool_result',
-                            tool_result: { toolCallId, result, isError },
+                if (toolCallInfo && isAssistantScopedPart) {
+                    const toolCallId = toolCallInfo.toolCallId || `tc_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+                    if (!seenToolCallIds.has(toolCallId)) {
+                        seenToolCallIds.add(toolCallId);
+                        toolCallCount++;
+                        sm.dispatch({ kind: 'TOOL_CALL', name: toolCallInfo.name, toolCallId });
+                        this.callbacks?.onToolCall?.(toolCallInfo.name, toolCallInfo.params, toolCallId);
+                        this.callbacks?.onEvent?.('step_update', {
+                            step: 'tool_call',
+                            detail: `${toolCallInfo.name}`,
                         });
+                    }
+                }
 
-                        this.callbacks?.onToolResult?.(toolCallId, result, isError);
-
-                        if (isError) {
-                            const errText = `Tool ${toolCallInfo.name} failed: ${result}`;
-                            errorMessages.push(errText);
-                            this.callbacks?.onMessageChunk?.(
-                                { type: 'text_delta', delta: `\n⚠️ ${errText}\n` },
-                                messageId,
-                            );
-                        }
-                    })();
+                if (e.type === 'diff' && typeof (e as any).path === 'string') {
+                    this.callbacks?.onDiff?.(
+                        (e as any).path,
+                        typeof (e as any).oldText === 'string' ? (e as any).oldText : '',
+                        typeof (e as any).newText === 'string' ? (e as any).newText : '',
+                        typeof (e as any).toolCallId === 'string' ? (e as any).toolCallId : 'opencode_diff',
+                    );
                 }
 
                 const toolResultInfo: ToolResultInfo | null = extractToolResult(e);
-                if (toolResultInfo) {
+                if (toolResultInfo && isAssistantScopedPart) {
+                    sm.dispatch({ kind: 'TOOL_RESULT_SENT', toolCallId: toolResultInfo.toolCallId });
                     this.callbacks?.onToolResult?.(
                         toolResultInfo.toolCallId,
                         toolResultInfo.result,
@@ -270,33 +546,70 @@ export class OpenCodeSession {
                         detail: toolResultInfo.isError ? 'error' : 'success',
                     });
                     if (toolResultInfo.isError) {
-                        errorMessages.push(`Tool failed: ${toolResultInfo.result}`);
+                        recordErrorMessage(`Tool failed: ${toolResultInfo.result}`);
                     }
+                } else {
                 }
 
                 if (isCompletionEvent(e)) {
+                    // After the adapter tightening, this branch fires ONLY on
+                    // hard terminal events (done / step_end / session.end /
+                    // session.done / message.updated:info.time.completed /
+                    // choices[0].finish_reason). Soft signals like session.idle
+                    // / server.disconnect no longer reach here — they bypass
+                    // this branch and only affect transport.onClose handling.
+                    // SM observer flips observedHardTerminal when state -> applying_patch.
+                    sm.dispatch({ kind: 'TERMINAL_EVENT', reason: 'done' });
                     this.callbacks?.onEvent?.('status', {
                         phase: 'finalizing',
                         message: 'Processing fix result...',
                     });
-                    finalize();
+                    void finalize();
+                } else {
                 }
             });
 
             this.transport.onClose((_exitCode: number | null) => {
-                finalize();
+                // Tell the SM the wire closed, with the truth about whether a
+                // hard terminal was previously seen. SM uses this to decide
+                // streaming -> error (no terminal) vs streaming -> streaming
+                // (terminal already advanced state to applying_patch).
+                sm.dispatch({ kind: 'TRANSPORT_CLOSED', sawTerminal: sawHardTerminal() });
+                void finalize();
             });
 
             this.transport.onError((error: Error) => {
                 transportError = error;
-                finalize();
+                sm.dispatch({ kind: 'TRANSPORT_ERROR', reason: error.message });
+                if (!finalized) {
+                    finalized = true;
+                    clearTimeout(timeoutId);
+                    store.dispose();
+                    this.callbacks?.onEvent?.('session_end', {
+                        success: false,
+                        outcome: 'failed',
+                        finalMessage: `Transport error: ${transportError.message}`,
+                    });
+                }
+                reject(new Error('Transport error: ' + error.message));
+            });
+
+            this.transport.onProgress((progressMessage: string) => {
+                this.callbacks?.onEvent?.('status', {
+                    phase: 'running',
+                    message: progressMessage,
+                });
+                this.callbacks?.onMessageChunk?.(
+                    { type: 'text_delta', delta: `[${progressMessage}]\n` },
+                    messageId + '_progress',
+                );
             });
 
             this.transport.start(options.prompt);
 
             this.callbacks?.onEvent?.('status', {
                 phase: 'running',
-                message: 'Waiting for OpenCode response...',
+                message: `Waiting for OpenCode ${options.mode || 'server'} response...`,
             });
         });
     }

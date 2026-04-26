@@ -1,5 +1,7 @@
 import { expect } from 'chai';
 import * as sinon from 'sinon';
+import * as fs from 'fs';
+import * as path from 'path';
 import { WebviewPanelProvider } from './webviewPanelProvider';
 
 const vscode = require('vscode');
@@ -17,30 +19,41 @@ describe('WebviewPanelProvider', () => {
 
     describe('getHTML', () => {
         let mockWebview: any;
+        let mockExtensionUri: any;
 
         beforeEach(() => {
             mockWebview = {
                 cspSource: 'vscode-resource:',
+                asWebviewUri: (uri: any) => ({ toString: () => 'webview-uri://' + uri.fsPath }),
+            };
+            mockExtensionUri = {
+                fsPath: path.resolve(__dirname, '..', '..'),
             };
         });
 
         it('returns string with required DOM element IDs', () => {
-            const html = (provider as any).getHTML(mockWebview);
+            const html = (provider as any).getHTML(mockWebview, mockExtensionUri);
             expect(html).to.be.a('string');
 
             const requiredIds = [
-                'backendBadge',
-                'degradedBanner',
-                'phaseIndicator',
-                'timeline',
-                'diffCards',
-                'sessionResult',
+                'session-header',
                 'messages',
+                'waiting-indicator',
+                'message-container',
+                'session-target',
+                'session-subtitle',
+                'meta-session',
+                'current-step-title',
+                'current-step-detail',
+                'result-panel',
+                'result-title',
+                'result-message',
+                'result-summary',
+                'result-diff-preview',
                 'stopBtn',
                 'cancelBtn',
-                'queuePanel',
-                'queueHeader',
-                'queueBody',
+                'queue-badge',
+                'technical-details',
             ];
 
             for (const id of requiredIds) {
@@ -48,28 +61,24 @@ describe('WebviewPanelProvider', () => {
             }
         });
 
-        it('includes CSP nonce in script tag', () => {
-            const html = (provider as any).getHTML(mockWebview);
+        it('includes CSP nonce in script and link tags', () => {
+            const html = (provider as any).getHTML(mockWebview, mockExtensionUri);
             const nonceMatch = html.match(/nonce="([A-Za-z0-9]{32})"/);
             expect(nonceMatch).to.not.be.null;
-            expect(html).to.include('<script nonce=');
+            expect(html).to.include('nonce=');
         });
 
-        it('includes required CSS classes', () => {
-            const html = (provider as any).getHTML(mockWebview);
+        it('includes external style and script URIs', () => {
+            const html = (provider as any).getHTML(mockWebview, mockExtensionUri);
+            expect(html).to.include('fixPanel.css');
+            expect(html).to.include('fixPanel.js');
+        });
 
-            const requiredClasses = [
-                '.backend-badge',
-                '.degraded-banner',
-                '.phase-indicator',
-                '.timeline',
-                '.diff-cards',
-                '.session-result',
-            ];
-
-            for (const cls of requiredClasses) {
-                expect(html).to.include(cls, `Missing CSS class ${cls}`);
-            }
+        it('loads the HTML template from media/fixPanel.html', () => {
+            const html = (provider as any).getHTML(mockWebview, mockExtensionUri);
+            const templatePath = path.join(mockExtensionUri.fsPath, 'media', 'fixPanel.html');
+            const template = fs.readFileSync(templatePath, 'utf-8');
+            expect(html).to.include(template.substring(0, 100));
         });
     });
 
@@ -78,6 +87,8 @@ describe('WebviewPanelProvider', () => {
             const mockPanel = {
                 webview: {
                     html: '',
+                    cspSource: 'vscode-resource:',
+                    asWebviewUri: (uri: any) => ({ toString: () => 'webview-uri://' + uri.fsPath }),
                     onDidReceiveMessage: () => {},
                     postMessage: () => Promise.resolve(true),
                 },
@@ -89,7 +100,7 @@ describe('WebviewPanelProvider', () => {
             const createWebviewPanelStub = sinon.stub(vscode.window, 'createWebviewPanel').returns(mockPanel);
 
             const mockContext = {
-                extensionUri: { fsPath: '/test' },
+                extensionUri: { fsPath: path.resolve(__dirname, '..', '..') },
                 subscriptions: [],
             } as any;
 

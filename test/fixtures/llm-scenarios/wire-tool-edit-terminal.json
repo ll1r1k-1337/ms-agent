@@ -1,0 +1,145 @@
+{
+  "description": "Realistic server-wire happy path. The user prompt is echoed on the event bus, the assistant performs a native edit tool call through message.part.updated tool parts, then terminates via assistant message.updated with info.time.completed. The session must ignore the user prompt text, detect the disk edit, and report success.",
+  "steps": [
+    {
+      "kind": "event",
+      "event": {
+        "type": "message.updated",
+        "properties": {
+          "sessionID": "ses_wire_1",
+          "info": {
+            "id": "msg_user_wire_1",
+            "role": "user",
+            "sessionID": "ses_wire_1",
+            "time": {
+              "created": 1000
+            }
+          }
+        }
+      }
+    },
+    {
+      "kind": "event",
+      "event": {
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_wire_1",
+          "part": {
+            "type": "text",
+            "text": "If no edit is needed, respond with `NO_FIX_NEEDED: <short reason>`.\n",
+            "messageID": "msg_user_wire_1",
+            "sessionID": "ses_wire_1",
+            "id": "prt_user_wire_1"
+          },
+          "time": 1001
+        }
+      }
+    },
+    {
+      "kind": "event",
+      "event": {
+        "type": "message.updated",
+        "properties": {
+          "sessionID": "ses_wire_1",
+          "info": {
+            "id": "msg_asst_wire_1",
+            "role": "assistant",
+            "sessionID": "ses_wire_1",
+            "time": {
+              "created": 1002
+            }
+          }
+        }
+      }
+    },
+    {
+      "kind": "event",
+      "event": {
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_wire_1",
+          "part": {
+            "type": "tool",
+            "id": "prt_tool_wire_1",
+            "messageID": "msg_asst_wire_1",
+            "sessionID": "ses_wire_1",
+            "tool": "edit_file",
+            "callID": "tc_wire_edit_1",
+            "state": {
+              "type": "pending",
+              "input": "{\"path\":\"kernel.cpp\"}"
+            }
+          },
+          "time": 1003
+        }
+      }
+    },
+    {
+      "kind": "fsWrite",
+      "relPath": "kernel.cpp",
+      "content": "int function_0() { return 0 * 2; }\nint function_1_fixed() { return 1 * 2; }\n"
+    },
+    {
+      "kind": "event",
+      "event": {
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_wire_1",
+          "part": {
+            "type": "tool",
+            "id": "prt_tool_wire_1",
+            "messageID": "msg_asst_wire_1",
+            "sessionID": "ses_wire_1",
+            "tool": "edit_file",
+            "callID": "tc_wire_edit_1",
+            "state": {
+              "type": "completed",
+              "output": "ok"
+            }
+          },
+          "time": 1004
+        }
+      }
+    },
+    {
+      "kind": "event",
+      "event": {
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_wire_1",
+          "part": {
+            "type": "text",
+            "text": "Updated the bounded write length.\n",
+            "messageID": "msg_asst_wire_1",
+            "sessionID": "ses_wire_1",
+            "id": "prt_asst_wire_1"
+          },
+          "time": 1005
+        }
+      }
+    },
+    {
+      "kind": "event",
+      "event": {
+        "type": "message.updated",
+        "properties": {
+          "sessionID": "ses_wire_1",
+          "info": {
+            "id": "msg_asst_wire_1",
+            "role": "assistant",
+            "sessionID": "ses_wire_1",
+            "time": {
+              "created": 1002,
+              "completed": 1006
+            },
+            "finish": "stop"
+          }
+        }
+      }
+    },
+    {
+      "kind": "close",
+      "exitCode": 0
+    }
+  ]
+}

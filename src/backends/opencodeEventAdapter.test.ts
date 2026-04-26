@@ -18,6 +18,10 @@ import {
     extractTextDelta,
     extractErrorMessage,
     isCompletionEvent,
+    extractSessionId,
+    extractMessageRole,
+    extractMessageId,
+    extractPartMessageId,
 } from './opencodeEventAdapter';
 
 describe('opencodeEventAdapter', () => {
@@ -75,6 +79,48 @@ describe('opencodeEventAdapter', () => {
                 name: 'edit_file',
                 params: { oldText: 'a', newText: 'b' },
                 toolCallId: 'oc_123',
+            });
+        });
+
+        it('should extract tool_call from nested part.tool_call (OpenCode server format)', () => {
+            const event: OpenCodeEvent = {
+                type: 'tool_call',
+                part: {
+                    type: 'tool_call',
+                    tool_call: {
+                        name: 'read_file',
+                        arguments: '{"path":"test.cpp"}',
+                        id: 'call_123',
+                    },
+                },
+            };
+            const result = extractToolCall(event);
+            expect(result).to.deep.equal({
+                name: 'read_file',
+                params: { path: 'test.cpp' },
+                toolCallId: 'call_123',
+            });
+        });
+
+        it('should extract tool_call from SSE properties.part format', () => {
+            const event: OpenCodeEvent = {
+                type: 'message.part.updated',
+                properties: {
+                    part: {
+                        type: 'tool_call',
+                        tool_call: {
+                            name: 'read_file',
+                            arguments: '{"path":"test.cpp"}',
+                            id: 'sse_call_123',
+                        },
+                    },
+                },
+            };
+            const result = extractToolCall(event);
+            expect(result).to.deep.equal({
+                name: 'read_file',
+                params: { path: 'test.cpp' },
+                toolCallId: 'sse_call_123',
             });
         });
 
@@ -138,6 +184,71 @@ describe('opencodeEventAdapter', () => {
                 isError: true,
             });
         });
+
+        it('should extract tool_result from nested part.tool_result (OpenCode server format)', () => {
+            const event: OpenCodeEvent = {
+                type: 'tool_result',
+                part: {
+                    type: 'tool_result',
+                    tool_result: {
+                        toolCallId: 'call_abc',
+                        result: 'success output',
+                        isError: false,
+                    },
+                },
+            };
+            const result = extractToolResult(event);
+            expect(result).to.deep.equal({
+                toolCallId: 'call_abc',
+                result: 'success output',
+                isError: false,
+            });
+        });
+
+        it('should extract tool_result from SSE properties.part format', () => {
+            const event: OpenCodeEvent = {
+                type: 'message.part.updated',
+                properties: {
+                    part: {
+                        type: 'tool_result',
+                        tool_result: {
+                            toolCallId: 'sse_call_456',
+                            result: 'sse result',
+                            isError: true,
+                        },
+                    },
+                },
+            };
+            const result = extractToolResult(event);
+            expect(result).to.deep.equal({
+                toolCallId: 'sse_call_456',
+                result: 'sse result',
+                isError: true,
+            });
+        });
+
+        it('should extract tool completion from SSE tool part state machine', () => {
+            const event: OpenCodeEvent = {
+                type: 'message.part.updated',
+                properties: {
+                    part: {
+                        type: 'tool',
+                        tool: 'edit_file',
+                        callID: 'tc_123',
+                        state: {
+                            type: 'completed',
+                            output: 'ok',
+                        },
+                    },
+                },
+            };
+            const result = extractToolResult(event);
+            expect(result).to.deep.equal({
+                toolCallId: 'tc_123',
+                result: 'ok',
+                isError: false,
+            });
+        });
     });
 
     describe('extractTextDelta', () => {
@@ -155,6 +266,20 @@ describe('opencodeEventAdapter', () => {
                 text: 'delta text',
             };
             expect(extractTextDelta(event)).to.equal('delta text');
+        });
+
+        it('should extract text from SSE properties.part.text', () => {
+            const event: OpenCodeEvent = {
+                type: 'message.part.updated',
+                properties: {
+                    sessionID: 'sess_123',
+                    part: {
+                        type: 'text',
+                        text: 'sse text content',
+                    },
+                },
+            };
+            expect(extractTextDelta(event)).to.equal('sse text content');
         });
 
         it('should return null when no text present', () => {
@@ -185,6 +310,29 @@ describe('opencodeEventAdapter', () => {
             expect(extractErrorMessage(event)).to.equal('deep error');
         });
 
+        it('should extract session.error payloads nested under properties', () => {
+            const event: OpenCodeEvent = {
+                type: 'session.error',
+                properties: {
+                    error: { data: { message: 'quota exceeded' } },
+                },
+            };
+            expect(extractErrorMessage(event)).to.equal('quota exceeded');
+        });
+
+        it('should extract assistant completion errors nested under properties.info', () => {
+            const event: OpenCodeEvent = {
+                type: 'message.updated',
+                properties: {
+                    info: {
+                        role: 'assistant',
+                        error: { message: 'assistant failed' },
+                    },
+                },
+            };
+            expect(extractErrorMessage(event)).to.equal('assistant failed');
+        });
+
         it('should return null when no error', () => {
             const event: OpenCodeEvent = { type: 'text' };
             expect(extractErrorMessage(event)).to.be.null;
@@ -204,6 +352,62 @@ describe('opencodeEventAdapter', () => {
             expect(isCompletionEvent({ type: 'text' })).to.be.false;
             expect(isCompletionEvent({ type: 'tool_call' })).to.be.false;
             expect(isCompletionEvent({})).to.be.false;
+        });
+
+        it('should return true for hard OpenCode SSE completion types', () => {
+            // Only explicit "the model is done" signals advance to applying_patch.
+            expect(isCompletionEvent({ type: 'session.end' })).to.be.true;
+            expect(isCompletionEvent({ type: 'session.done' })).to.be.true;
+        });
+
+        it('should return false for soft-close OpenCode SSE types (preservation invariant)', () => {
+            // These mean "the wire went quiet", not "the model is done". The session
+            // layer maps them to TRANSPORT_CLOSED; if no hard terminal was seen, the
+            // file is preserved instead of being overwritten with partial output.
+            expect(isCompletionEvent({ type: 'session.idle' })).to.be.false;
+            expect(isCompletionEvent({ type: 'session.error' })).to.be.false;
+            expect(isCompletionEvent({ type: 'server.disconnect' })).to.be.false;
+            expect(isCompletionEvent({ type: 'end' })).to.be.false;
+        });
+
+        it('should return false for server.heartbeat', () => {
+            expect(isCompletionEvent({ type: 'server.heartbeat' })).to.be.false;
+            expect(isCompletionEvent({ type: 'server.heartbeat', properties: {} })).to.be.false;
+        });
+
+        it('should return true for message.updated with info.time.completed', () => {
+            const completedEvent: OpenCodeEvent = {
+                type: 'message.updated',
+                properties: {
+                    info: {
+                        role: 'assistant',
+                        time: { completed: 1735080000000 },
+                    },
+                },
+            };
+            expect(isCompletionEvent(completedEvent)).to.be.true;
+        });
+
+        it('should return false for message.updated without completed time', () => {
+            expect(isCompletionEvent({
+                type: 'message.updated',
+                properties: { info: { role: 'assistant', time: {} } },
+            })).to.be.false;
+            expect(isCompletionEvent({
+                type: 'message.updated',
+                properties: { info: { role: 'assistant', time: { completed: 0 } } },
+            })).to.be.false;
+            expect(isCompletionEvent({
+                type: 'message.updated',
+                properties: {},
+            })).to.be.false;
+        });
+
+        it('should return false for user message.updated even when completed is set', () => {
+            expect(isCompletionEvent({
+                type: 'message.updated',
+                properties: { info: { role: 'user', time: { completed: 1735080000000 } } },
+            })).to.be.false;
         });
     });
 
@@ -304,6 +508,34 @@ describe('opencodeEventAdapter', () => {
         it('isToolUsePart matches correctly', () => {
             expect(isToolUsePart({ type: 'tool' })).to.be.true;
             expect(isToolUsePart({ type: 'other' })).to.be.false;
+        });
+    });
+
+    describe('session/message helpers', () => {
+        it('extracts session and message metadata from wire events', () => {
+            const partEvent: OpenCodeEvent = {
+                type: 'message.part.updated',
+                properties: {
+                    sessionID: 'sess_1',
+                    part: {
+                        type: 'text',
+                        messageID: 'msg_1',
+                    },
+                },
+            };
+            const messageEvent: OpenCodeEvent = {
+                type: 'message.updated',
+                properties: {
+                    info: {
+                        id: 'msg_1',
+                        role: 'assistant',
+                    },
+                },
+            };
+            expect(extractSessionId(partEvent)).to.equal('sess_1');
+            expect(extractMessageRole(messageEvent)).to.equal('assistant');
+            expect(extractMessageId(messageEvent)).to.equal('msg_1');
+            expect(extractPartMessageId(partEvent)).to.equal('msg_1');
         });
     });
 });

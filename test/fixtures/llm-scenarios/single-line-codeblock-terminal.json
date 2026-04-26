@@ -1,0 +1,7 @@
+{
+  "description": "Regression for 2026-04-26: model returns only a single C++ statement in a terminal code block. Session must preserve the original file instead of replacing the whole file with the partial block.",
+  "steps": [
+    { "kind": "event", "event": { "type": "text", "part": { "text": "```cpp\nDataCopy(zLocal, xLocal, 2* TILE_LENGTH);\n```" } } },
+    { "kind": "event", "event": { "type": "done" } }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "description": "Regression for 2026-04-26 bug: model returns the prompt's focused snippet inside a ```text block instead of an actual fix. The code block extraction must reject non-C++ blocks, and detectPlaceholderResponse must catch snippet-like content.",
+  "steps": [
+    { "kind": "event", "event": { "type": "text", "part": { "text": "Here is the analysis:\n\n```text\n    25 | \n    26 |         // Line 30: BUG - out of bounds\n>   30 |         DataCopy(zLocal, xLocal, 2* TILE_LENGTH);\n    31 | \n    32 |         // Line 40: BUG\n    33 |         DataCopy(zGlobal[progress * 3], zLocal, TILE_LENGTH);\n```\n\nThe issue is at line 30." } } },
+    { "kind": "event", "event": { "type": "done" } }
+  ]
+}

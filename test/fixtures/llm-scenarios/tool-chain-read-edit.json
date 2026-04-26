@@ -1,0 +1,12 @@
+{
+  "description": "Tool-driven path: model uses opencode's read_file then edit_file tools to apply a minimal patch. Disk is mutated by the edit tool, no whole-file code block is emitted, and the assistant ends with a short confirmation message. Session must finalize via disk-diff with fileChanged=true.",
+  "steps": [
+    { "kind": "event", "event": { "type": "tool_call", "tool_call": { "name": "read_file", "arguments": "{\"path\":\"kernel.cpp\"}", "id": "tc_read_1" } } },
+    { "kind": "event", "event": { "type": "tool_result", "tool_result": { "id": "tc_read_1", "result": "(file contents)", "isError": false } } },
+    { "kind": "event", "event": { "type": "tool_call", "tool_call": { "name": "edit_file", "arguments": "{\"path\":\"kernel.cpp\"}", "id": "tc_edit_1" } } },
+    { "kind": "fsWrite", "relPath": "kernel.cpp", "content": "int function_0() { return 0 * 2; }\nint function_1_fixed() { return 1 * 2; }\n" },
+    { "kind": "event", "event": { "type": "tool_result", "tool_result": { "id": "tc_edit_1", "result": "ok", "isError": false } } },
+    { "kind": "event", "event": { "type": "text", "part": { "text": "Done. Renamed function_1 to function_1_fixed and replaced the offending body." } } },
+    { "kind": "event", "event": { "type": "done" } }
+  ]
+}
