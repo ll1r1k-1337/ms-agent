@@ -11,6 +11,7 @@ export type FixtureStep =
 
 export interface LlmScenarioFixture {
     description: string;
+    sessionMessages?: unknown[];
     steps: FixtureStep[];
 }
 
@@ -72,6 +73,12 @@ export class FixtureTransport implements OpenCodeTransport {
 
     send(data: unknown): void {
         this.sent.push(data);
+    }
+
+    async readSessionMessages(): Promise<unknown[] | null> {
+        return Array.isArray(this.fixture.sessionMessages)
+            ? this.fixture.sessionMessages
+            : null;
     }
 
     cancel(): void {

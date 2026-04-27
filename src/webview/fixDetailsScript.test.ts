@@ -20,42 +20,44 @@ describe('fixDetailsScript string inclusion', () => {
   });
 
   it('contains card-based render entry points', () => {
-    expect(fixDetailsScript).to.include('renderStrip');
     expect(fixDetailsScript).to.include('renderStatusCard');
-    expect(fixDetailsScript).to.include('renderSteps');
     expect(fixDetailsScript).to.include('renderFiles');
     expect(fixDetailsScript).to.include('renderExplanation');
-    expect(fixDetailsScript).to.include('renderEmptyState');
+    expect(fixDetailsScript).to.include('renderIdleHint');
     expect(fixDetailsScript).to.include('renderInlineMarkdown');
+    expect(fixDetailsScript).to.include('parseExplanationSections');
+    expect(fixDetailsScript).to.include('explanationSectionHtml');
     expect(fixDetailsScript).to.include('formatDiffLines');
+    expect(fixDetailsScript).to.include('renderCollapsedCards');
+    expect(fixDetailsScript).to.include('toggleCardCollapse');
   });
 
   it('contains all DOM element IDs', () => {
     const ids = [
       'messages',
-      'waiting-indicator',
-      'message-container',
-      'session-target',
+      'meta-target',
       'meta-model',
       'meta-session',
       'meta-backend',
       'meta-mode',
-      'session-phase',
+      'meta-elapsed',
       'status-pill',
       'status-label',
-      'steps-card',
-      'steps-list',
-      'steps-meta',
+      'status-card',
+      'status-progress',
+      'elapsed-row',
+      'queue-row',
+      'queue-badge',
+      'action-row',
       'files-card',
       'files-list',
       'files-meta',
       'explanation-card',
       'explanation-body',
       'explanation-meta',
+      'idle-hint',
       'stopBtn',
       'cancelBtn',
-      'queue-badge',
-      'technical-details',
     ];
     for (const id of ids) {
       expect(fixDetailsScript).to.include(id);
@@ -126,10 +128,6 @@ describe('fixDetailsScript string inclusion', () => {
     expect(fixDetailsScript).to.include('OpenCode 暂无响应');
   });
 
-  it('contains message count tracking', () => {
-    expect(fixDetailsScript).to.include('messageNodes');
-  });
-
   it('contains hasReceivedContent flag', () => {
     expect(fixDetailsScript).to.include('hasReceivedContent');
   });
@@ -138,7 +136,9 @@ describe('fixDetailsScript string inclusion', () => {
     expect(fixDetailsScript).to.include('sessionStartedAt');
     expect(fixDetailsScript).to.include('changes');
     expect(fixDetailsScript).to.include('explanation');
-    expect(fixDetailsScript).to.include('steps');
+    expect(fixDetailsScript).to.include('activeRunId');
+    expect(fixDetailsScript).to.include('terminalLocked');
+    expect(fixDetailsScript).to.include('collapsedCards');
   });
 
   it('contains multi-file diff rendering markers', () => {
@@ -151,6 +151,49 @@ describe('fixDetailsScript string inclusion', () => {
 
   it('contains explanation accumulation from text_stream', () => {
     expect(fixDetailsScript).to.include('state.explanation');
-    expect(fixDetailsScript).to.include('state.explanation += delta');
+    expect(fixDetailsScript).to.include('state.finalExplanation');
+    expect(fixDetailsScript).to.include('state.finalExplanationKind');
+    expect(fixDetailsScript).to.include('state.explanationMessages.set(messageId');
+    expect(fixDetailsScript).to.include('getExplanationText()');
+    expect(fixDetailsScript).to.include('isProgressMessageId(messageId)');
+  });
+
+  it('renders final-only explanation sections and full session ids', () => {
+    expect(fixDetailsScript).to.include('Problem Explanation');
+    expect(fixDetailsScript).to.include('Fix Explanation');
+    expect(fixDetailsScript).to.include('Why it works');
+    expect(fixDetailsScript).to.include('OpenCode Explanation');
+    expect(fixDetailsScript).to.include('Explanation unavailable');
+    expect(fixDetailsScript).to.include('Full Explanation');
+    expect(fixDetailsScript).to.include('Failure Reason');
+    expect(fixDetailsScript).to.include("if (!finished) {");
+    expect(fixDetailsScript).to.include("els.metaSession.textContent = sid || '-'");
+  });
+
+  it('guards completed runs from stale running updates', () => {
+    expect(fixDetailsScript).to.include('message.runId');
+    expect(fixDetailsScript).to.include("message.type === 'session_end'");
+    expect(fixDetailsScript).to.include("message.type === 'step_update' || message.type === 'tool_call' || message.type === 'tool_result'");
+    expect(fixDetailsScript).to.include("guardedPhase === 'running' || guardedPhase === 'connecting' || guardedPhase === 'finalizing'");
+  });
+
+  it('toggles status-progress shimmer based on in-flight phase', () => {
+    expect(fixDetailsScript).to.include('statusProgress');
+    expect(fixDetailsScript).to.include("'status-progress'");
+  });
+
+  it('emits two-tone path/name spans for modified files', () => {
+    expect(fixDetailsScript).to.include('file-path');
+    expect(fixDetailsScript).to.include('file-name');
+  });
+
+  it('supports double-click collapse on primary cards', () => {
+    expect(fixDetailsScript).to.include('dblclick');
+    expect(fixDetailsScript).to.include('data-card-toggle');
+    expect(fixDetailsScript).to.include('shouldIgnoreCollapseToggle');
+    expect(fixDetailsScript).to.include('is-collapsed');
+    expect(fixDetailsScript).to.include('status: false');
+    expect(fixDetailsScript).to.include('files: false');
+    expect(fixDetailsScript).to.include('explanation: false');
   });
 });

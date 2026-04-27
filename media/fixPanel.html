@@ -9,82 +9,113 @@
 </head>
 <body>
     <div id="app">
-        <header class="session-strip">
-            <div class="strip-left">
-                <span id="status-pill" class="status-pill is-waiting">
-                    <span class="pulse"></span>
-                    <span id="status-label">等待中</span>
-                </span>
-                <span id="session-target" class="strip-target" title="">准备开始下一次修复</span>
-            </div>
-            <div class="strip-right">
-                <span id="meta-elapsed" class="meta-chip" title="耗时">00:00</span>
-                <span id="queue-badge" class="meta-chip hidden">队列 0</span>
-                <button id="stopBtn" class="strip-btn hidden" type="button">Pause</button>
-                <button id="cancelBtn" class="strip-btn is-danger hidden" type="button">Cancel</button>
-            </div>
-        </header>
-
         <main id="messages" class="workspace">
-            <section id="status-card" class="card status-card">
-                <div class="card-head">
-                    <span class="card-title">Status</span>
-                    <span id="session-phase" class="card-meta">Idle</span>
+            <section id="status-card" class="card status-card is-collapsible" data-card-id="status">
+                <div class="card-head" data-card-toggle="status" title="Double-click to collapse or expand">
+                    <div class="card-head-left">
+                        <span class="card-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                        </span>
+                        <span class="card-title">Status</span>
+                    </div>
+                    <span class="card-chevron" aria-hidden="true"></span>
+                    <span id="status-pill" class="status-pill is-waiting">
+                        <span class="pulse"></span>
+                        <span id="status-label">Idle</span>
+                    </span>
                 </div>
                 <div class="card-body">
                     <div class="kv-row">
-                        <span class="kv-label">Backend</span>
-                        <span id="meta-backend" class="kv-value">-</span>
+                        <span class="kv-label">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
+                            Target
+                        </span>
+                        <span id="meta-target" class="kv-value" title="">-</span>
                     </div>
                     <div class="kv-row">
-                        <span class="kv-label">Mode</span>
+                        <span class="kv-label">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/></svg>
+                            Backend
+                        </span>
+                        <span id="meta-backend" class="kv-value is-green">-</span>
+                    </div>
+                    <div class="kv-row">
+                        <span class="kv-label">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg>
+                            Mode
+                        </span>
                         <span id="meta-mode" class="kv-value">-</span>
                     </div>
                     <div class="kv-row">
-                        <span class="kv-label">Model</span>
-                        <span id="meta-model" class="kv-value">-</span>
+                        <span class="kv-label">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l3 2"/></svg>
+                            Model
+                        </span>
+                        <span id="meta-model" class="kv-value is-blue">-</span>
                     </div>
                     <div class="kv-row">
-                        <span class="kv-label">Session</span>
-                        <span id="meta-session" class="kv-value" title="">-</span>
+                        <span class="kv-label">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                            Session
+                        </span>
+                        <span id="meta-session" class="kv-value is-session" title="">-</span>
+                    </div>
+                    <div id="elapsed-row" class="kv-row hidden">
+                        <span class="kv-label">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 7 12 12 15 14"/></svg>
+                            Elapsed
+                        </span>
+                        <span id="meta-elapsed" class="kv-value">00:00</span>
+                    </div>
+                    <div id="queue-row" class="kv-row hidden">
+                        <span class="kv-label">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="3.5" cy="6" r="1.5"/><circle cx="3.5" cy="12" r="1.5"/><circle cx="3.5" cy="18" r="1.5"/></svg>
+                            Queue
+                        </span>
+                        <span id="queue-badge" class="kv-value is-yellow">0</span>
+                    </div>
+                    <div id="status-progress" class="progress-track hidden">
+                        <div class="progress-fill"></div>
                     </div>
                 </div>
-            </section>
-
-            <section id="steps-card" class="card steps-card hidden">
-                <div class="card-head">
-                    <span class="card-title">Steps</span>
-                    <span id="steps-meta" class="card-meta">0 / 0</span>
+                <div id="action-row" class="action-row hidden">
+                    <button id="stopBtn" class="action-btn" type="button">Pause</button>
+                    <button id="cancelBtn" class="action-btn is-danger" type="button">Cancel</button>
                 </div>
-                <ol id="steps-list" class="steps-list"></ol>
             </section>
 
-            <section id="files-card" class="card files-card hidden">
-                <div class="card-head">
-                    <span class="card-title">Modified Files</span>
+            <section id="files-card" class="card files-card hidden is-collapsible" data-card-id="files">
+                <div class="card-head" data-card-toggle="files" title="Double-click to collapse or expand">
+                    <div class="card-head-left">
+                        <span class="card-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 012 2v7"/><line x1="6" y1="9" x2="6" y2="21"/></svg>
+                        </span>
+                        <span class="card-title">Modified</span>
+                    </div>
+                    <span class="card-chevron" aria-hidden="true"></span>
                     <span id="files-meta" class="card-meta">0 files</span>
                 </div>
                 <div id="files-list" class="files-list"></div>
             </section>
 
-            <section id="explanation-card" class="card explanation-card hidden">
-                <div class="card-head">
-                    <span class="card-title">Explanation</span>
+            <section id="explanation-card" class="card explanation-card hidden is-collapsible" data-card-id="explanation">
+                <div class="card-head" data-card-toggle="explanation" title="Double-click to collapse or expand">
+                    <div class="card-head-left">
+                        <span class="card-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+                        </span>
+                        <span class="card-title">Explanation</span>
+                    </div>
+                    <span class="card-chevron" aria-hidden="true"></span>
                     <span id="explanation-meta" class="card-meta">Streaming…</span>
                 </div>
                 <div id="explanation-body" class="explanation-body"></div>
             </section>
 
-            <section id="waiting-indicator" class="card empty-card">
-                <div class="spinner"></div>
-                <div class="empty-title">等待 Agent 开始</div>
-                <div class="empty-detail">执行修复命令后，这里会立即显示当前动作和结果。</div>
-            </section>
-
-            <details id="technical-details" class="raw-log">
-                <summary>Technical details</summary>
-                <div id="message-container" class="raw-log-body"></div>
-            </details>
+            <div id="idle-hint" class="idle-hint">
+                <div class="idle-title">No active session</div>
+                <div class="idle-detail">Run a fix on a diagnostic to see status, file changes, and the assistant's explanation here.</div>
+            </div>
         </main>
     </div>
 

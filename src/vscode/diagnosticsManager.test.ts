@@ -110,4 +110,28 @@ describe('DiagnosticsManager', () => {
         expect(result).to.have.length(1);
         expect(result[0].fileName).to.equal('/workspace/file1.cpp');
     });
+
+    it('removes a fixed diagnostic and republishes remaining indices', () => {
+        const diag1 = makeDiag({ fileName: '/workspace/file1.cpp', lineNumber: 10, errorType: 'OUT_OF_BOUNDS' });
+        const diag2 = makeDiag({ fileName: '/workspace/file1.cpp', lineNumber: 20, errorType: 'MEM_LEAK' });
+        parseLogStub.returns({ diagnostics: [diag1, diag2] });
+        existsSyncStub.returns(true);
+        readFileSyncStub.returns('int main() {}\n');
+
+        DiagnosticsManager.parseAndPublish('log');
+
+        const removed = DiagnosticsManager.removeDiagnostic({
+            ...diag1,
+            fileName: '/workspace/file1.cpp',
+        });
+
+        expect(removed).to.equal(true);
+        expect(DiagnosticsManager.getCurrentDiagnostics()).to.have.length(1);
+        expect(DiagnosticsManager.getCurrentDiagnostics()[0].errorType).to.equal('MEM_LEAK');
+
+        const collection = _getDiagnosticCollectionForTest() as any;
+        const published = collection.get(vscode.Uri.file('/workspace/file1.cpp'));
+        expect(published).to.have.length(1);
+        expect((published[0] as any).msAgentIndex).to.equal(0);
+    });
 });

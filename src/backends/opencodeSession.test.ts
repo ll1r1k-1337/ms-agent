@@ -11,6 +11,7 @@ class MockTransport implements OpenCodeTransport {
     private errorCallback?: (error: Error) => void;
     private closeCallback?: (exitCode: number | null) => void;
     public cancelled = false;
+    public sessionMessages: unknown[] | null = null;
 
     onEvent(cb: (event: unknown) => void): void {
         this.eventCallback = cb;
@@ -30,6 +31,7 @@ class MockTransport implements OpenCodeTransport {
 
     start(_prompt: string): void {}
     send(_data: unknown): void {}
+    async readSessionMessages(): Promise<unknown[] | null> { return this.sessionMessages; }
     cancel(): void { this.cancelled = true; }
     dispose(): void {}
 
@@ -111,6 +113,143 @@ describe('OpenCodeSession', () => {
         expect(result.outcome).to.equal('applied');
         expect(result.fileChanged).to.equal(true);
         expect(result.newContent).to.equal('int main() { return 42; }');
+    });
+
+    it('uses real assistant message ids and promotes only structured final explanations on success', async () => {
+        const streamed: Array<{ delta: string; messageId: string }> = [];
+        const callbacks: OpenCodeSessionCallbacks = {
+            onMessageChunk: (chunk, currentMessageId) => {
+                if (chunk.type === 'text_delta' && chunk.delta) {
+                    streamed.push({ delta: chunk.delta, messageId: currentMessageId });
+                }
+            },
+        };
+        session = new OpenCodeSession(transport, callbacks);
+
+        const runPromise = session.run(baseOptions());
+        transport.emitEvent({
+            type: 'message.updated',
+            properties: { info: { role: 'assistant', id: 'msg_plan' } },
+        });
+        transport.emitEvent({
+            type: 'text',
+            role: 'assistant',
+            messageId: 'msg_plan',
+            part: {
+                messageId: 'msg_plan',
+                text: 'I will inspect the surrounding lines before editing.',
+            },
+        });
+        transport.emitEvent({
+            type: 'message.updated',
+            properties: { info: { role: 'assistant', id: 'msg_final' } },
+        });
+        transport.emitEvent({
+            type: 'text',
+            role: 'assistant',
+            messageId: 'msg_final',
+            part: {
+                messageId: 'msg_final',
+                text: 'Problem: the copy length exceeds the local buffer.\nFix: changed the third DataCopy argument to TILE_LENGTH.\nWhy it works: the copy now matches the allocated capacity.',
+            },
+        });
+        fs.writeFileSync(testFilePath, 'int main() { return 42; }', 'utf-8');
+        transport.emitEvent({
+            type: 'message.updated',
+            properties: { info: { role: 'assistant', id: 'msg_final', time: { completed: 1 } } },
+        });
+        const result = await runPromise;
+
+        expect(streamed.some((entry) => entry.messageId === 'msg_plan')).to.equal(true);
+        expect(streamed.some((entry) => entry.messageId === 'msg_final')).to.equal(true);
+        expect(result.success).to.equal(true);
+        expect(result.finalMessage).to.include('Problem: the copy length exceeds the local buffer.');
+        expect(result.finalMessage).to.not.include('I will inspect the surrounding lines before editing.');
+        expect(result.explanationKind).to.equal('structured');
+    });
+
+    it('reads session messages for a final explanation when streaming only contained planning text', async () => {
+        transport.sessionMessages = [
+            {
+                id: 'msg_plan',
+                role: 'assistant',
+                parts: [{ type: 'text', text: 'Verifying the target line before editing.' }],
+            },
+            {
+                id: 'msg_final',
+                role: 'assistant',
+                parts: [{
+                    type: 'text',
+                    text: 'Changed the DataCopy length to TILE_LENGTH so the write fits the local buffer.',
+                }],
+            },
+        ];
+
+        const runPromise = session.run(baseOptions());
+        transport.emitEvent({
+            type: 'message.updated',
+            properties: { info: { role: 'assistant', id: 'msg_plan' } },
+        });
+        transport.emitEvent({
+            type: 'message.part.updated',
+            properties: {
+                part: {
+                    type: 'text',
+                    messageID: 'msg_plan',
+                    text: 'Verifying the target line before editing.',
+                },
+            },
+        });
+        fs.writeFileSync(testFilePath, 'int main() { return 42; }', 'utf-8');
+        transport.emitEvent({
+            type: 'message.updated',
+            properties: { info: { role: 'assistant', id: 'msg_final', time: { completed: 1 } } },
+        });
+        const result = await runPromise;
+
+        expect(result.success).to.equal(true);
+        expect(result.finalMessage).to.equal(
+            'Changed the DataCopy length to TILE_LENGTH so the write fits the local buffer.',
+        );
+        expect(result.explanationKind).to.equal('plain');
+    });
+
+    it('reports explanation unavailable when the successful session contains no final explanation', async () => {
+        transport.sessionMessages = [
+            {
+                id: 'msg_plan',
+                role: 'assistant',
+                parts: [{ type: 'text', text: 'Verifying the target line before editing.' }],
+            },
+        ];
+
+        const runPromise = session.run(baseOptions());
+        transport.emitEvent({
+            type: 'message.updated',
+            properties: { info: { role: 'assistant', id: 'msg_plan' } },
+        });
+        transport.emitEvent({
+            type: 'message.part.updated',
+            properties: {
+                part: {
+                    type: 'text',
+                    messageID: 'msg_plan',
+                    text: 'Verifying the target line before editing.',
+                },
+            },
+        });
+        fs.writeFileSync(testFilePath, 'int main() { return 42; }', 'utf-8');
+        transport.emitEvent({
+            type: 'message.updated',
+            properties: { info: { role: 'assistant', id: 'msg_plan', time: { completed: 1 } } },
+        });
+        const result = await runPromise;
+
+        expect(result.success).to.equal(true);
+        expect(result.finalMessage).to.equal(
+            'OpenCode applied the fix but did not return an explanation in this session.',
+        );
+        expect(result.explanationKind).to.equal('missing');
     });
 
     it('forwards OpenCode transport session metadata without treating it as completion', async () => {

@@ -189,6 +189,12 @@ describe('OpenCodeFixBackend', () => {
         expect(prompt).to.include('## Focused Snippet');
         expect(prompt).to.include('NO_FIX_NEEDED: <short reason>');
         expect(prompt).to.include('CANNOT_FIX: <short reason>');
+        expect(prompt).to.include('Problem: <why the diagnostic happened>');
+        expect(prompt).to.include('Fix: <the exact code change you made>');
+        expect(prompt).to.include('Why it works: <why the new bound / edit is safe>');
+        expect(prompt).to.include('Do NOT describe a plan, verification steps, or what you are about to do before editing.');
+        expect(prompt).to.include('Your first assistant response must be a native tool action');
+        expect(prompt).to.include('Emit process narration such as "I\'ll inspect the file"');
         expect(prompt).to.include('>    2 | line 2');
     });
 
@@ -240,6 +246,10 @@ describe('OpenCodeFixBackend', () => {
         const retryPrompt = mockSessionRun.secondCall.args[0].prompt as string;
         expect(retryPrompt).to.include('## Retry Instruction');
         expect(retryPrompt).to.include('You MUST use OpenCode');
+        expect(retryPrompt).to.include('Problem:');
+        expect(retryPrompt).to.include('Why it works:');
+        expect(retryPrompt).to.include('Your first assistant response MUST be the native edit action or a terminal marker');
+        expect(retryPrompt).to.include('Do NOT emit process narration like "I will verify the patch"');
         expect(events.some((event) =>
             event.type === 'status'
             && String((event.payload as any).message).includes('retrying once'),

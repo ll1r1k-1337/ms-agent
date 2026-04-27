@@ -39,6 +39,7 @@ export type WebviewPayload =
 export interface WebviewMessage {
     type: WebviewMessageType;
     payload: WebviewPayload;
+    runId?: string;
 }
 
 export interface TextStreamPayload {
@@ -76,6 +77,7 @@ export interface FinalDiffPayload {
     oldContent: string;
     newContent: string;
     message: string;
+    explanationKind?: 'structured' | 'plain' | 'missing';
 }
 
 export interface MessageCompletePayload {
@@ -116,6 +118,7 @@ export interface SessionEndPayload {
     success: boolean;
     outcome: 'applied' | 'no_change' | 'failed';
     finalMessage: string;
+    explanationKind?: 'structured' | 'plain' | 'missing';
 }
 
 export interface StatusPayload {

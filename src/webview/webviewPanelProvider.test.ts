@@ -37,35 +37,38 @@ describe('WebviewPanelProvider', () => {
 
             const requiredIds = [
                 'messages',
-                'waiting-indicator',
-                'message-container',
-                'session-target',
+                'meta-target',
                 'meta-session',
                 'meta-backend',
                 'meta-mode',
                 'meta-model',
-                'session-phase',
+                'meta-elapsed',
                 'status-pill',
                 'status-label',
                 'status-card',
-                'steps-card',
-                'steps-list',
-                'steps-meta',
+                'status-progress',
+                'elapsed-row',
+                'queue-row',
+                'queue-badge',
+                'action-row',
                 'files-card',
                 'files-list',
                 'files-meta',
                 'explanation-card',
                 'explanation-body',
                 'explanation-meta',
+                'idle-hint',
                 'stopBtn',
                 'cancelBtn',
-                'queue-badge',
-                'technical-details',
             ];
 
             for (const id of requiredIds) {
                 expect(html).to.include(`id="${id}"`, `Missing element with id="${id}"`);
             }
+            expect(html).to.include('data-card-toggle="status"');
+            expect(html).to.include('data-card-toggle="files"');
+            expect(html).to.include('data-card-toggle="explanation"');
+            expect(html).to.include('class="kv-value is-session"');
         });
 
         it('includes CSP nonce in script and link tags', () => {
