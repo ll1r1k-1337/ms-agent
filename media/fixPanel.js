@@ -10,14 +10,14 @@
     }
 
     const PHASE_LABELS = {
-        connecting: '连接中',
-        running: '处理中',
-        finalizing: '收尾中',
-        error: '异常',
-        waiting: '等待中',
-        completed: '完成',
-        no_change: '未修改',
-        failed: '失败',
+        connecting: 'Connecting',
+        running: 'Running',
+        finalizing: 'Finalizing',
+        error: 'Error',
+        waiting: 'Idle',
+        completed: 'Completed',
+        no_change: 'No change',
+        failed: 'Failed',
         idle: 'Idle',
     };
 
@@ -27,20 +27,28 @@
         hasReceivedContent: false,
         elapsedTimerId: null,
         inactivityTimeoutId: null,
-        target: '准备开始下一次修复',
+        target: '',
         phase: 'waiting',
         currentOutcome: 'pending',
         finalMessage: '',
+        finalExplanation: '',
+        finalExplanationKind: '',
         backend: '',
         mode: '',
         model: '',
+        activeRunId: '',
+        terminalLocked: false,
         opencodeSessionId: '',
         queueState: { paused: false, hasPendingTasks: false, items: [] },
-        steps: [],
-        stepIndex: new Map(),
         changes: new Map(),
         explanation: '',
-        messageNodes: new Map(),
+        explanationMessages: new Map(),
+        explanationOrder: [],
+        collapsedCards: {
+            status: false,
+            files: false,
+            explanation: false,
+        },
     };
 
     const els = {};
@@ -51,28 +59,28 @@
         els.messages = $('messages');
         els.statusPill = $('status-pill');
         els.statusLabel = $('status-label');
-        els.sessionTarget = $('session-target');
-        els.metaElapsed = $('meta-elapsed');
-        els.queueBadge = $('queue-badge');
-        els.stopBtn = $('stopBtn');
-        els.cancelBtn = $('cancelBtn');
-        els.sessionPhase = $('session-phase');
+        els.statusProgress = $('status-progress');
+        els.metaTarget = $('meta-target');
         els.metaBackend = $('meta-backend');
         els.metaMode = $('meta-mode');
         els.metaModel = $('meta-model');
         els.metaSession = $('meta-session');
-        els.stepsCard = $('steps-card');
-        els.stepsList = $('steps-list');
-        els.stepsMeta = $('steps-meta');
+        els.metaElapsed = $('meta-elapsed');
+        els.elapsedRow = $('elapsed-row');
+        els.queueRow = $('queue-row');
+        els.queueBadge = $('queue-badge');
+        els.actionRow = $('action-row');
+        els.stopBtn = $('stopBtn');
+        els.cancelBtn = $('cancelBtn');
+        els.statusCard = $('status-card');
         els.filesCard = $('files-card');
         els.filesList = $('files-list');
         els.filesMeta = $('files-meta');
         els.explanationCard = $('explanation-card');
         els.explanationBody = $('explanation-body');
         els.explanationMeta = $('explanation-meta');
-        els.waitingIndicator = $('waiting-indicator');
-        els.technicalDetails = $('technical-details');
-        els.messageContainer = $('message-container');
+        els.idleHint = $('idle-hint');
+        els.collapseToggles = Array.prototype.slice.call(document.querySelectorAll('[data-card-toggle]'));
     }
 
     function log(message) {
@@ -94,18 +102,14 @@
     }
 
     function basename(filePath) {
-        if (!filePath) {
-            return '';
-        }
+        if (!filePath) return '';
         const normalized = String(filePath).replace(/\\/g, '/');
         const parts = normalized.split('/');
         return parts[parts.length - 1] || normalized;
     }
 
     function dirname(filePath) {
-        if (!filePath) {
-            return '';
-        }
+        if (!filePath) return '';
         const normalized = String(filePath).replace(/\\/g, '/');
         const idx = normalized.lastIndexOf('/');
         return idx >= 0 ? normalized.slice(0, idx + 1) : '';
@@ -119,31 +123,23 @@
     }
 
     function firstString(object, keys) {
-        if (!object || typeof object !== 'object') {
-            return '';
-        }
+        if (!object || typeof object !== 'object') return '';
         for (let i = 0; i < keys.length; i += 1) {
             const value = object[keys[i]];
-            if (typeof value === 'string' && value.trim()) {
-                return value;
-            }
+            if (typeof value === 'string' && value.trim()) return value;
         }
         return '';
     }
 
     function summarizeToolCall(name, params) {
         const pathValue = firstString(params, ['path', 'filePath', 'uri', 'command']);
-        if (pathValue) {
-            return name.replace(/_/g, ' ') + ' · ' + basename(pathValue);
-        }
+        if (pathValue) return name.replace(/_/g, ' ') + ' · ' + basename(pathValue);
         return name.replace(/_/g, ' ');
     }
 
     function summarizeToolResult(result, isError) {
         const normalized = String(result || '').trim().replace(/\s+/g, ' ');
-        if (!normalized) {
-            return isError ? '工具返回错误。' : '工具执行完成。';
-        }
+        if (!normalized) return isError ? 'Tool returned an error.' : 'Tool finished.';
         return normalized.length > 140 ? normalized.slice(0, 137) + '...' : normalized;
     }
 
@@ -158,15 +154,9 @@
             const newLine = newLines[i];
             const hasOld = i < oldLines.length;
             const hasNew = i < newLines.length;
-            if (hasOld && hasNew && oldLine === newLine) {
-                continue;
-            }
-            if (hasOld) {
-                removed += 1;
-            }
-            if (hasNew) {
-                added += 1;
-            }
+            if (hasOld && hasNew && oldLine === newLine) continue;
+            if (hasOld) removed += 1;
+            if (hasNew) added += 1;
         }
         return { added: added, removed: removed };
     }
@@ -189,9 +179,7 @@
         let lastDiff = -1;
         for (let i = 0; i < maxLen; i += 1) {
             if ((oldLines[i] || '') !== (newLines[i] || '')) {
-                if (firstDiff < 0) {
-                    firstDiff = i;
-                }
+                if (firstDiff < 0) firstDiff = i;
                 lastDiff = i;
             }
         }
@@ -213,12 +201,8 @@
             if (hasOld && hasNew && oldLine === newLine) {
                 out.push({ type: 'ctx', text: '  ' + oldLine });
             } else {
-                if (hasOld) {
-                    out.push({ type: 'del', text: '- ' + oldLine });
-                }
-                if (hasNew) {
-                    out.push({ type: 'add', text: '+ ' + newLine });
-                }
+                if (hasOld) out.push({ type: 'del', text: '- ' + oldLine });
+                if (hasNew) out.push({ type: 'add', text: '+ ' + newLine });
             }
         }
         if (end < maxLen - 1) {
@@ -238,9 +222,7 @@
         html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
         const blocks = html.split(/\n{2,}/).map(function (block) {
             const trimmed = block.trim();
-            if (!trimmed) {
-                return '';
-            }
+            if (!trimmed) return '';
             return '<p>' + block.replace(/\n/g, '<br>') + '</p>';
         });
         let combined = blocks.join('');
@@ -253,11 +235,117 @@
         return combined;
     }
 
+    function stripStructuredHeading(text, heading) {
+        const pattern = new RegExp('^' + heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*:\\s*', 'i');
+        return String(text || '').replace(pattern, '').trim();
+    }
+
+    function isProgressMessageId(messageId) {
+        return /_progress$/.test(String(messageId || ''));
+    }
+
+    function getExplanationText() {
+        const chunks = state.explanationOrder
+            .map(function (messageId) { return state.explanationMessages.get(messageId) || ''; })
+            .map(function (text) { return String(text || '').trim(); })
+            .filter(Boolean);
+        if (chunks.length > 0) {
+            return chunks.join('\n\n').trim();
+        }
+        return String(state.explanation || '').trim();
+    }
+
+    function parseExplanationSections(text, finalMessage, outcome) {
+        const raw = String(text || '').trim();
+        const fallback = String(finalMessage || '').trim();
+        const source = raw || fallback;
+        const sections = {
+            problem: '',
+            fix: '',
+            why: '',
+            notes: '',
+            hasStructuredHeadings: false,
+            raw: source,
+        };
+
+        if (!source) {
+            return sections;
+        }
+
+        const headingPattern = /^(Problem|Fix|Why it works|Notes)\s*:\s*/gim;
+        const matches = [];
+        let match;
+        while ((match = headingPattern.exec(source)) !== null) {
+            matches.push({
+                key: match[1].toLowerCase(),
+                start: match.index,
+                end: headingPattern.lastIndex,
+            });
+        }
+
+        if (matches.length > 0) {
+            sections.hasStructuredHeadings = true;
+            for (let i = 0; i < matches.length; i += 1) {
+                const current = matches[i];
+                const next = matches[i + 1];
+                const content = source.slice(current.start, next ? next.start : source.length).trim();
+                if (current.key === 'problem') sections.problem = stripStructuredHeading(content, 'Problem');
+                if (current.key === 'fix') sections.fix = stripStructuredHeading(content, 'Fix');
+                if (current.key === 'why it works') sections.why = stripStructuredHeading(content, 'Why it works');
+                if (current.key === 'notes') sections.notes = stripStructuredHeading(content, 'Notes');
+            }
+            return sections;
+        }
+
+        if (outcome === 'applied') {
+            sections.fix = source;
+            return sections;
+        }
+
+        sections.problem = source;
+        return sections;
+    }
+
+    function explanationSectionHtml(title, text) {
+        if (!text) {
+            return '';
+        }
+        return '<section class="explanation-section">'
+            + '<h4 class="explanation-section-title">' + escapeHtml(title) + '</h4>'
+            + '<div class="explanation-section-body">' + renderInlineMarkdown(text) + '</div>'
+            + '</section>';
+    }
+
     function scrollToBottom() {
-        if (!els.messages) {
+        if (!els.messages) return;
+        els.messages.scrollTop = els.messages.scrollHeight;
+    }
+
+    function shouldIgnoreCollapseToggle(target) {
+        if (!target || typeof target.closest !== 'function') {
+            return false;
+        }
+        return Boolean(target.closest('button, summary, a, code, pre, input, textarea, select'));
+    }
+
+    function renderCollapsedCards() {
+        if (els.statusCard) {
+            els.statusCard.classList.toggle('is-collapsed', !!state.collapsedCards.status);
+        }
+        if (els.filesCard) {
+            els.filesCard.classList.toggle('is-collapsed', !!state.collapsedCards.files);
+        }
+        if (els.explanationCard) {
+            els.explanationCard.classList.toggle('is-collapsed', !!state.collapsedCards.explanation);
+        }
+    }
+
+    function toggleCardCollapse(cardId) {
+        if (!Object.prototype.hasOwnProperty.call(state.collapsedCards, cardId)) {
             return;
         }
-        els.messages.scrollTop = els.messages.scrollHeight;
+        state.collapsedCards[cardId] = !state.collapsedCards[cardId];
+        renderCollapsedCards();
     }
 
     // ── timers ───────────────────────────────────────────────────
@@ -274,8 +362,7 @@
         state.inactivityTimeoutId = setTimeout(function () {
             if (!state.hasReceivedContent) {
                 state.target = 'OpenCode 暂无响应';
-                state.explanation = '后端可能仍在启动，或连接还没有建立。可以查看 msAgent 输出面板确认详细日志。';
-                renderAll();
+                renderStatusCard();
             }
         }, 15000);
     }
@@ -312,79 +399,52 @@
         return 'waiting';
     }
 
-    function renderStrip() {
-        if (els.sessionTarget) {
-            els.sessionTarget.textContent = state.target;
-            els.sessionTarget.title = state.target;
-        }
+    function renderStatusCard() {
+        // Pill
         if (els.statusPill && els.statusLabel) {
             els.statusPill.className = 'status-pill is-' + phaseToPillKind();
             els.statusLabel.textContent = PHASE_LABELS[state.phase] || PHASE_LABELS.waiting;
         }
-        if (els.queueBadge) {
-            const queued = state.queueState.items.length;
-            els.queueBadge.textContent = '队列 ' + queued;
-            els.queueBadge.classList.toggle('hidden', queued === 0);
-        }
-        if (els.stopBtn) {
-            els.stopBtn.classList.toggle('hidden', !state.queueState.hasPendingTasks);
-            els.stopBtn.textContent = state.queueState.paused ? 'Resume' : 'Pause';
-        }
-        if (els.cancelBtn) {
-            els.cancelBtn.classList.toggle('hidden', !state.queueState.hasPendingTasks);
-        }
-    }
-
-    function renderStatusCard() {
-        if (els.sessionPhase) {
-            els.sessionPhase.textContent = PHASE_LABELS[state.phase] || PHASE_LABELS.waiting;
+        // Kv-rows
+        if (els.metaTarget) {
+            const t = state.target || '-';
+            els.metaTarget.textContent = t;
+            els.metaTarget.title = t;
         }
         if (els.metaBackend) els.metaBackend.textContent = state.backend || '-';
         if (els.metaMode) els.metaMode.textContent = state.mode || '-';
         if (els.metaModel) els.metaModel.textContent = state.model || '-';
         if (els.metaSession) {
             const sid = state.opencodeSessionId || '';
-            const display = sid.length > 20 ? sid.slice(0, 8) + '…' + sid.slice(-8) : (sid || '-');
-            els.metaSession.textContent = display;
+            els.metaSession.textContent = sid || '-';
             els.metaSession.title = sid;
         }
-    }
-
-    function stepIconHtml(step) {
-        if (step.status === 'success') return '<span>✓</span>';
-        if (step.status === 'error') return '<span>✕</span>';
-        if (step.status === 'running') {
-            return '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" class="spin">'
-                + '<circle cx="12" cy="12" r="9" stroke-opacity="0.25"/><path d="M21 12a9 9 0 0 0-9-9"/></svg>';
+        // Elapsed (visible only while session is active or just ended this run)
+        if (els.elapsedRow) {
+            els.elapsedRow.classList.toggle('hidden', state.sessionStartedAt === 0);
         }
-        return '<span>·</span>';
-    }
-
-    function stepClass(step) {
-        if (step.status === 'success') return 'is-done';
-        if (step.status === 'error') return 'is-error';
-        if (step.status === 'running') return 'is-active';
-        return 'is-pending';
-    }
-
-    function renderSteps() {
-        if (!els.stepsCard || !els.stepsList || !els.stepsMeta) return;
-        if (state.steps.length === 0) {
-            els.stepsCard.classList.add('hidden');
-            return;
+        // Queue (visible only when queue has items)
+        const queued = (state.queueState.items || []).length;
+        if (els.queueRow) {
+            els.queueRow.classList.toggle('hidden', queued === 0);
         }
-        els.stepsCard.classList.remove('hidden');
-        const done = state.steps.filter(function (s) {
-            return s.status === 'success' || s.status === 'error';
-        }).length;
-        els.stepsMeta.textContent = done + ' / ' + state.steps.length;
-        const html = state.steps.map(function (step) {
-            return '<li class="step-item ' + stepClass(step) + '">'
-                + '<span class="step-icon">' + stepIconHtml(step) + '</span>'
-                + '<span class="step-label">' + escapeHtml(step.label) + '</span>'
-                + '</li>';
-        }).join('');
-        els.stepsList.innerHTML = html;
+        if (els.queueBadge) {
+            els.queueBadge.textContent = String(queued);
+        }
+        // Action row (visible only when there's queued work)
+        if (els.actionRow) {
+            els.actionRow.classList.toggle('hidden', !state.queueState.hasPendingTasks);
+        }
+        if (els.stopBtn) {
+            els.stopBtn.textContent = state.queueState.paused ? 'Resume' : 'Pause';
+        }
+        // Progress shimmer (visible while in-flight)
+        if (els.statusProgress) {
+            const inFlight = state.phase === 'running'
+                || state.phase === 'connecting'
+                || state.phase === 'finalizing';
+            els.statusProgress.classList.toggle('hidden', !inFlight);
+        }
     }
 
     function renderFiles() {
@@ -396,8 +456,7 @@
         }
         els.filesCard.classList.remove('hidden');
         els.filesMeta.textContent = files.length + ' file' + (files.length === 1 ? '' : 's');
-        const html = files.map(fileHtml).join('');
-        els.filesList.innerHTML = html;
+        els.filesList.innerHTML = files.map(fileHtml).join('');
     }
 
     function fileHtml(file) {
@@ -410,7 +469,7 @@
                 : 'line-meta';
             return '<span class="' + cls + '">' + escapeHtml(l.text) + '</span>';
         }).join('');
-        return '<details class="file-item" open>'
+        return '<details class="file-item">'
             + '<summary class="file-summary">'
                 + '<span class="file-path">' + escapeHtml(dirname(file.path)) + '</span>'
                 + '<span class="file-name">' + escapeHtml(basename(file.path)) + '</span>'
@@ -423,70 +482,73 @@
 
     function renderExplanation() {
         if (!els.explanationCard || !els.explanationBody || !els.explanationMeta) return;
-        const text = state.explanation.trim();
         const finished = state.currentOutcome !== 'pending';
-        if (!text && !finished) {
+        if (!finished) {
+            els.explanationCard.classList.add('hidden');
+            return;
+        }
+        const text = String(state.finalExplanation || state.finalMessage || '').trim();
+        if (!text) {
+            els.explanationCard.classList.add('hidden');
+            return;
+        }
+        const sections = parseExplanationSections(text, state.finalMessage, state.currentOutcome);
+        let html = '';
+        if (state.currentOutcome === 'applied') {
+            if (state.finalExplanationKind === 'structured' && sections.hasStructuredHeadings) {
+                html = [
+                    explanationSectionHtml('Problem Explanation', sections.problem),
+                    explanationSectionHtml('Fix Explanation', sections.fix),
+                    explanationSectionHtml('Why it works', sections.why),
+                    explanationSectionHtml('Notes', sections.notes),
+                ].filter(Boolean).join('');
+            } else if (state.finalExplanationKind === 'plain') {
+                html = explanationSectionHtml('OpenCode Explanation', sections.raw);
+            } else if (state.finalExplanationKind === 'missing') {
+                html = explanationSectionHtml('Explanation unavailable', sections.raw);
+            } else if (sections.hasStructuredHeadings) {
+                html = [
+                    explanationSectionHtml('Problem Explanation', sections.problem),
+                    explanationSectionHtml('Fix Explanation', sections.fix),
+                    explanationSectionHtml('Why it works', sections.why),
+                    explanationSectionHtml('Notes', sections.notes),
+                ].filter(Boolean).join('');
+            } else {
+                html = explanationSectionHtml('OpenCode Explanation', sections.raw);
+            }
+        } else if (state.currentOutcome === 'failed' && !sections.hasStructuredHeadings) {
+            html = explanationSectionHtml('Failure Reason', sections.raw);
+        } else if (state.currentOutcome === 'no_change' && !sections.hasStructuredHeadings) {
+            html = explanationSectionHtml('Final Explanation', sections.raw);
+        } else {
+            html = explanationSectionHtml('Full Explanation', sections.raw);
+        }
+        if (!html) {
             els.explanationCard.classList.add('hidden');
             return;
         }
         els.explanationCard.classList.remove('hidden');
-        if (text) {
-            els.explanationBody.classList.remove('is-empty');
-            els.explanationBody.innerHTML = renderInlineMarkdown(text);
-            els.explanationMeta.textContent = finished ? '已完成' : 'Streaming…';
-        } else {
-            els.explanationBody.classList.add('is-empty');
-            els.explanationBody.textContent =
-                'OpenCode 未给出自然语言解释，可在 Steps / Modified Files 卡片中查看具体动作。';
-            els.explanationMeta.textContent = '空';
-        }
+        els.explanationBody.classList.remove('is-empty');
+        els.explanationBody.innerHTML = html;
+        els.explanationMeta.textContent = finished ? 'Final' : 'Streaming…';
     }
 
-    function renderEmptyState() {
-        if (!els.waitingIndicator) return;
+    function renderIdleHint() {
+        if (!els.idleHint) return;
         const hasContent = state.sessionActive
-            || state.steps.length > 0
             || state.changes.size > 0
             || state.explanation
             || state.currentOutcome !== 'pending'
             || state.hasReceivedContent;
-        els.waitingIndicator.classList.toggle('hidden', hasContent);
+        els.idleHint.classList.toggle('hidden', hasContent);
     }
 
     function renderAll() {
-        renderStrip();
         renderStatusCard();
-        renderSteps();
         renderFiles();
         renderExplanation();
-        renderEmptyState();
-    }
-
-    // ── raw technical log ────────────────────────────────────────
-
-    function appendTechnicalEntry(id, kind, title, body, status) {
-        if (!els.messageContainer) {
-            return null;
-        }
-        let node = state.messageNodes.get(id);
-        if (!node) {
-            node = document.createElement('div');
-            node.className = 'tech-entry';
-            node.innerHTML =
-                '<div class="tech-entry-head">'
-                    + '<span class="tech-entry-title"></span>'
-                    + '<span class="tech-entry-kind"></span>'
-                + '</div>'
-                + '<div class="tech-entry-body"></div>';
-            state.messageNodes.set(id, node);
-            els.messageContainer.appendChild(node);
-        }
-        node.className = 'tech-entry' + (status ? ' is-' + status : '');
-        node.querySelector('.tech-entry-title').textContent = title;
-        node.querySelector('.tech-entry-kind').textContent = kind;
-        node.querySelector('.tech-entry-body').textContent = body;
-        scrollToBottom();
-        return node;
+        renderIdleHint();
+        renderCollapsedCards();
     }
 
     // ── handlers ─────────────────────────────────────────────────
@@ -494,80 +556,53 @@
     function appendTextStream(messageId, delta) {
         if (!delta) return;
         state.hasReceivedContent = true;
-        state.explanation += delta;
         clearInactivityTimeout();
-        appendTechnicalEntry(
-            'text:' + messageId,
-            'assistant',
-            'Assistant',
-            state.explanation,
-            ''
-        );
+        if (isProgressMessageId(messageId)) {
+            renderIdleHint();
+            return;
+        }
+        if (!state.explanationMessages.has(messageId)) {
+            state.explanationOrder.push(messageId);
+            state.explanationMessages.set(messageId, '');
+        }
+        state.explanationMessages.set(messageId, (state.explanationMessages.get(messageId) || '') + delta);
+        state.explanation = getExplanationText();
         renderExplanation();
-        renderEmptyState();
+        renderIdleHint();
+        // messageId is part of the protocol but the panel does not segment by id.
+        void messageId;
     }
 
     function appendUserMessage(messageId, text) {
-        if (text) {
-            state.target = text;
-        }
-        appendTechnicalEntry('user:' + messageId, 'request', 'Fix Request', text || '', '');
-        renderStrip();
-        renderEmptyState();
+        if (text) state.target = text;
+        renderStatusCard();
+        renderIdleHint();
+        void messageId;
     }
 
-    function updateCurrentAction(label) {
-        // Surface a lightweight progress marker as a transient running step.
-        // Kept as a named function so future extension/tests can target it.
-        if (!label) return;
-        const id = 'action:' + Date.now() + ':' + Math.random().toString(36).slice(2, 6);
-        const step = { id: id, name: 'action', label: label, status: 'running' };
-        state.stepIndex.set(id, step);
-        state.steps.push(step);
-        renderSteps();
+    // Kept as a named no-op so prior tests / internal callers still resolve.
+    function updateCurrentAction(_label) {
+        // intentionally empty: actions are reflected via phase + progress shimmer
     }
 
     function appendToolCall(messageId, toolCallId, name, params) {
-        const id = toolCallId || messageId || ('tool:' + Date.now());
-        const label = summarizeToolCall(name, params);
-        const step = { id: id, name: name, label: label, status: 'running' };
-        if (state.stepIndex.has(id)) {
-            const existing = state.stepIndex.get(id);
-            existing.label = label;
-            existing.status = 'running';
-        } else {
-            state.stepIndex.set(id, step);
-            state.steps.push(step);
-        }
-        const detail = JSON.stringify(params || {}, null, 2);
-        appendTechnicalEntry(id, 'tool', label, detail, '');
         state.phase = 'running';
         state.hasReceivedContent = true;
         clearInactivityTimeout();
-        renderStrip();
+        log('tool_call ' + summarizeToolCall(name, params || {}));
         renderStatusCard();
-        renderSteps();
-        renderEmptyState();
+        renderIdleHint();
+        void messageId;
+        void toolCallId;
     }
 
     function appendToolResult(toolCallId, result, isError) {
-        const step = state.stepIndex.get(toolCallId);
-        if (step) {
-            step.status = isError ? 'error' : 'success';
-        }
-        appendTechnicalEntry(
-            toolCallId,
-            'tool',
-            step ? step.label : 'Tool Result',
-            String(result || '') || summarizeToolResult(result, isError),
-            isError ? 'error' : 'success'
-        );
         if (isError) {
             state.phase = 'error';
+            log('tool_result error ' + summarizeToolResult(result, true));
         }
-        renderStrip();
         renderStatusCard();
-        renderSteps();
+        void toolCallId;
     }
 
     function appendDiff(payload, isFinal) {
@@ -579,16 +614,13 @@
             oldText: oldText || '',
             newText: newText || '',
         });
-        if (isFinal && payload.message && !state.explanation.trim()) {
+        if (isFinal && payload.message && !getExplanationText()) {
             state.explanation = payload.message;
         }
-        const id = (isFinal ? 'final:' : 'diff:') + payload.path;
-        const title = (isFinal ? 'Final Diff · ' : 'Diff · ') + basename(payload.path);
-        appendTechnicalEntry(id, 'diff', title, formatSimpleDiff(oldText, newText), 'success');
         state.hasReceivedContent = true;
         renderFiles();
         renderExplanation();
-        renderEmptyState();
+        renderIdleHint();
     }
 
     function appendFinalDiff(payload) {
@@ -596,37 +628,42 @@
     }
 
     function completeMessage(_messageId) {
+        state.explanation = getExplanationText();
         scrollToBottom();
     }
 
     function updateStatus(phase, message) {
-        if (phase) {
-            state.phase = phase;
+        if (
+            state.terminalLocked
+            && (phase === 'running' || phase === 'connecting' || phase === 'finalizing')
+        ) {
+            return;
         }
-        if (message) {
-            updateCurrentAction(message);
-        }
-        renderStrip();
+        if (phase) state.phase = phase;
+        if (message) updateCurrentAction(message);
         renderStatusCard();
-        renderEmptyState();
+        renderIdleHint();
     }
 
     function updateQueueState(payload) {
         state.queueState = payload || state.queueState;
-        renderStrip();
+        renderStatusCard();
     }
 
     function handleSessionStart(payload) {
         state.sessionStartedAt = Date.now();
         state.sessionActive = true;
         state.hasReceivedContent = false;
-        state.steps = [];
-        state.stepIndex = new Map();
         state.changes = new Map();
         state.explanation = '';
+        state.explanationMessages = new Map();
+        state.explanationOrder = [];
         state.currentOutcome = 'pending';
         state.finalMessage = '';
+        state.finalExplanation = '';
+        state.finalExplanationKind = '';
         state.phase = 'connecting';
+        state.terminalLocked = false;
         state.opencodeSessionId = '';
         state.backend = (payload && payload.backend) || state.backend;
         state.mode = (payload && payload.mode) || state.mode;
@@ -636,21 +673,18 @@
         scheduleInactivityTimeout();
     }
 
-    function appendSessionResult(outcome, finalMessage) {
+    function appendSessionResult(outcome, finalMessage, explanationKind) {
         const normalized = outcome || 'failed';
         state.sessionActive = false;
         state.currentOutcome = normalized;
         state.finalMessage = finalMessage || '';
-        if (normalized === 'applied') {
-            state.phase = 'completed';
-        } else if (normalized === 'no_change') {
-            state.phase = 'no_change';
-        } else {
-            state.phase = 'failed';
-        }
-        if (finalMessage && !state.explanation.trim()) {
-            state.explanation = finalMessage;
-        }
+        state.finalExplanation = finalMessage || state.finalExplanation;
+        state.finalExplanationKind = explanationKind || state.finalExplanationKind || '';
+        if (normalized === 'applied') state.phase = 'completed';
+        else if (normalized === 'no_change') state.phase = 'no_change';
+        else state.phase = 'failed';
+        state.terminalLocked = true;
+        if (finalMessage && !getExplanationText()) state.explanation = finalMessage;
         clearInactivityTimeout();
         stopElapsedTimer();
         renderAll();
@@ -662,31 +696,60 @@
         state.sessionStartedAt = 0;
         state.sessionActive = false;
         state.hasReceivedContent = false;
-        state.target = '准备开始下一次修复';
+        state.target = '';
         state.phase = 'waiting';
         state.currentOutcome = 'pending';
         state.finalMessage = '';
+        state.finalExplanation = '';
+        state.finalExplanationKind = '';
         state.backend = '';
         state.mode = '';
         state.model = '';
+        state.activeRunId = '';
+        state.terminalLocked = false;
         state.opencodeSessionId = '';
-        state.steps = [];
-        state.stepIndex = new Map();
         state.changes = new Map();
         state.explanation = '';
-        state.messageNodes = new Map();
-        if (els.messageContainer) {
-            els.messageContainer.innerHTML = '';
-        }
-        if (els.metaElapsed) {
-            els.metaElapsed.textContent = '00:00';
-        }
+        state.explanationMessages = new Map();
+        state.explanationOrder = [];
+        state.collapsedCards = {
+            status: false,
+            files: false,
+            explanation: false,
+        };
+        if (els.metaElapsed) els.metaElapsed.textContent = '00:00';
         renderAll();
     }
 
     function handleMessage(message) {
-        if (!message || !message.type) {
+        if (!message || !message.type) return;
+        const runId = typeof message.runId === 'string' ? message.runId : '';
+        if (message.type === 'session_start' && runId) {
+            state.activeRunId = runId;
+            state.terminalLocked = false;
+        }
+        if (
+            message.type !== 'queue_state'
+            && message.type !== 'clear'
+            && runId
+            && state.activeRunId
+            && runId !== state.activeRunId
+        ) {
             return;
+        }
+        if (state.terminalLocked) {
+            if (message.type === 'session_end') {
+                return;
+            }
+            if (message.type === 'step_update' || message.type === 'tool_call' || message.type === 'tool_result') {
+                return;
+            }
+            if (message.type === 'status') {
+                const guardedPhase = firstString(message.payload || {}, ['phase']);
+                if (guardedPhase === 'running' || guardedPhase === 'connecting' || guardedPhase === 'finalizing') {
+                    return;
+                }
+            }
         }
         log('handleMessage ' + message.type);
         const p = message.payload || {};
@@ -699,7 +762,7 @@
                 renderStatusCard();
                 break;
             case 'session_end':
-                appendSessionResult(p.outcome, p.finalMessage);
+                appendSessionResult(p.outcome, p.finalMessage, p.explanationKind);
                 break;
             case 'status':
                 updateStatus(p.phase, p.message);
@@ -723,6 +786,12 @@
                 appendDiff(p, false);
                 break;
             case 'final_diff':
+                if (p.message) {
+                    state.finalExplanation = p.message;
+                }
+                if (p.explanationKind) {
+                    state.finalExplanationKind = p.explanationKind;
+                }
                 appendFinalDiff(p);
                 break;
             case 'text_stream':
@@ -736,7 +805,6 @@
                 break;
             case 'error':
                 appendSessionResult('failed', p.message || 'Unknown error');
-                appendTechnicalEntry('error:' + Date.now(), 'error', 'Error', p.message || 'Unknown error', 'error');
                 break;
             case 'clear':
                 clearAll();
@@ -750,6 +818,21 @@
     }
 
     function bindEvents() {
+        if (els.collapseToggles) {
+            els.collapseToggles.forEach(function (node) {
+                node.addEventListener('dblclick', function (event) {
+                    if (shouldIgnoreCollapseToggle(event.target)) {
+                        return;
+                    }
+                    const cardId = node.getAttribute('data-card-toggle');
+                    if (!cardId) {
+                        return;
+                    }
+                    event.preventDefault();
+                    toggleCardCollapse(cardId);
+                });
+            });
+        }
         if (els.stopBtn) {
             els.stopBtn.addEventListener('click', function () {
                 vscode.postMessage({ type: 'pause_toggle' });
@@ -766,8 +849,7 @@
     }
 
     function renderResult() {
-        // Backward-compatible alias: result rendering is split across
-        // renderFiles + renderExplanation. Kept as an entry point for tests.
+        // Backward-compatible alias retained for existing test entry points.
         renderFiles();
         renderExplanation();
     }

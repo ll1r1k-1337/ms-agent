@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenCode — VS Code Plugin</title>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #141414;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+}
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@keyframes blink { 0%,100% { opacity:1; } 50% { opacity:0.3; } }
+@keyframes fadeIn { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:translateY(0); } }
+
+/* diff syntax */
+.diff-add { color: #4ec9b0; background: rgba(78,201,176,0.08); }
+.diff-del { color: #f44747; background: rgba(244,71,71,0.08); }
+.diff-meta { color: #569cd6; }
+.diff-neutral { color: #666; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState } = React;
+
+const STATES = ['running','idle','waiting','error'];
+
+const SUMMARY = {
+  problem: 'API routes were missing rate limiting and JWT auth validation, leaving endpoints unprotected. Concurrent requests could bypass limits.',
+  changes: [
+    { file: 'src/server/middleware.ts', desc: 'Added authMiddleware for JWT header check and rateLimitMiddleware (100 req / 15 min window).' },
+    { file: 'src/routes/api.ts',        desc: 'Applied both middlewares to all /api/* routes via router.use().' },
+  ],
+  diff: [
+    { type: 'meta',    text: '--- src/server/middleware.ts' },
+    { type: 'meta',    text: '+++ src/server/middleware.ts' },
+    { type: 'meta',    text: '@@ -1,4 +1,22 @@' },
+    { type: 'neutral', text: ' import { Request, Response, NextFunction } from \'express\'' },
+    { type: 'add',     text: '+import { RateLimiter } from \'../utils/limiter\'' },
+    { type: 'add',     text: '+' },
+    { type: 'add',     text: '+export const authMiddleware = (req, res, next) => {' },
+    { type: 'add',     text: '+  const token = req.headers[\'authorization\']' },
+    { type: 'add',     text: '+  if (!token) return res.status(401).json({ error: \'Unauthorized\' })' },
+    { type: 'add',     text: '+  next()' },
+    { type: 'add',     text: '+}' },
+    { type: 'add',     text: '+' },
+    { type: 'add',     text: '+export const rateLimitMiddleware = RateLimiter({' },
+    { type: 'add',     text: '+  windowMs: 15 * 60 * 1000,' },
+    { type: 'add',     text: '+  max: 100,' },
+    { type: 'add',     text: '+})' },
+    { type: 'meta',    text: '' },
+    { type: 'meta',    text: '--- src/routes/api.ts' },
+    { type: 'meta',    text: '+++ src/routes/api.ts' },
+    { type: 'meta',    text: '@@ -3,6 +3,8 @@' },
+    { type: 'neutral', text: ' import { router } from \'./base\'' },
+    { type: 'add',     text: '+import { authMiddleware, rateLimitMiddleware } from \'../server/middleware\'' },
+    { type: 'neutral', text: ' ' },
+    { type: 'add',     text: '+router.use(rateLimitMiddleware, authMiddleware)' },
+    { type: 'neutral', text: ' router.get(\'/users\', getUsers)' },
+  ],
+};
+
+function Row({ label, value, valueColor = '#aaa' }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+      <span style={{ color: '#555', fontSize: 11 }}>{label}</span>
+      <span style={{ color: valueColor, fontSize: 11 }}>{value}</span>
+    </div>
+  );
+}
+
+/* ── Summary panel ── */
+function SummaryPanel() {
+  const [tab, setTab] = useState('summary'); // 'summary' | 'diff'
+
+  return (
+    <div style={{
+      width: 420,
+      background: '#1e1e1e',
+      border: '1px solid #2d2d30',
+      borderRadius: 6,
+      overflow: 'hidden',
+      animation: 'fadeIn 0.25s ease',
+      fontFamily: 'Menlo, "Courier New", monospace',
+      fontSize: 12,
+      flexShrink: 0,
+    }}>
+      {/* Panel header */}
+      <div style={{
+        height: 28,
+        background: '#2d2d30',
+        borderBottom: '1px solid #1e1e1e',
+        display: 'flex',
+        alignItems: 'center',
+        padding: '0 10px',
+        gap: 8,
+      }}>
+        <span style={{ color: '#4ec9b0', fontSize: 11, fontFamily: 'sans-serif', fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+          ✓ Task complete
+        </span>
+        <span style={{ marginLeft: 'auto', color: '#555', fontSize: 10, fontFamily: 'sans-serif' }}>
+          14m 02s · $0.041 · 32k tkn
+        </span>
+      </div>
+
+      {/* Tabs */}
+      <div style={{ display: 'flex', borderBottom: '1px solid #1e1e1e', background: '#252526' }}>
+        {[['summary','Summary'],['diff','Diff']].map(([id, label]) => (
+          <div key={id} onClick={() => setTab(id)} style={{
+            padding: '5px 14px',
+            fontSize: 11,
+            fontFamily: 'sans-serif',
+            color: tab === id ? '#ccc' : '#555',
+            borderBottom: tab === id ? '1px solid #4ec9b0' : '1px solid transparent',
+            cursor: 'pointer',
+            marginBottom: -1,
+          }}>{label}</div>
+        ))}
+      </div>
+
+      {tab === 'summary' ? (
+        <div style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {/* Problem */}
+          <div>
+            <div style={{ fontSize: 10, color: '#555', fontFamily: 'sans-serif', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 5 }}>Problem</div>
+            <div style={{ fontSize: 12, color: '#aaa', lineHeight: 1.6, fontFamily: 'sans-serif' }}>{SUMMARY.problem}</div>
+          </div>
+
+          {/* Changes */}
+          <div>
+            <div style={{ fontSize: 10, color: '#555', fontFamily: 'sans-serif', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 5 }}>Changes</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {SUMMARY.changes.map((c, i) => (
+                <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                  <div style={{ color: '#e2c08d', fontSize: 11 }}>{c.file}</div>
+                  <div style={{ color: '#888', fontSize: 11, fontFamily: 'sans-serif', lineHeight: 1.5 }}>{c.desc}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div style={{
+          padding: '10px 0',
+          maxHeight: 280,
+          overflowY: 'auto',
+          fontFamily: 'Menlo, monospace',
+          fontSize: 11,
+          lineHeight: 1.7,
+        }}>
+          {SUMMARY.diff.map((line, i) => (
+            <div key={i} className={`diff-${line.type}`} style={{
+              padding: '0 14px',
+              whiteSpace: 'pre',
+            }}>{line.text || ' '}</div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Sidebar ── */
+function Sidebar({ status }) {
+  const steps = [
+    { label: 'read src/server/index.ts',          done: true },
+    { label: 'read src/routes/api.ts',            done: true },
+    { label: 'edit src/server/middleware.ts',     done: status !== 'running' && status !== 'waiting', active: status === 'running' || status === 'waiting' },
+    { label: 'bash: tsc --noEmit',                pending: status === 'running' || status === 'waiting' },
+  ];
+
+  const dotColor = { running:'#4ec9b0', idle:'#4ec9b0', waiting:'#dcdcaa', error:'#f44747' }[status];
+  const dotAnim  = status === 'error' ? 'none' : 'blink 1.6s ease-in-out infinite';
+
+  return (
+    <div style={{
+      width: 240,
+      background: '#252526',
+      display: 'flex',
+      flexDirection: 'column',
+      fontFamily: '"Menlo","Courier New",monospace',
+      fontSize: 12,
+      color: '#ccc',
+      overflow: 'hidden',
+      height: '100%',
+    }}>
+      {/* Header */}
+      <div style={{
+        height: 22,
+        background: '#2d2d30',
+        borderBottom: '1px solid #1e1e1e',
+        display: 'flex',
+        alignItems: 'center',
+        padding: '0 8px',
+        gap: 6,
+        flexShrink: 0,
+      }}>
+        <span style={{ width:7, height:7, borderRadius:'50%', background: dotColor, animation: dotAnim, flexShrink:0 }}/>
+        <span style={{ fontSize:11, fontFamily:'sans-serif', fontWeight:600, letterSpacing:'0.06em', textTransform:'uppercase', color:'#888' }}>opencode</span>
+        <span style={{ marginLeft:'auto', fontSize:11, fontFamily:'sans-serif', color: dotColor, fontWeight:500 }}>{status}</span>
+      </div>
+
+      {/* Body */}
+      <div style={{ flex:1, padding:'10px 0', overflow:'hidden', display:'flex', flexDirection:'column' }}>
+        {/* Stats */}
+        <div style={{ padding:'0 10px 10px', borderBottom:'1px solid #1e1e1e', display:'flex', flexDirection:'column', gap:5 }}>
+          <Row label="model"   value="claude-3-7-sonnet" valueColor="#569cd6"/>
+          <Row label="session" value="14m 02s" />
+          <Row label="tokens"  value="32k / 200k" />
+        </div>
+
+        {/* Steps */}
+        {(status === 'running' || status === 'waiting') && (
+          <div style={{ padding:'8px 10px', borderBottom:'1px solid #1e1e1e' }}>
+            {steps.map((s,i) => (
+              <div key={i} style={{ display:'flex', alignItems:'center', gap:6, padding:'2px 0', color: s.done?'#4ec9b0':s.active?'#ccc':'#444' }}>
+                <span style={{ width:10, flexShrink:0, textAlign:'center', fontSize:10 }}>{s.done?'✓':'·'}</span>
+                <span style={{ fontSize:11, animation: s.active ? 'blink 1.6s ease-in-out infinite' : 'none' }}>{s.label}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Done summary hint */}
+        {status === 'idle' && (
+          <div style={{ padding:'8px 10px', borderBottom:'1px solid #1e1e1e' }}>
+            {steps.map((s,i) => (
+              <div key={i} style={{ display:'flex', alignItems:'center', gap:6, padding:'2px 0', color:'#4ec9b0' }}>
+                <span style={{ width:10, flexShrink:0, textAlign:'center', fontSize:10 }}>✓</span>
+                <span style={{ fontSize:11 }}>{s.label}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Modified files */}
+        {status !== 'error' && (
+          <div style={{ padding:'8px 10px' }}>
+            <div style={{ fontSize:10, color:'#555', letterSpacing:'0.06em', textTransform:'uppercase', marginBottom:5, fontFamily:'sans-serif' }}>modified</div>
+            {['src/server/middleware.ts','src/routes/api.ts'].map((f,i) => (
+              <div key={i} style={{ color:'#e2c08d', padding:'1px 0', fontSize:11 }}>{f}</div>
+            ))}
+          </div>
+        )}
+
+        {status === 'error' && (
+          <div style={{ padding:'8px 10px', color:'#f44747', fontSize:11 }}>
+            ✕ &nbsp;Tool call failed: permission denied
+          </div>
+        )}
+      </div>
+
+      {/* Status bar */}
+      <div style={{
+        height: 20,
+        background: '#007acc',
+        display: 'flex',
+        alignItems: 'center',
+        padding: '0 8px',
+        fontSize: 11,
+        color: 'rgba(255,255,255,0.85)',
+        fontFamily: 'sans-serif',
+        gap: 5,
+        flexShrink: 0,
+      }}>
+        <span style={{ width:6, height:6, borderRadius:'50%', background: dotColor, animation: dotAnim }}/>
+        opencode · {status}
+        <span style={{ marginLeft:'auto', opacity:0.6 }}>32k tkn</span>
+      </div>
+    </div>
+  );
+}
+
+/* ── Window chrome ── */
+function Window({ title, children, height }) {
+  return (
+    <div style={{
+      borderRadius: 10,
+      overflow: 'hidden',
+      boxShadow: '0 24px 64px rgba(0,0,0,0.7)',
+      border: '1px solid #333',
+      display: 'flex',
+      flexDirection: 'column',
+      height,
+    }}>
+      <div style={{
+        height: 28,
+        background: '#323233',
+        display: 'flex',
+        alignItems: 'center',
+        padding: '0 12px',
+        gap: 7,
+        borderBottom: '1px solid #1a1a1a',
+        flexShrink: 0,
+      }}>
+        {['#FF5F57','#FEBC2E','#28C840'].map((c,i) => (
+          <div key={i} style={{ width:11, height:11, borderRadius:'50%', background:c }}/>
+        ))}
+        <span style={{ flex:1, textAlign:'center', fontSize:11.5, color:'#777', marginRight:42, fontFamily:'sans-serif' }}>{title}</span>
+      </div>
+      <div style={{ flex:1, display:'flex', overflow:'hidden' }}>{children}</div>
+    </div>
+  );
+}
+
+/* ── App ── */
+function App() {
+  const [status, setStatus] = useState('running');
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:20 }}>
+      <div style={{ display:'flex', alignItems:'flex-start', gap:16 }}>
+        {/* Sidebar panel */}
+        <Window title="opencode — status" height={360}>
+          <Sidebar status={status} />
+        </Window>
+
+        {/* Summary panel — only when idle */}
+        {status === 'idle' && <SummaryPanel />}
+      </div>
+
+      {/* State switcher */}
+      <div style={{ display:'flex', gap:6 }}>
+        {STATES.map(s => (
+          <button key={s} onClick={() => setStatus(s)} style={{
+            background: status===s ? 'rgba(255,255,255,0.12)' : 'transparent',
+            border: `1px solid ${status===s?'rgba(255,255,255,0.25)':'rgba(255,255,255,0.08)'}`,
+            color: status===s ? '#fff' : '#555',
+            borderRadius: 4,
+            padding: '3px 12px',
+            fontSize: 11,
+            cursor: 'pointer',
+            fontFamily: 'Menlo, monospace',
+            transition: 'all 0.12s',
+          }}>{s}</button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

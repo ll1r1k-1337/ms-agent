@@ -106,9 +106,14 @@ Required behavior:
 2. Identify the root cause at line ${diagnostic.lineNumber}.
 3. Use OpenCode's native edit capability to change ONLY the diagnostic target line unless an adjacent bound variable is strictly necessary.
 4. Preserve all other code, comments, whitespace, and formatting exactly.
-5. If the code is already correct or no safe code change is needed, respond with a single line:
+5. Do NOT describe a plan, verification steps, or what you are about to do before editing. Your first assistant response must be a native tool action, or a terminal marker if no edit is needed.
+6. If the code is already correct or no safe code change is needed, respond with a single line:
    \`NO_FIX_NEEDED: <short reason>\`
-6. If you apply an edit, send a short confirmation message summarizing what changed.
+7. If you apply an edit, send a short explanation using this exact structure AFTER the native edit succeeds:
+   \`Problem: <why the diagnostic happened>\`
+   \`Fix: <the exact code change you made>\`
+   \`Why it works: <why the new bound / edit is safe>\`
+   You may add \`Notes: <short caveat>\` only if needed.
 
 Do NOT:
 - Echo the whole file back as a code block. Use the edit tool instead.
@@ -116,6 +121,8 @@ Do NOT:
 - Fix other BUG comments or nearby sanitizer issues that are not the diagnostic at line ${diagnostic.lineNumber}.
 - Emit placeholder text like "rest of file unchanged" or "..." in any output.
 - Rewrite large regions just to tidy them up.
+- Reply with only "fixed", "applied", or another unstructured confirmation after editing.
+- Emit process narration such as "I'll inspect the file", "I'll verify the patch", or "First I'll read the surrounding lines".
 
 If you determine you cannot safely fix the error (e.g. missing context, unclear
 intent), respond with a single line of the exact form:
@@ -137,7 +144,10 @@ ${previousMessage}
 Try once more, but follow this stricter contract:
 - You MUST use OpenCode's native edit capability to modify the target file on disk.
 - The edit MUST be minimal and focused on line ${diagnostic.lineNumber}.
+- Your first assistant response MUST be the native edit action or a terminal marker; do not emit planning prose first.
 - Do NOT answer with a code block, diff block, or prose-only "fixed" message.
+- After a successful native edit, explain the result using \`Problem:\`, \`Fix:\`, and \`Why it works:\`.
+- Do NOT emit process narration like "I will verify the patch" or "Let me inspect the file first".
 - If a native edit is not available, return exactly \`CANNOT_FIX: native edit tool unavailable\`.
 - If the code is already correct, return exactly \`NO_FIX_NEEDED: <short reason>\`.`;
 }

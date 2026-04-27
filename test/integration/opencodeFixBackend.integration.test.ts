@@ -295,10 +295,10 @@ describe('OpenCodeFixBackend (integration via FixtureTransport)', () => {
                 expect(run.result.fileChanged).to.equal(true);
                 expect(run.diskContent).to.equal(expectedAfterEdit);
                 expect(run.callbacks.diffs.length).to.equal(1);
-                // The session must reach the disk-diff finalize path, not the
-                // code-block parse path. finalMessage from the disk-diff branch
-                // mentions edit tools.
-                expect(run.result.finalMessage.toLowerCase()).to.match(/edit/);
+                // The session must reach the disk-diff finalize path and keep
+                // the assistant's final explanation when available.
+                expect(run.result.finalMessage.toLowerCase()).to.include('renamed function_1');
+                expect(run.result.finalMessage.toLowerCase()).to.not.include('did not return an explanation');
             } finally {
                 run.workspace.cleanup();
             }
@@ -368,6 +368,53 @@ describe('OpenCodeFixBackend (integration via FixtureTransport)', () => {
         });
     });
 
+    describe('successful explanation fallback from session messages', () => {
+        it('uses the current session message list when the streamed text never contained the final explanation', async () => {
+            const original = fs.readFileSync(
+                path.resolve(__dirname, '..', 'fixtures-src', 'add_custom.cpp'),
+                'utf-8',
+            );
+            const run = await runFixture('add-custom-line30-tilelength-edit-session-explanation', original, {
+                fileName: 'add_custom.cpp',
+                line: 30,
+            });
+            try {
+                expect(run.result.success).to.equal(true);
+                expect(run.result.outcome).to.equal('applied');
+                expect(run.result.explanationKind).to.equal('structured');
+                expect(run.result.finalMessage).to.include('Problem: the copy length exceeds the local zLocal buffer capacity.');
+                expect(run.result.finalMessage).to.not.include('Verifying the target line before editing.');
+                expect(run.diskContent).to.include('DataCopy(zLocal, xLocal, TILE_LENGTH);');
+                expect(run.callbacks.diffs.length).to.equal(1);
+            } finally {
+                run.workspace.cleanup();
+            }
+        });
+
+        it('reports explanation unavailable when the successful session transcript contains no final explanation', async () => {
+            const original = fs.readFileSync(
+                path.resolve(__dirname, '..', 'fixtures-src', 'add_custom.cpp'),
+                'utf-8',
+            );
+            const run = await runFixture('add-custom-line30-tilelength-edit-no-explanation', original, {
+                fileName: 'add_custom.cpp',
+                line: 30,
+            });
+            try {
+                expect(run.result.success).to.equal(true);
+                expect(run.result.outcome).to.equal('applied');
+                expect(run.result.explanationKind).to.equal('missing');
+                expect(run.result.finalMessage).to.equal(
+                    'OpenCode applied the fix but did not return an explanation in this session.',
+                );
+                expect(run.diskContent).to.include('DataCopy(zLocal, xLocal, TILE_LENGTH);');
+                expect(run.callbacks.diffs.length).to.equal(1);
+            } finally {
+                run.workspace.cleanup();
+            }
+        });
+    });
+
     describe('focused-snippet-echo (regression 2026-04-26)', () => {
         it('preserves original file when model echoes the focused snippet', async () => {
             const original = 'int main() { return 0; }\n';
@@ -413,7 +460,8 @@ describe('OpenCodeFixBackend (integration via FixtureTransport)', () => {
                 expect(run.result.outcome).to.equal('applied');
                 expect(run.result.fileChanged).to.equal(true);
                 expect(run.diskContent).to.equal(expectedAfterEdit);
-                expect(run.result.finalMessage.toLowerCase()).to.match(/edit tools|opencode/);
+                expect(run.result.finalMessage.toLowerCase()).to.include('updated the bounded write length');
+                expect(run.result.finalMessage.toLowerCase()).to.not.include('did not return an explanation');
             } finally {
                 run.workspace.cleanup();
             }

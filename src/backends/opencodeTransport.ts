@@ -32,6 +32,7 @@ export interface OpenCodeTransport {
     onError(callback: (error: Error) => void): void;
     onClose(callback: (exitCode: number | null) => void): void;
     send(data: unknown): void;
+    readSessionMessages(): Promise<unknown[] | null>;
     cancel(): void;
     dispose(): void;
 }
@@ -82,6 +83,10 @@ interface ManagedTerminal {
 }
 
 const managedServers = new Map<string, ManagedServer>();
+
+function isRecordLike(value: unknown): value is Record<string, unknown> {
+    return value !== null && typeof value === 'object';
+}
 
 export function disposeAllManagedServers(): void {
     for (const [key, managed] of managedServers.entries()) {
@@ -352,6 +357,14 @@ class ServeTransport implements OpenCodeTransport {
 
     send(_data: unknown): void {
         this.logger?.('[ServeTransport] send ignored; OpenCode manages its own native tools in server mode');
+    }
+
+    async readSessionMessages(): Promise<unknown[] | null> {
+        if (!this.sessionId) {
+            return null;
+        }
+        const response = await this.httpGet(`/session/${this.sessionId}/message`, true, true);
+        return this.normalizeSessionMessages(response);
     }
 
     cancel(): void {
@@ -824,6 +837,92 @@ class ServeTransport implements OpenCodeTransport {
         });
     }
 
+    private httpGet(
+        pathname: string,
+        silentErrors = false,
+        allowWhenAborted = false,
+    ): Promise<unknown> {
+        return new Promise<unknown>((resolve) => {
+            if ((this.aborted && !allowWhenAborted) || this.disposed) {
+                resolve(null);
+                return;
+            }
+
+            const url = new URL(pathname, this.getBaseUrl());
+            const options: http.RequestOptions = {
+                hostname: url.hostname,
+                port: url.port,
+                path: url.pathname,
+                method: 'GET',
+                headers: {
+                    Accept: 'application/json',
+                    ...(this.config.apiKey ? { Authorization: `Bearer ${this.config.apiKey}` } : {}),
+                },
+                timeout: this.config.timeoutMs,
+            };
+
+            const req = _deps.httpRequest(options, (res) => {
+                const chunks: Buffer[] = [];
+                res.on('data', (chunk: Buffer) => chunks.push(chunk));
+                res.on('end', () => {
+                    const raw = Buffer.concat(chunks).toString('utf8');
+                    if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {
+                        if (!silentErrors) {
+                            this.emitError(new Error(`OpenCode server returned HTTP ${res.statusCode} for ${pathname}`));
+                        }
+                        resolve(null);
+                        return;
+                    }
+                    if (!raw.trim()) {
+                        resolve(null);
+                        return;
+                    }
+                    try {
+                        resolve(JSON.parse(raw));
+                    } catch {
+                        if (!silentErrors) {
+                            this.emitError(new Error(`Failed to parse OpenCode server response from ${pathname}`));
+                        }
+                        resolve(null);
+                    }
+                });
+            });
+
+            req.on('error', (err: Error) => {
+                if (!silentErrors && !this.aborted) {
+                    this.emitError(new Error(`OpenCode server request failed: ${err.message}`));
+                }
+                resolve(null);
+            });
+
+            req.on('timeout', () => {
+                req.destroy();
+                if (!silentErrors && !this.aborted) {
+                    this.emitError(new Error(`OpenCode server request timed out for ${pathname}`));
+                }
+                resolve(null);
+            });
+
+            req.end();
+        });
+    }
+
+    private normalizeSessionMessages(response: unknown): unknown[] | null {
+        if (Array.isArray(response)) {
+            return response;
+        }
+        if (!isRecordLike(response)) {
+            return null;
+        }
+        const candidates = [response.messages, response.items, response.data];
+        for (const candidate of candidates) {
+            if (Array.isArray(candidate)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
     private emitEvent(event: unknown): void {
         this.eventCallback?.(event);
     }
@@ -895,6 +994,10 @@ class AcpTransport implements OpenCodeTransport {
 
     send(_data: unknown): void {
         this.logger?.('[AcpTransport] send ignored; OpenCode manages tool execution through ACP');
+    }
+
+    async readSessionMessages(): Promise<unknown[] | null> {
+        return null;
     }
 
     cancel(): void {

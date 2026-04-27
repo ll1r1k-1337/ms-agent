@@ -275,4 +275,72 @@ describe('fixService', () => {
             expect(showErrorMessageStub.called).to.equal(false);
         });
     });
+
+    describe('fixProblem completed handling', () => {
+        it('removes the fixed diagnostic after a successful file edit', async () => {
+            const diagnostic = makeDiag({ fileName: '/workspace/test.cpp' });
+            sinon.stub(WebviewPanelProvider.prototype, 'postMessage');
+            sinon.stub(WebviewPanelProvider.prototype, 'createOrShow').returns({
+                webview: { postMessage: () => Promise.resolve(true) },
+                reveal: () => {},
+                dispose: () => {},
+                onDidDispose: () => {},
+            } as any);
+            sinon.stub(WebviewPanelProvider.prototype, 'clear');
+            sinon.stub(WebviewPanelProvider.prototype, 'onAction');
+            sinon.stub(WebviewPanelProvider.prototype, 'nextMessageId').callsFake(() => `msg_${Date.now()}`);
+
+            sinon.stub(DiagnosticsManager, 'getCurrentDiagnostics').returns([diagnostic]);
+            const removeDiagnosticStub = sinon.stub(DiagnosticsManager, 'removeDiagnostic').returns(true);
+            sinon.stub(configModule, 'getLLMConfig').returns({
+                modelName: 'opencode/big-pickle',
+                providerID: 'opencode',
+                modelID: 'big-pickle',
+                modelFullName: 'opencode/big-pickle',
+                timeoutMs: 300000,
+                opencodeMode: 'server',
+                opencodeServePort: 7325,
+                opencodeCliPath: 'opencode',
+                opencodeAcpArgs: ['acp'],
+                opencodeApiKey: '',
+            });
+            sinon.stub(backendFactory, 'createFixBackend').returns({
+                name: 'opencode',
+                supportsStreaming: () => true,
+                cancel: () => {},
+                executeFix: async (
+                    _diag: SanitizerDiagnostic,
+                    _context: FixContext,
+                    callbacks?: FixCallbacks,
+                ) => {
+                    callbacks?.onEvent?.('session_start', { backend: 'opencode', mode: 'server' });
+                    callbacks?.onEvent?.('session_end', {
+                        success: true,
+                        outcome: 'applied',
+                        finalMessage: 'Problem: buffer size mismatch\nFix: changed length\nWhy it works: writes now fit.',
+                    });
+                    return {
+                        success: true,
+                        outcome: 'applied',
+                        finalMessage: 'Problem: buffer size mismatch\nFix: changed length\nWhy it works: writes now fit.',
+                        toolCallCount: 0,
+                        fileChanged: true,
+                        originalContent: 'before',
+                        newContent: 'after',
+                    };
+                },
+            } as any);
+
+            (global as any).msAgentContext = {
+                extensionUri: { fsPath: '/workspace' },
+                subscriptions: [],
+            };
+
+            const result = await fixProblem(0, { clearWebview: true });
+
+            expect(result.status).to.equal('completed');
+            expect(result.removedDiagnostic).to.equal(true);
+            expect(removeDiagnosticStub.calledOnceWithExactly(diagnostic)).to.equal(true);
+        });
+    });
 });

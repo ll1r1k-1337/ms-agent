@@ -17,11 +17,13 @@ export interface FixContext {
 }
 
 export type FixOutcome = 'applied' | 'no_change' | 'failed';
+export type ExplanationKind = 'structured' | 'plain' | 'missing';
 
 export interface FixResult {
     success: boolean;
     outcome: FixOutcome;
     finalMessage: string;
+    explanationKind?: ExplanationKind;
     toolCallCount: number;
     fileChanged: boolean;
     originalContent?: string;

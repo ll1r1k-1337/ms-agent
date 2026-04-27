@@ -1,0 +1,77 @@
+{
+  "description": "OpenCode applies the minimal OUT_OF_BOUNDS fix and only exposes the final explanation via session messages, not the streamed text events.",
+  "sessionMessages": [
+    {
+      "id": "msg_plan",
+      "role": "assistant",
+      "parts": [
+        {
+          "type": "text",
+          "text": "Verifying the target line before editing."
+        }
+      ]
+    },
+    {
+      "id": "msg_final",
+      "role": "assistant",
+      "parts": [
+        {
+          "type": "text",
+          "text": "Problem: the copy length exceeds the local zLocal buffer capacity.\nFix: changed `DataCopy(zLocal, xLocal, 2* TILE_LENGTH);` to `DataCopy(zLocal, xLocal, TILE_LENGTH);`.\nWhy it works: the copy now matches the TILE_LENGTH-sized local buffer, so the write stays within bounds."
+        }
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "kind": "event",
+      "event": {
+        "type": "message.updated",
+        "properties": {
+          "info": {
+            "role": "assistant",
+            "id": "msg_plan"
+          }
+        }
+      }
+    },
+    {
+      "kind": "event",
+      "event": {
+        "type": "message.part.updated",
+        "properties": {
+          "part": {
+            "type": "text",
+            "messageID": "msg_plan",
+            "text": "Verifying the target line before editing."
+          },
+          "sessionID": "ses_fixture"
+        }
+      }
+    },
+    {
+      "kind": "fsWrite",
+      "relPath": "add_custom.cpp",
+      "content": "#include \"kernel_operator.h\"\nusing namespace AscendC;\n\n#define TILE_LENGTH 32\n#define TOTAL_ELEMENTS 256\n\nextern \"C\" __global__ __aicore__ void add_custom(GM_ADDR x, GM_ADDR y, GM_ADDR z) {\n    TPipe pipe;\n    TQue<QuePos::VECIN, 1> inQueueX, inQueueY;\n    TQue<QuePos::VECOUT, 1> outQueue;\n    bool inited = false;\n\n    pipe.InitBuffer(inQueueX, 1, TILE_LENGTH * sizeof(half));\n    pipe.InitBuffer(inQueueY, 1, TILE_LENGTH * sizeof(half));\n    pipe.InitBuffer(outQueue, 1, TILE_LENGTH * sizeof(half));\n\n    GlobalTensor<half> xGlobal = x;\n    GlobalTensor<half> yGlobal = y;\n    GlobalTensor<half> zGlobal = z;\n\n    for (int progress = 0; progress < TOTAL_ELEMENTS; progress += TILE_LENGTH) {\n        LocalTensor<half> xLocal = inQueueX.AllocTensor<half>();\n        LocalTensor<half> yLocal = inQueueY.AllocTensor<half>();\n        LocalTensor<half> zLocal = outQueue.AllocTensor<half>();\n\n        // Line 30: BUG - out of bounds when progress + TILE_LENGTH > TOTAL_ELEMENTS\n        DataCopy(xLocal, xGlobal[progress], TILE_LENGTH);\n\n        // Line 35: BUG - writing beyond zLocal buffer capacity\n        DataCopy(zLocal, xLocal, TILE_LENGTH);\n\n        // Line 40: BUG - zGlobal offset exceeds allocated GM range\n        DataCopy(zGlobal[progress * 3], zLocal, TILE_LENGTH);\n\n        // Line 42: BUG - misaligned UB access\n        LocalTensor<half> misaligned = inQueueX.AllocTensor<half>();\n        DataCopy(misaligned, xGlobal[progress], TILE_LENGTH);\n\n        if (!inited) {\n            // Line 50: BUG - reading uninitialized yLocal\n            Add(zLocal, xLocal, yLocal, TILE_LENGTH);\n            inited = true;\n        }\n\n        pipe.Push(inQueueX, 1);\n        pipe.Push(inQueueY, 1);\n    }\n}\n"
+    },
+    {
+      "kind": "event",
+      "event": {
+        "type": "message.updated",
+        "properties": {
+          "info": {
+            "role": "assistant",
+            "id": "msg_final",
+            "time": {
+              "completed": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "kind": "close",
+      "exitCode": 0
+    }
+  ]
+}

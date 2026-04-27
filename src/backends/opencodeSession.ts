@@ -1,5 +1,5 @@
 import * as fs from 'fs';
-import { FixOutcome, FixResult } from './fixBackend';
+import { ExplanationKind, FixOutcome, FixResult } from './fixBackend';
 import { OpenCodeTransport } from './opencodeTransport';
 import { StreamChunk } from '../llm/types';
 import {
@@ -86,6 +86,193 @@ export interface OpenCodeSessionCallbacks {
     onEvent?: (type: string, payload: unknown) => void;
 }
 
+interface AssistantExplanation {
+    text: string;
+    kind: ExplanationKind;
+}
+
+function hasStructuredExplanation(text: string): boolean {
+    return /^(Problem|Fix|Why it works|Notes)\s*:/im.test(text);
+}
+
+function looksLikeProcessNarration(text: string): boolean {
+    const normalized = text.trim().toLowerCase();
+    return [
+        /^i[' ]?ll\b/,
+        /^i will\b/,
+        /^let me\b/,
+        /^verifying\b/,
+        /^checking\b/,
+        /^inspecting\b/,
+        /^reviewing\b/,
+        /^reading\b/,
+        /^first\b/,
+        /^next\b/,
+        /^need to\b/,
+        /^going to\b/,
+    ].some((pattern) => pattern.test(normalized));
+}
+
+function classifyAssistantExplanation(text: string): AssistantExplanation | null {
+    const trimmed = text.trim();
+    if (!trimmed) {
+        return null;
+    }
+    if (hasStructuredExplanation(trimmed)) {
+        return { text: trimmed, kind: 'structured' };
+    }
+    if (looksLikeProcessNarration(trimmed)) {
+        return null;
+    }
+    return { text: trimmed, kind: 'plain' };
+}
+
+function extractAssistantExplanationFromTextMap(
+    messageTexts: Map<string, string>,
+    messageOrder: string[],
+    preferredMessageId?: string | null,
+): AssistantExplanation | null {
+    const orderedIds: string[] = [];
+    if (preferredMessageId) {
+        orderedIds.push(preferredMessageId);
+    }
+    for (let i = messageOrder.length - 1; i >= 0; i -= 1) {
+        const currentId = messageOrder[i];
+        if (!orderedIds.includes(currentId)) {
+            orderedIds.push(currentId);
+        }
+    }
+    for (const id of orderedIds) {
+        const explanation = classifyAssistantExplanation(String(messageTexts.get(id) || ''));
+        if (explanation) {
+            return explanation;
+        }
+    }
+    return null;
+}
+
+function extractMessageSnapshotRole(message: unknown): string | null {
+    if (!message || typeof message !== 'object') {
+        return null;
+    }
+    const record = message as Record<string, unknown>;
+    if (typeof record.role === 'string') {
+        return record.role;
+    }
+    if (record.info && typeof record.info === 'object' && record.info !== null) {
+        const info = record.info as Record<string, unknown>;
+        return typeof info.role === 'string' ? info.role : null;
+    }
+    return null;
+}
+
+function extractMessageSnapshotId(message: unknown): string | null {
+    if (!message || typeof message !== 'object') {
+        return null;
+    }
+    const record = message as Record<string, unknown>;
+    if (typeof record.id === 'string') {
+        return record.id;
+    }
+    if (typeof record.messageID === 'string') {
+        return record.messageID;
+    }
+    if (typeof record.messageId === 'string') {
+        return record.messageId;
+    }
+    if (record.info && typeof record.info === 'object' && record.info !== null) {
+        const info = record.info as Record<string, unknown>;
+        return typeof info.id === 'string' ? info.id : null;
+    }
+    return null;
+}
+
+function extractMessageSnapshotText(message: unknown): string {
+    if (!message || typeof message !== 'object') {
+        return '';
+    }
+    const record = message as Record<string, unknown>;
+    const info = record.info && typeof record.info === 'object' ? record.info as Record<string, unknown> : null;
+    const parts = Array.isArray(record.parts)
+        ? record.parts
+        : Array.isArray(info?.parts)
+            ? info.parts as unknown[]
+            : [];
+    const collected: string[] = [];
+    for (const part of parts) {
+        if (!part || typeof part !== 'object') {
+            continue;
+        }
+        const partRecord = part as Record<string, unknown>;
+        const partType = typeof partRecord.type === 'string' ? partRecord.type : '';
+        if (partType && partType !== 'text') {
+            continue;
+        }
+        const candidateFields = [
+            partRecord.text,
+            partRecord.content,
+            partRecord.delta,
+            partRecord.output,
+            partRecord.message,
+        ];
+        for (const candidate of candidateFields) {
+            if (typeof candidate === 'string' && candidate.trim()) {
+                collected.push(candidate);
+                break;
+            }
+        }
+    }
+    if (collected.length > 0) {
+        return collected.join('\n').trim();
+    }
+    const topLevelText = [record.text, record.content, record.message].find(
+        (value) => typeof value === 'string' && value.trim().length > 0,
+    );
+    return typeof topLevelText === 'string' ? topLevelText.trim() : '';
+}
+
+function extractAssistantExplanationFromSessionMessages(
+    messages: unknown[] | null,
+    preferredMessageId?: string | null,
+): AssistantExplanation | null {
+    if (!Array.isArray(messages) || messages.length === 0) {
+        return null;
+    }
+    const assistantMessages = messages.filter((message) => extractMessageSnapshotRole(message) === 'assistant');
+    if (assistantMessages.length === 0) {
+        return null;
+    }
+    const orderedMessages: unknown[] = [];
+    if (preferredMessageId) {
+        const preferred = assistantMessages.find(
+            (message) => extractMessageSnapshotId(message) === preferredMessageId,
+        );
+        if (preferred) {
+            orderedMessages.push(preferred);
+        }
+    }
+    for (let i = assistantMessages.length - 1; i >= 0; i -= 1) {
+        const message = assistantMessages[i];
+        if (!orderedMessages.includes(message)) {
+            orderedMessages.push(message);
+        }
+    }
+    for (const message of orderedMessages) {
+        const explanation = classifyAssistantExplanation(extractMessageSnapshotText(message));
+        if (explanation) {
+            return explanation;
+        }
+    }
+    return null;
+}
+
+function missingExplanation(): AssistantExplanation {
+    return {
+        kind: 'missing',
+        text: 'OpenCode applied the fix but did not return an explanation in this session.',
+    };
+}
+
 function extractTerminalReason(
     parsedText: string,
     marker: 'NO_FIX_NEEDED' | 'CANNOT_FIX',
@@ -148,9 +335,11 @@ export class OpenCodeSession {
         return new Promise<FixResult>((resolve, reject) => {
             let parsedText = '';
             const messageTexts = new Map<string, string>();
+            const assistantMessageOrder: string[] = [];
             const errorMessages: string[] = [];
             const seenErrorMessages = new Set<string>();
             const assistantMessageIds = new Set<string>();
+            let completedAssistantMessageId: string | null = null;
             const seenToolCallIds = new Set<string>();
             let toolCallCount = 0;
             let finalized = false;
@@ -173,6 +362,12 @@ export class OpenCodeSession {
                 seenErrorMessages.add(normalized);
                 errorMessages.push(normalized);
                 return true;
+            };
+
+            const ensureAssistantMessageOrder = (id: string): void => {
+                if (!assistantMessageOrder.includes(id)) {
+                    assistantMessageOrder.push(id);
+                }
             };
 
             // Derived: a HARD protocol terminal was seen iff the SM ever
@@ -229,11 +424,16 @@ export class OpenCodeSession {
                 if (finalized) {
                     return;
                 }
-                const emitSessionEnd = (outcome: FixOutcome, finalMessage: string): void => {
+                const emitSessionEnd = (
+                    outcome: FixOutcome,
+                    finalMessage: string,
+                    explanationKind?: ExplanationKind,
+                ): void => {
                     this.callbacks?.onEvent?.('session_end', {
                         success: outcome === 'applied',
                         outcome,
                         finalMessage,
+                        explanationKind,
                     });
                 };
 
@@ -306,12 +506,32 @@ export class OpenCodeSession {
                 if (diskContent !== null) {
                     const normalizedDisk = diskContent.replace(/\r\n/g, '\n').trim();
                     if (normalizedDisk !== normalizedOriginal) {
+                        const streamExplanation = extractAssistantExplanationFromTextMap(
+                            messageTexts,
+                            assistantMessageOrder,
+                            completedAssistantMessageId,
+                        );
+                        const sessionMessages = streamExplanation
+                            ? null
+                            : await this.transport.readSessionMessages();
+                        const assistantExplanation =
+                            streamExplanation
+                            || extractAssistantExplanationFromSessionMessages(
+                                sessionMessages,
+                                completedAssistantMessageId,
+                            )
+                            || missingExplanation();
                         this.callbacks?.onDiff?.(options.resolvedPath, options.originalContent, diskContent, 'opencode_edit');
-                        emitSessionEnd('applied', 'Fix applied via OpenCode edit tools.');
+                        emitSessionEnd(
+                            'applied',
+                            assistantExplanation.text,
+                            assistantExplanation.kind,
+                        );
                         doResolve({
                             success: true,
                             outcome: 'applied',
-                            finalMessage: 'Fix applied via OpenCode edit tools.',
+                            finalMessage: assistantExplanation.text,
+                            explanationKind: assistantExplanation.kind,
                             toolCallCount,
                             fileChanged: true,
                             originalContent: options.originalContent,
@@ -475,6 +695,7 @@ export class OpenCodeSession {
                 const isAssistantScopedPart = partMessageId
                     ? assistantMessageIds.has(partMessageId)
                     : true;
+                const assistantTextMessageId = partMessageId || eventMessageId || messageId;
 
                 const textDelta = extractTextDelta(e);
                 if (textDelta && isAssistantScopedPart) {
@@ -482,19 +703,20 @@ export class OpenCodeSession {
                     // The SM ignores TEXT_DELTA in states that don't accept it.
                     sm.dispatch({ kind: 'TEXT_DELTA', chunk: textDelta });
                     if (e.type !== 'reasoning') {
-                        const prev = messageTexts.get(messageId) || '';
+                        const prev = messageTexts.get(assistantTextMessageId) || '';
+                        ensureAssistantMessageOrder(assistantTextMessageId);
                         if (textDelta.startsWith(prev) && textDelta.length > prev.length) {
                             const delta = textDelta.substring(prev.length);
-                            messageTexts.set(messageId, textDelta);
+                            messageTexts.set(assistantTextMessageId, textDelta);
                             parsedText += delta;
-                            this.callbacks?.onMessageChunk?.({ type: 'text_delta', delta }, messageId);
+                            this.callbacks?.onMessageChunk?.({ type: 'text_delta', delta }, assistantTextMessageId);
                         } else if (textDelta !== prev) {
-                            messageTexts.set(messageId, prev + textDelta);
+                            messageTexts.set(assistantTextMessageId, prev + textDelta);
                             parsedText += textDelta;
-                            this.callbacks?.onMessageChunk?.({ type: 'text_delta', delta: textDelta }, messageId);
+                            this.callbacks?.onMessageChunk?.({ type: 'text_delta', delta: textDelta }, assistantTextMessageId);
                         }
                     } else {
-                        this.callbacks?.onMessageChunk?.({ type: 'text_delta', delta: textDelta }, messageId + '_reasoning');
+                        this.callbacks?.onMessageChunk?.({ type: 'text_delta', delta: textDelta }, assistantTextMessageId + '_reasoning');
                     }
                 } else {
                 }
@@ -552,6 +774,9 @@ export class OpenCodeSession {
                 }
 
                 if (isCompletionEvent(e)) {
+                    if (messageRole === 'assistant' && eventMessageId) {
+                        completedAssistantMessageId = eventMessageId;
+                    }
                     // After the adapter tightening, this branch fires ONLY on
                     // hard terminal events (done / step_end / session.end /
                     // session.done / message.updated:info.time.completed /

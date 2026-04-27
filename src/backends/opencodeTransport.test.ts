@@ -186,6 +186,40 @@ describe('opencodeTransport', () => {
         expect(httpRequestStub.getCall(2).args[0].path).to.equal('/session');
     });
 
+    it('server can read the current session message list after the session is created', async () => {
+        const transport = createTransport(serverConfig());
+        transport.start('fix this');
+
+        respondWithJson(httpRequestStub.firstCall.returnValue as unknown as MockClientRequest, {});
+        await Promise.resolve();
+        await Promise.resolve();
+
+        const sseReq = getRequestByPath('/event');
+        openSse(sseReq);
+        await Promise.resolve();
+        await Promise.resolve();
+
+        respondWithJson(getRequestByPath('/session'), { id: 'sess_current' });
+        await Promise.resolve();
+        await Promise.resolve();
+
+        respondWithJson(getRequestByPath('/session/sess_current/prompt_async'), {}, 204);
+        await Promise.resolve();
+        await Promise.resolve();
+
+        const readPromise = transport.readSessionMessages();
+        respondWithJson(getRequestByPath('/session/sess_current/message'), {
+            messages: [
+                { id: 'msg_final', role: 'assistant', parts: [{ type: 'text', text: 'Changed the bound.' }] },
+            ],
+        });
+        const messages = await readPromise;
+
+        expect(messages).to.deep.equal([
+            { id: 'msg_final', role: 'assistant', parts: [{ type: 'text', text: 'Changed the bound.' }] },
+        ]);
+    });
+
     it('server ignores foreign-session completion events on the global SSE bus', async () => {
         const transport = createTransport(serverConfig());
         const events: unknown[] = [];

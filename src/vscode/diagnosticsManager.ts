@@ -130,6 +130,21 @@ export class DiagnosticsManager {
         });
     }
 
+    static removeDiagnostic(target: SanitizerDiagnostic): boolean {
+        const normalizedTargetPath = path.normalize(target.fileName);
+        const index = currentDiagnostics.findIndex((diagnostic) => (
+            path.normalize(diagnostic.fileName) === normalizedTargetPath
+            && diagnostic.lineNumber === target.lineNumber
+            && diagnostic.errorType === target.errorType
+        ));
+        if (index < 0) {
+            return false;
+        }
+        currentDiagnostics.splice(index, 1);
+        DiagnosticsManager.publishDiagnostics();
+        return true;
+    }
+
     /**
      * 解析日志中的文件名为实际文件 URI。
      * 日志里通常只有文件名（如 add_custom.cpp），需要在工作区/日志目录中查找。

@@ -25,6 +25,7 @@ type FixProblemStatus =
     | 'out_of_range';
 export interface FixProblemResult {
     status: FixProblemStatus;
+    removedDiagnostic?: boolean;
 }
 export interface FixProblemOptions {
     suppressProgressNotification?: boolean;
@@ -103,6 +104,10 @@ export function getDiagnosticTitle(diagnostic: SanitizerDiagnostic): string {
 
 function createQueueTaskId(): string {
     return `q_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function createFixRunId(): string {
+    return `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function clearConversationIfCancelledAndIdle(): void {
@@ -246,7 +251,7 @@ async function processFixQueue(): Promise<void> {
             }
 
             const finalStatus = wasCancelled ? 'cancelled' : result.status;
-            if (finalStatus === 'completed') {
+            if (finalStatus === 'completed' && !result.removedDiagnostic) {
                 fixedSanitizerIndices.add(next.sanitizerIndex);
             }
             next.resolve(wasCancelled ? { status: 'cancelled' } : result);
@@ -452,6 +457,7 @@ async function fixSingleDiagnostic(
     const progressTitle = total && current
         ? `msAgent: Fixing ${diagnostic.errorType} (${current}/${total})`
         : `msAgent: Fixing ${diagnostic.errorType}`;
+    const repairRunId = createFixRunId();
 
     const cancellationTokenSource = externalCancellationTokenSource ?? new vscode.CancellationTokenSource();
 
@@ -482,6 +488,13 @@ async function fixSingleDiagnostic(
             async (progress) => {
                 progress.report({ message: 'Analyzing error...', increment: 0 });
 
+                const postRunMessage = (message: { type: any; payload: any }): void => {
+                    webviewProvider.postMessage({
+                        ...message,
+                        runId: repairRunId,
+                    });
+                };
+
                 const resolvedPath = resolveFilePath(diagnostic.fileName, workspaceRoot);
                 const originalContent = fs.existsSync(resolvedPath) 
                     ? fs.readFileSync(resolvedPath, 'utf-8') 
@@ -495,7 +508,7 @@ async function fixSingleDiagnostic(
                     '📝 Fix ' + diagnostic.errorType +
                     ' at ' + path.basename(diagnostic.fileName) + ':' + diagnostic.lineNumber +
                     (diagnostic.kernelName ? ' (kernel: ' + diagnostic.kernelName + ')' : '');
-                webviewProvider.postMessage({
+                postRunMessage({
                     type: 'user_message',
                     payload: {
                         messageId: userMessageId,
@@ -506,7 +519,7 @@ async function fixSingleDiagnostic(
                 // Surface task info as a step (not a text_stream): text_stream is
                 // the assistant's natural-language explanation channel and must not
                 // be polluted with host-generated narration.
-                webviewProvider.postMessage({
+                postRunMessage({
                     type: 'step_update',
                     payload: {
                         step: 'Analyzing ' + diagnostic.errorType,
@@ -521,7 +534,7 @@ async function fixSingleDiagnostic(
                         if (cancellationTokenSource.token.isCancellationRequested) return;
                         if (chunk.type === 'text_delta' && chunk.delta) {
                             activeMessageIds.add(messageId);
-                            webviewProvider.postMessage({
+                            postRunMessage({
                                 type: 'text_stream',
                                 payload: { messageId, delta: chunk.delta }
                             });
@@ -533,7 +546,7 @@ async function fixSingleDiagnostic(
                             message: `${name}(${Object.keys(params).join(', ')})`,
                             increment: 10,
                         });
-                        webviewProvider.postMessage({
+                        postRunMessage({
                             type: 'tool_call',
                             payload: {
                                 messageId: webviewProvider.nextMessageId(),
@@ -545,14 +558,14 @@ async function fixSingleDiagnostic(
                     },
                     onToolResult: (toolCallId, result, isError) => {
                         if (cancellationTokenSource.token.isCancellationRequested) return;
-                        webviewProvider.postMessage({
+                        postRunMessage({
                             type: 'tool_result',
                             payload: { toolCallId, result, isError }
                         });
                     },
                     onDiff: (filePath, oldText, newText, toolCallId) => {
                         if (cancellationTokenSource.token.isCancellationRequested) return;
-                        webviewProvider.postMessage({
+                        postRunMessage({
                             type: 'diff',
                             payload: { path: filePath, oldText, newText, toolCallId }
                         });
@@ -561,37 +574,42 @@ async function fixSingleDiagnostic(
                         if (cancellationTokenSource.token.isCancellationRequested) return;
                         switch (type) {
                             case 'session_start':
-                                webviewProvider.postMessage({
+                                postRunMessage({
                                     type: 'session_start',
                                     payload: payload as { backend: string; mode?: string; model?: string },
                                 });
                                 break;
                             case 'session_metadata':
-                                webviewProvider.postMessage({
+                                postRunMessage({
                                     type: 'session_metadata',
                                     payload: payload as { opencodeSessionId?: string },
                                 });
                                 break;
                             case 'session_end':
-                                webviewProvider.postMessage({
+                                postRunMessage({
                                     type: 'session_end',
-                                    payload: payload as { success: boolean; outcome: 'applied' | 'no_change' | 'failed'; finalMessage: string },
+                                    payload: payload as {
+                                        success: boolean;
+                                        outcome: 'applied' | 'no_change' | 'failed';
+                                        finalMessage: string;
+                                        explanationKind?: 'structured' | 'plain' | 'missing';
+                                    },
                                 });
                                 break;
                             case 'status':
-                                webviewProvider.postMessage({
+                                postRunMessage({
                                     type: 'status',
                                     payload: payload as { phase: string; message?: string },
                                 });
                                 break;
                             case 'backend_info':
-                                webviewProvider.postMessage({
+                                postRunMessage({
                                     type: 'backend_info',
                                     payload: payload as { backend: string; mode: string; model?: string },
                                 });
                                 break;
                             case 'step_update':
-                                webviewProvider.postMessage({
+                                postRunMessage({
                                     type: 'step_update',
                                     payload: payload as { step: string; detail?: string },
                                 });
@@ -602,7 +620,7 @@ async function fixSingleDiagnostic(
                     },
                 };
 
-                webviewProvider.postMessage({
+                postRunMessage({
                     type: 'backend_info',
                     payload: {
                         backend: backend.name,
@@ -629,19 +647,20 @@ async function fixSingleDiagnostic(
                         && fixResult.originalContent !== undefined
                         && fixResult.newContent !== undefined
                     ) {
-                        webviewProvider.postMessage({
+                        postRunMessage({
                             type: 'final_diff',
                             payload: {
                                 path: resolvedPath,
                                 oldContent: fixResult.originalContent,
                                 newContent: fixResult.newContent,
-                                message: fixResult.finalMessage
+                                message: fixResult.finalMessage,
+                                explanationKind: fixResult.explanationKind,
                             }
                         });
                     }
                 } finally {
                     for (const msgId of activeMessageIds) {
-                        webviewProvider.postMessage({
+                        postRunMessage({
                             type: 'message_complete',
                             payload: { messageId: msgId }
                         });
@@ -652,6 +671,15 @@ async function fixSingleDiagnostic(
             },
         );
 
+        const removedDiagnostic = (
+            !cancellationTokenSource.token.isCancellationRequested
+            && result.outcome === 'applied'
+            && result.success
+            && result.fileChanged
+        )
+            ? DiagnosticsManager.removeDiagnostic(diagnostic)
+            : false;
+
         if (cancellationTokenSource.token.isCancellationRequested) {
             return { status: 'stopped' };
         }
@@ -661,7 +689,7 @@ async function fixSingleDiagnostic(
         if (!result.success) {
             return { status: 'failed' };
         }
-        return { status: 'completed' };
+        return { status: 'completed', removedDiagnostic };
     } catch (e) {
         // Session already sends session_end via onEvent callback on error.
         // Just show the VSCode error notification here.
