@@ -87,10 +87,10 @@ npm run test:coverage
 
 覆盖：
 
-- `server` / `acp` 双模式
+- 本地 `opencode serve` 复用 / 拉起
+- SDK event subscribe、session create、prompt、abort、messages
 - `server` 取消时先 abort 再关闭
 - `session.idle` / `server.disconnect` 软关闭保护
-- ACP `session/update` 到统一事件流的归一化
 - 原生文件改动的最终 diff 检测
 - `NO_FIX_NEEDED` -> `no_change`
 - `CANNOT_FIX` -> 带原因的失败
@@ -98,6 +98,8 @@ npm run test:coverage
 
 关键文件：
 
+- `src/backends/opencodeServerManager.test.ts`
+- `src/backends/opencodeSdkClient.test.ts`
 - `src/backends/opencodeTransport.test.ts`
 - `src/backends/opencodeSession.test.ts`
 - `src/backends/opencodeEventAdapter.test.ts`
@@ -151,21 +153,17 @@ npm run test:coverage
 - `MSAGENT_LOCAL_MODEL`
 - 可执行的 `MSAGENT_LOCAL_OPENCODE_CLI_PATH`，默认 `opencode`
 - `MSAGENT_LOCAL_OPENCODE_PORT`，默认 `7325`
-- `MSAGENT_LOCAL_OPENCODE_MODE`，默认 `both`
+- `MSAGENT_LOCAL_OPENCODE_MODE`，固定为 `server`
 
 该命令是 fail-fast 的：如果本地 `opencode` 或模型配置缺失，会直接失败并提示缺失项。
 
-### M5. 双模式验证
+### M5. Server 验证
 
-分别验证：
+验证：
 
-- `msagent.opencodeMode = server`
-- `msagent.opencodeMode = acp`
-
-关注点：
-
-- 都能发起修复
-- 都能展示文本流和工具调用
+- `opencode serve` 能被复用或自动拉起
+- 官方 SDK 能正确接到本地 server
+- 修复过程能展示文本流和工具调用
 - 失败时保留原文件
 
 ## 覆盖率目标
@@ -187,10 +185,11 @@ npm run test:coverage
 - 确认端口未被占用
 - 查看输出面板中的 `OpenCodeBackend` 日志
 
-### `acp` 模式无响应
+### 服务端模式无法启动
 
-- 检查 `msagent.opencodeAcpArgs`
-- 确认本地 `opencode acp` 可正常启动
+- 检查 `msagent.opencodeCliPath`
+- 检查 `msagent.opencodeServePort`
+- 确认本地 `opencode serve --port <port>` 可以启动
 
 ### Quick Fix 没有出现
 

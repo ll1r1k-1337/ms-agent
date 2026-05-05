@@ -1,0 +1,28 @@
+# 开发配置与工具
+.vscode/**
+.vscode-test/**
+.eslintrc.json
+.prettierrc
+tsconfig.json
+.gitignore
+.yarnrc
+
+# 源码与测试文件
+src/**
+test/**
+test/**
+**/*.test.ts
+**/*.map
+
+# 版本控制
+.git/**
+.github/**
+
+# 依赖
+node_modules/**
+.graphify-out/**
+
+# 临时文件
+*.log
+.DS_Store
+*.vsix

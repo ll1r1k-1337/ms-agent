@@ -1,5 +1,3 @@
-export type OpenCodeMode = 'server' | 'acp';
-
 export const DEFAULT_OPENCODE_MODEL = 'opencode/big-pickle';
 
 export interface LLMConfig {
@@ -14,26 +12,13 @@ export interface LLMConfig {
     /** Warning emitted when a legacy non-provider-qualified value is configured. */
     modelWarning?: string;
     timeoutMs: number;
-    opencodeMode: OpenCodeMode;
     opencodeServePort: number;
     opencodeCliPath: string;
-    opencodeAcpArgs: string[];
     opencodeApiKey: string;
 }
 
 export interface ConfigReader {
     get<T>(key: string): T | undefined;
-}
-
-function normalizeOpenCodeMode(mode: string | undefined): OpenCodeMode {
-    return mode === 'acp' ? 'acp' : 'server';
-}
-
-function normalizeArgs(args: string[] | undefined): string[] {
-    if (!Array.isArray(args) || args.length === 0) {
-        return ['acp'];
-    }
-    return args.filter((value) => typeof value === 'string' && value.trim().length > 0);
 }
 
 export function parseModelName(raw: string | undefined): {
@@ -73,10 +58,8 @@ export function resolveLLMConfig(cfg: ConfigReader): LLMConfig {
         modelFullName: model.modelFullName,
         modelWarning: model.modelWarning,
         timeoutMs: cfg.get<number>('timeoutMs') ?? 300000,
-        opencodeMode: normalizeOpenCodeMode(cfg.get<string>('opencodeMode')),
         opencodeServePort: cfg.get<number>('opencodeServePort') ?? 7325,
         opencodeCliPath: cfg.get<string>('opencodeCliPath') || 'opencode',
-        opencodeAcpArgs: normalizeArgs(cfg.get<string[]>('opencodeAcpArgs')),
         opencodeApiKey: cfg.get<string>('opencodeApiKey') || '',
     };
 }

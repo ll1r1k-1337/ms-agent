@@ -30,7 +30,6 @@ class MockTransport implements OpenCodeTransport {
     }
 
     start(_prompt: string): void {}
-    send(_data: unknown): void {}
     async readSessionMessages(): Promise<unknown[] | null> { return this.sessionMessages; }
     cancel(): void { this.cancelled = true; }
     dispose(): void {}

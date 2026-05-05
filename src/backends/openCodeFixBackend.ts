@@ -186,10 +186,8 @@ function isRetryableNoEditResult(result: FixResult): boolean {
 
 function buildTransportConfig(config: ReturnType<typeof getLLMConfig>, workspaceRoot?: string): OpenCodeTransportConfig {
     return {
-        mode: config.opencodeMode,
         cliPath: config.opencodeCliPath,
         servePort: config.opencodeServePort,
-        acpArgs: config.opencodeAcpArgs,
         apiKey: config.opencodeApiKey,
         timeoutMs: config.timeoutMs,
         model: config.modelID,
@@ -218,13 +216,11 @@ export class OpenCodeFixBackend implements FixBackend {
     }
 
     getServerPort(): number | undefined {
-        return this.lastTransportConfig?.mode === 'server'
-            ? this.lastTransportConfig.servePort
-            : undefined;
+        return this.lastTransportConfig?.servePort;
     }
 
     getTransportMode(): string | undefined {
-        return this.lastTransportConfig?.mode;
+        return this.lastTransportConfig ? 'server' : undefined;
     }
 
     async executeFix(
@@ -250,7 +246,7 @@ export class OpenCodeFixBackend implements FixBackend {
         const prompt = buildOpenCodePrompt(diagnostic, originalContent);
         const primaryTransportConfig = buildTransportConfig(config, workspaceRoot);
         this.lastTransportConfig = primaryTransportConfig;
-        log(`executeFix mode=${primaryTransportConfig.mode} model=${primaryTransportConfig.modelFullName || primaryTransportConfig.model || 'default'} file=${resolvedPath}`);
+        log(`executeFix mode=server model=${primaryTransportConfig.modelFullName || primaryTransportConfig.model || 'default'} file=${resolvedPath}`);
 
         let bufferedFirstSessionEnd: unknown;
         const firstAttemptCallbacks: FixCallbacks | undefined = callbacks
@@ -318,18 +314,11 @@ export class OpenCodeFixBackend implements FixBackend {
         timeoutMs: number,
         callbacks?: FixCallbacks,
     ): Promise<FixResult> {
-        log(`starting transport mode=${transportConfig.mode}`);
-        if (transportConfig.mode === 'server') {
-            callbacks?.onEvent?.('status', {
-                phase: 'connecting',
-                message: `Starting OpenCode server on port ${transportConfig.servePort} and attaching session...`,
-            });
-        } else {
-            callbacks?.onEvent?.('status', {
-                phase: 'connecting',
-                message: `Starting OpenCode ACP at ${transportConfig.cliPath || 'opencode'} ${transportConfig.acpArgs?.join(' ') || 'acp'}...`,
-            });
-        }
+        log('starting transport mode=server');
+        callbacks?.onEvent?.('status', {
+            phase: 'connecting',
+            message: `Starting OpenCode server on port ${transportConfig.servePort}...`,
+        });
 
         const factory = this.createTransportOverride ?? createTransport;
         const transport = factory(transportConfig, log);
@@ -342,11 +331,11 @@ export class OpenCodeFixBackend implements FixBackend {
                 resolvedPath,
                 originalContent,
                 timeoutMs,
-                mode: transportConfig.mode,
+                mode: 'server',
                 model: transportConfig.modelFullName,
             });
         } finally {
-            log(`disposing transport mode=${transportConfig.mode}`);
+            log('disposing transport mode=server');
             transport.dispose();
         }
     }

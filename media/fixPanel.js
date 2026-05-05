@@ -10,15 +10,15 @@
     }
 
     const PHASE_LABELS = {
-        connecting: 'Connecting',
-        running: 'Running',
-        finalizing: 'Finalizing',
+        connecting: 'Starting OpenCode',
+        running: 'Repairing',
+        finalizing: 'Verifying changes',
         error: 'Error',
-        waiting: 'Idle',
+        waiting: 'Ready',
         completed: 'Completed',
-        no_change: 'No change',
+        no_change: 'No code change needed',
         failed: 'Failed',
-        idle: 'Idle',
+        idle: 'Ready',
     };
 
     const state = {

@@ -49,10 +49,8 @@ describe('OpenCodeFixBackend', () => {
         modelFullName: 'volcengine-plan/doubao-seed-2.0-code',
         modelWarning: undefined,
         timeoutMs: 300000,
-        opencodeMode: 'server' as const,
         opencodeCliPath: '/usr/bin/opencode',
         opencodeServePort: 7325,
-        opencodeAcpArgs: ['acp'],
         opencodeApiKey: 'test-api-key',
     };
 
@@ -115,10 +113,8 @@ describe('OpenCodeFixBackend', () => {
 
         expect(createTransportStub.calledOnce).to.be.true;
         expect(createTransportStub.firstCall.args[0]).to.deep.equal({
-            mode: 'server',
             cliPath: '/usr/bin/opencode',
             servePort: 7325,
-            acpArgs: ['acp'],
             apiKey: 'test-api-key',
             timeoutMs: 300000,
             model: 'doubao-seed-2.0-code',
@@ -126,20 +122,6 @@ describe('OpenCodeFixBackend', () => {
             modelFullName: 'volcengine-plan/doubao-seed-2.0-code',
             workspaceRoot: tempDir,
         });
-    });
-
-    it('passes through ACP mode without legacy normalization', async () => {
-        const testFilePath = path.join(tempDir, 'test.cpp');
-        fs.writeFileSync(testFilePath, 'original file content', 'utf-8');
-        getLLMConfigStub.returns({ ...mockConfig, opencodeMode: 'acp' });
-        mockSessionRun.resolves(mockSessionResult);
-
-        await backend.executeFix(
-            { ...baseDiagnostic, fileName: 'test.cpp' },
-            { workspaceRoot: tempDir },
-        );
-
-        expect(createTransportStub.firstCall.args[0].mode).to.equal('acp');
     });
 
     it('disposes the transport only after session.run settles', async () => {

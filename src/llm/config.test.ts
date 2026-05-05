@@ -28,10 +28,8 @@ describe('resolveLLMConfig', () => {
             modelFullName: DEFAULT_OPENCODE_MODEL,
             modelWarning: undefined,
             timeoutMs: 300000,
-            opencodeMode: 'server',
             opencodeServePort: 7325,
             opencodeCliPath: 'opencode',
-            opencodeAcpArgs: ['acp'],
             opencodeApiKey: '',
         });
     });
@@ -64,10 +62,8 @@ describe('resolveLLMConfig', () => {
         const result = resolveLLMConfig(makeReader({
             modelName: 'volcengine-plan/doubao-seed-2.0-code',
             timeoutMs: 450000,
-            opencodeMode: 'acp',
             opencodeServePort: 8123,
             opencodeCliPath: '/usr/local/bin/opencode',
-            opencodeAcpArgs: ['acp', '--verbose'],
             opencodeApiKey: 'oc-test',
         }));
 
@@ -78,22 +74,10 @@ describe('resolveLLMConfig', () => {
             modelFullName: 'volcengine-plan/doubao-seed-2.0-code',
             modelWarning: undefined,
             timeoutMs: 450000,
-            opencodeMode: 'acp',
             opencodeServePort: 8123,
             opencodeCliPath: '/usr/local/bin/opencode',
-            opencodeAcpArgs: ['acp', '--verbose'],
             opencodeApiKey: 'oc-test',
         });
-    });
-
-    it('normalizes unknown mode back to server', () => {
-        const result = resolveLLMConfig(makeReader({ opencodeMode: 'server-ish' }));
-        expect(result.opencodeMode).to.equal('server');
-    });
-
-    it('falls back to default ACP args when the setting is empty', () => {
-        const result = resolveLLMConfig(makeReader({ opencodeAcpArgs: [] }));
-        expect(result.opencodeAcpArgs).to.deep.equal(['acp']);
     });
 
     it('parses full OpenCode model IDs into provider and model parts', () => {
@@ -122,10 +106,8 @@ describe('resolveLLMConfig', () => {
             'modelFullName',
             'modelWarning',
             'timeoutMs',
-            'opencodeMode',
             'opencodeServePort',
             'opencodeCliPath',
-            'opencodeAcpArgs',
             'opencodeApiKey',
         ];
 

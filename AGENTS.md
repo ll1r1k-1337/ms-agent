@@ -30,10 +30,8 @@ The extension reads settings from `workspace.getConfiguration('msagent')`.
 
 - `msagent.modelName`
 - `msagent.timeoutMs`
-- `msagent.opencodeMode` — `server` or `acp`
 - `msagent.opencodeServePort`
 - `msagent.opencodeCliPath`
-- `msagent.opencodeAcpArgs`
 - `msagent.opencodeApiKey`
 
 ## Source Code Architecture
@@ -52,7 +50,10 @@ src/
 │   ├── fixBackend.ts               # Backend interface
 │   ├── backendFactory.ts           # Always returns OpenCodeFixBackend
 │   ├── openCodeFixBackend.ts       # Prompt + backend entrypoint
-│   ├── opencodeTransport.ts        # OpenCode server/acp transports
+│   ├── opencodeTransport.ts        # Transport adapter layer
+│   ├── opencodeServerManager.ts    # Local opencode serve lifecycle
+│   ├── opencodeSdkClient.ts        # Official OpenCode SDK wrapper
+│   ├── opencodeTurnRunner.ts       # Single-turn orchestration
 │   ├── opencodeSession.ts          # Session lifecycle and finalize safety
 │   └── opencodeEventAdapter.ts     # Event normalization helpers
 ├── skills/

@@ -8,8 +8,9 @@
 
 - Parses msSanitizer logs into VS Code diagnostics
 - Exposes Quick Fix actions for individual problems
-- Runs fixes through OpenCode only
-- Uses a minimal Fix Details panel: status, current action, and result stay on the first screen; raw details are folded into `Technical details`
+- Runs fixes through OpenCode server only
+- Reuses or auto-starts local `opencode serve`, then talks to it through the official `@opencode-ai/sdk`
+- Uses a trimmed Fix Details panel: status, current action, result, and changed files stay on the first screen; raw details are folded into `Technical details`
 - Distinguishes no-op outcomes: `NO_FIX_NEEDED` becomes a neutral "No Change" result, while `CANNOT_FIX` shows the OpenCode reason directly
 
 ## Supported Error Types
@@ -46,12 +47,10 @@ All settings are exposed through native VS Code settings under `msagent`.
 
 | Setting | Default | Description |
 |---|---|---|
-| `msagent.modelName` | `qwen3:8b` | Model used by OpenCode |
+| `msagent.modelName` | `opencode/big-pickle` | Full OpenCode model ID used for repairs |
 | `msagent.timeoutMs` | `300000` | Per-fix timeout |
-| `msagent.opencodeMode` | `server` | Transport mode: `server` or `acp` |
 | `msagent.opencodeServePort` | `7325` | Port for `opencode serve` |
 | `msagent.opencodeCliPath` | `opencode` | OpenCode executable path |
-| `msagent.opencodeAcpArgs` | `["acp"]` | ACP launch arguments |
 | `msagent.opencodeApiKey` | `""` | Optional API key forwarded to OpenCode |
 
 ## Commands
@@ -73,17 +72,26 @@ log file
   -> vscode/codeActionProvider.ts
   -> vscode/fixService.ts
   -> backends/openCodeFixBackend.ts
-  -> backends/opencodeTransport.ts (server | acp)
+  -> backends/opencodeTransport.ts
+  -> backends/opencodeServerManager.ts
+  -> backends/opencodeSdkClient.ts
+  -> backends/opencodeTurnRunner.ts
   -> backends/opencodeSession.ts
   -> webview/webviewPanelProvider.ts
 ```
+
+Key runtime roles:
+
+- `opencodeServerManager.ts`: detects, reuses, and starts local `opencode serve`
+- `opencodeSdkClient.ts`: wraps the official OpenCode SDK for session / event / abort / messages
+- `opencodeTurnRunner.ts`: enforces the repair turn order: subscribe first, create session, send prompt, then wait for a hard terminal event
 
 This codebase no longer includes:
 
 - host-side custom tool execution
 - a built-in OpenAI-compatible backend
 - a dedicated settings webview
-- OpenCode `cli` or `api` transport modes
+- OpenCode `cli`, `api`, or `acp` transport modes
 
 ## Test Commands
 
@@ -102,7 +110,6 @@ npm run test:coverage
 
 - [docs/SOURCE_GUIDE.md](./docs/SOURCE_GUIDE.md)
 - [docs/TEST_GUIDE.md](./docs/TEST_GUIDE.md)
-- [docs/OPENCODE_AGENT_INTEGRATION_PLAN.md](./docs/OPENCODE_AGENT_INTEGRATION_PLAN.md)
 
 ## License
 
