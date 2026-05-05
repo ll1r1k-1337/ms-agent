@@ -2,7 +2,7 @@
   "name": "msagent",
   "displayName": "msAgent",
   "description": "Agentic auto-fix for mssanitizer Ascend NPU operator memory errors",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "publisher": "msagent",
   "engines": {
     "vscode": "^1.85.0"
@@ -137,35 +137,20 @@
           "maximum": 600000,
           "description": "Timeout for a single OpenCode repair session in milliseconds."
         },
-        "msagent.opencodeMode": {
-          "type": "string",
-          "enum": [
-            "server",
-            "acp"
-          ],
-          "default": "server",
-          "description": "OpenCode transport mode: server uses opencode serve, acp uses Agent Client Protocol over stdio."
-        },
         "msagent.opencodeServePort": {
           "type": "number",
           "default": 7325,
-          "description": "Port for OpenCode server mode."
+          "description": "Port used by the OpenCode server flow."
         },
         "msagent.opencodeCliPath": {
           "type": "string",
           "default": "opencode",
-          "description": "Path to the OpenCode executable."
-        },
-        "msagent.opencodeAcpArgs": {
-          "type": "array",
-          "items": { "type": "string" },
-          "default": ["acp"],
-          "description": "Arguments passed to OpenCode in ACP mode."
+          "description": "Path to the OpenCode executable used for `opencode serve`."
         },
         "msagent.opencodeApiKey": {
           "type": "string",
           "default": "",
-          "description": "Optional API key for authenticating to OpenCode server mode."
+          "description": "Optional API key for authenticating to the OpenCode server."
         }
       }
     },
@@ -219,6 +204,7 @@
     "typescript-eslint": "^8.59.0"
   },
   "dependencies": {
+    "@opencode-ai/sdk": "^1.14.39",
     "@types/marked": "^5.0.2",
     "claude-code": "^1.0.0",
     "clean": "^4.0.2",

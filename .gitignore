@@ -10,3 +10,4 @@ coverage/
 *.lcov
 .nyc_output
 raw/
+graphify-out/

@@ -38,7 +38,6 @@ export class FixtureTransport implements OpenCodeTransport {
     private cancelled = false;
     private disposed = false;
 
-    readonly sent: unknown[] = [];
     readonly prompts: string[] = [];
 
     constructor(fixture: LlmScenarioFixture, workspaceRoot?: string) {
@@ -69,10 +68,6 @@ export class FixtureTransport implements OpenCodeTransport {
 
     onClose(callback: (exitCode: number | null) => void): void {
         this.closeCb = callback;
-    }
-
-    send(data: unknown): void {
-        this.sent.push(data);
     }
 
     async readSessionMessages(): Promise<unknown[] | null> {

@@ -8,8 +8,9 @@
 
 - 日志解析器：把 msSanitizer 日志转换成 VS Code Problems 诊断
 - Quick Fix：从 Problems 面板或灯泡菜单直接触发 `msagent.fixProblem`
-- OpenCode-only 修复：修复链路统一走 OpenCode `server` 或 `acp`
-- Fix Details 面板：首屏只保留状态、当前动作、结果，原始细节折叠到 `Technical details`
+- OpenCode-only 修复：修复链路统一走 OpenCode `server`
+- SDK 驱动：扩展会复用或自动拉起本地 `opencode serve`，再通过官方 `@opencode-ai/sdk` 发起 session / event / abort / messages
+- 精简后的 Fix Details 面板：首屏聚焦状态、当前动作、结果和改动文件
 - no-op 语义：`NO_FIX_NEEDED` 会显示为“未修改代码”，`CANNOT_FIX` 会直接展示 OpenCode 原因
 
 ## 支持的错误类型
@@ -46,24 +47,20 @@ npm run compile
 
 | 设置项 | 默认值 | 说明 |
 |---|---|---|
-| `msagent.modelName` | `qwen3:8b` | OpenCode 使用的模型名 |
+| `msagent.modelName` | `opencode/big-pickle` | OpenCode 使用的完整模型 ID |
 | `msagent.timeoutMs` | `300000` | 单次修复超时 |
-| `msagent.opencodeMode` | `server` | 传输模式，仅支持 `server` / `acp` |
 | `msagent.opencodeServePort` | `7325` | `opencode serve` 端口 |
 | `msagent.opencodeCliPath` | `opencode` | OpenCode 可执行文件路径 |
-| `msagent.opencodeAcpArgs` | `["acp"]` | ACP 模式启动参数 |
 | `msagent.opencodeApiKey` | `""` | 可选，传给 OpenCode 的 API Key |
 
 示例：
 
 ```json
 {
-  "msagent.modelName": "qwen3:8b",
+  "msagent.modelName": "opencode/big-pickle",
   "msagent.timeoutMs": 300000,
-  "msagent.opencodeMode": "server",
   "msagent.opencodeServePort": 7325,
   "msagent.opencodeCliPath": "opencode",
-  "msagent.opencodeAcpArgs": ["acp"],
   "msagent.opencodeApiKey": ""
 }
 ```
@@ -94,17 +91,26 @@ log file
   -> vscode/codeActionProvider.ts
   -> vscode/fixService.ts
   -> backends/openCodeFixBackend.ts
-  -> backends/opencodeTransport.ts (server | acp)
+  -> backends/opencodeTransport.ts
+  -> backends/opencodeServerManager.ts
+  -> backends/opencodeSdkClient.ts
+  -> backends/opencodeTurnRunner.ts
   -> backends/opencodeSession.ts
   -> webview/webviewPanelProvider.ts
 ```
+
+其中：
+
+- `opencodeServerManager.ts`：负责探测、复用、拉起本地 `opencode serve`
+- `opencodeSdkClient.ts`：封装官方 OpenCode SDK 的 session / event / abort / messages
+- `opencodeTurnRunner.ts`：负责一次修复 turn 的顺序控制：先订阅事件，再建 session，再发 prompt，再等待硬终止
 
 当前实现不再包含：
 
 - 宿主自定义 Agent 工具执行链
 - 内置 OpenAI-compatible backend
 - 独立设置 WebView
-- OpenCode `cli` / `api` 传输模式
+- OpenCode `cli` / `api` / `acp` 传输模式
 
 ## 测试
 
@@ -123,7 +129,6 @@ npm run test:coverage
 
 - [docs/SOURCE_GUIDE.md](./docs/SOURCE_GUIDE.md)
 - [docs/TEST_GUIDE.md](./docs/TEST_GUIDE.md)
-- [docs/OPENCODE_AGENT_INTEGRATION_PLAN.md](./docs/OPENCODE_AGENT_INTEGRATION_PLAN.md)
 
 ## License
 

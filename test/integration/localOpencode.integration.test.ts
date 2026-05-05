@@ -17,13 +17,10 @@ import {
 } from '../../src/parser/types';
 import { FixCallbacks } from '../../src/backends/fixBackend';
 
-type LocalMode = 'server' | 'acp';
-
 interface LocalHarness {
     model: string;
     cliPath: string;
     servePort: number;
-    modeSelection: 'server' | 'acp' | 'both';
 }
 
 interface EventCollection extends FixCallbacks {
@@ -49,11 +46,6 @@ function resolveHarness(): LocalHarness {
         throw new Error('MSAGENT_LOCAL_OPENCODE_PORT must be a positive integer.');
     }
 
-    const modeSelection = (process.env.MSAGENT_LOCAL_OPENCODE_MODE || 'both').trim().toLowerCase();
-    if (!['server', 'acp', 'both'].includes(modeSelection)) {
-        throw new Error('MSAGENT_LOCAL_OPENCODE_MODE must be one of: server, acp, both.');
-    }
-
     const probe = childProcess.spawnSync(cliPath, ['--help'], { encoding: 'utf-8' });
     if (probe.error) {
         throw new Error(`OpenCode CLI probe failed for "${cliPath}": ${probe.error.message}`);
@@ -68,7 +60,6 @@ function resolveHarness(): LocalHarness {
         model,
         cliPath,
         servePort,
-        modeSelection: modeSelection as LocalHarness['modeSelection'],
     };
 }
 
@@ -132,11 +123,7 @@ function collectEvents(): EventCollection {
     };
 }
 
-function modeEnabled(harness: LocalHarness, mode: LocalMode): boolean {
-    return harness.modeSelection === 'both' || harness.modeSelection === mode;
-}
-
-async function runLocalFix(harness: LocalHarness, mode: LocalMode) {
+async function runLocalFix(harness: LocalHarness) {
     const workspace = makeWorkspace();
     const backend = new OpenCodeFixBackend();
     const callbacks = collectEvents();
@@ -151,10 +138,8 @@ async function runLocalFix(harness: LocalHarness, mode: LocalMode) {
         modelFullName: parsedModel.modelFullName,
         modelWarning: parsedModel.modelWarning,
         timeoutMs: 300000,
-        opencodeMode: mode,
         opencodeServePort: harness.servePort,
         opencodeCliPath: harness.cliPath,
-        opencodeAcpArgs: ['acp'],
         opencodeApiKey: process.env.MSAGENT_LOCAL_OPENCODE_API_KEY || '',
     });
 
@@ -180,57 +165,27 @@ describe('OpenCode local integration', function () {
         harness = resolveHarness();
     });
 
-    (function registerModeTests() {
-        it(modeEnabledPlaceholder('server'), async function () {
-            if (!modeEnabled(harness, 'server')) {
-                this.skip();
-            }
-
-            const run = await runLocalFix(harness, 'server');
-            try {
-                expect(run.callbacks.eventTypes).to.include('session_start');
-                expect(
-                    run.callbacks.textChunks.length > 0
-                    || run.callbacks.toolCalls.length > 0
-                    || run.callbacks.toolResults.length > 0,
-                ).to.equal(true);
-                expect(run.result.success).to.equal(true);
+    it('runs a real server repair against local opencode', async function () {
+        const run = await runLocalFix(harness);
+        try {
+            expect(run.callbacks.eventTypes).to.include('session_start');
+            expect(
+                run.callbacks.textChunks.length > 0
+                || run.callbacks.toolCalls.length > 0
+                || run.callbacks.toolResults.length > 0,
+            ).to.equal(true);
+            if (!run.result.success) {
+                expect(run.result.outcome === 'no_change' || run.result.outcome === 'failed').to.equal(true);
+                expect(run.result.finalMessage.trim().length > 0).to.equal(true);
+                expect(run.result.finalMessage).to.not.include('did not provide a parseable reason');
+                expect(run.result.finalMessage).to.not.include('returned the original code without explaining why');
+            } else {
                 expect(run.result.outcome).to.equal('applied');
                 expect(run.diskContent).to.not.equal(run.originalContent);
                 expect(run.diskContent).to.not.include('DataCopy(zGlobal[progress], zLocal, TILE_LENGTH);');
-            } finally {
-                run.workspace.cleanup();
             }
-        });
-
-        it(modeEnabledPlaceholder('acp'), async function () {
-            if (!modeEnabled(harness, 'acp')) {
-                this.skip();
-            }
-
-            const run = await runLocalFix(harness, 'acp');
-            try {
-                expect(run.callbacks.eventTypes).to.include('session_start');
-                expect(
-                    run.callbacks.textChunks.length > 0
-                    || run.callbacks.toolCalls.length > 0
-                    || run.callbacks.toolResults.length > 0,
-                ).to.equal(true);
-                if (!run.result.success) {
-                    expect(run.result.outcome === 'no_change' || run.result.outcome === 'failed').to.equal(true);
-                    expect(run.result.finalMessage.trim().length > 0).to.equal(true);
-                    expect(run.result.finalMessage).to.not.include('did not provide a parseable reason');
-                    expect(run.result.finalMessage).to.not.include('returned the original code without explaining why');
-                } else {
-                    expect(run.result.outcome).to.equal('applied');
-                }
-            } finally {
-                run.workspace.cleanup();
-            }
-        });
-    }());
+        } finally {
+            run.workspace.cleanup();
+        }
+    });
 });
-
-function modeEnabledPlaceholder(mode: LocalMode): string {
-    return `runs a real ${mode} repair against local opencode`;
-}

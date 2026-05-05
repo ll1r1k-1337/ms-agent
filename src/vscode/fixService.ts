@@ -486,7 +486,7 @@ async function fixSingleDiagnostic(
                 cancellable: false,
             },
             async (progress) => {
-                progress.report({ message: 'Analyzing error...', increment: 0 });
+                progress.report({ message: 'Preparing the repair context...', increment: 0 });
 
                 const postRunMessage = (message: { type: any; payload: any }): void => {
                     webviewProvider.postMessage({
@@ -505,9 +505,9 @@ async function fixSingleDiagnostic(
                 // Show the user prompt in the webview as a user message bubble
                 const userMessageId = webviewProvider.nextMessageId();
                 const userPromptSummary =
-                    '📝 Fix ' + diagnostic.errorType +
-                    ' at ' + path.basename(diagnostic.fileName) + ':' + diagnostic.lineNumber +
-                    (diagnostic.kernelName ? ' (kernel: ' + diagnostic.kernelName + ')' : '');
+                    'Repair ' + diagnostic.errorType +
+                    ' in ' + path.basename(diagnostic.fileName) + ':' + diagnostic.lineNumber +
+                    (diagnostic.kernelName ? ' · kernel ' + diagnostic.kernelName : '');
                 postRunMessage({
                     type: 'user_message',
                     payload: {
@@ -543,7 +543,7 @@ async function fixSingleDiagnostic(
                     onToolCall: (name, params, toolCallId) => {
                         if (cancellationTokenSource.token.isCancellationRequested) return;
                         progress.report({
-                            message: `${name}(${Object.keys(params).join(', ')})`,
+                            message: `Running ${name.replace(/_/g, ' ')}...`,
                             increment: 10,
                         });
                         postRunMessage({
@@ -620,14 +620,14 @@ async function fixSingleDiagnostic(
                     },
                 };
 
-                postRunMessage({
-                    type: 'backend_info',
-                    payload: {
-                        backend: backend.name,
-                        mode: config.opencodeMode,
-                        model: config.modelFullName,
-                    },
-                });
+                        postRunMessage({
+                            type: 'backend_info',
+                            payload: {
+                                backend: backend.name,
+                                mode: 'server',
+                                model: config.modelFullName,
+                            },
+                        });
 
                 let fixResult: FixResult;
                 try {
@@ -706,27 +706,18 @@ function formatOpenCodeConnectionError(
     message: string,
     config: ReturnType<typeof getLLMConfig>,
 ): string {
-    const mode = config.opencodeMode;
     let friendly = '❌ msAgent fix failed\n\n';
-    friendly += `OpenCode ${mode} mode failed.\n\n`;
+    friendly += 'OpenCode server mode failed.\n\n';
     friendly += 'Current configuration:\n';
     friendly += `• CLI path: ${config.opencodeCliPath}\n`;
-    if (mode === 'server') {
-        friendly += `• Server port: ${config.opencodeServePort}\n`;
-    } else {
-        friendly += `• ACP args: ${config.opencodeAcpArgs.join(' ')}\n`;
-    }
+    friendly += `• Server port: ${config.opencodeServePort}\n`;
     friendly += '\n';
     friendly += 'Underlying error:\n';
     friendly += `${message}\n\n`;
     friendly += 'Please ensure:\n';
     friendly += '• OpenCode is installed and available in your PATH\n';
-    if (mode === 'server') {
-        friendly += `• If using server mode, start OpenCode with \`opencode serve --port ${config.opencodeServePort}\`\n`;
-    } else {
-        friendly += `• If using ACP mode, verify \`${config.opencodeCliPath} ${config.opencodeAcpArgs.join(' ')}\` works in the same environment as VS Code\n`;
-    }
-    friendly += '• Review the msAgent settings if the CLI path, mode, or timeout changed';
+    friendly += `• OpenCode can start with \`opencode serve --port ${config.opencodeServePort}\`\n`;
+    friendly += '• Review the msAgent settings if the CLI path, model, port, or timeout changed';
     return friendly;
 }
 

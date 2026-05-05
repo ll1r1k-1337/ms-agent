@@ -11,10 +11,8 @@ describe('createFixBackend', () => {
             modelID: 'big-pickle',
             modelFullName: 'opencode/big-pickle',
             timeoutMs: 300000,
-            opencodeMode: 'server',
             opencodeServePort: 7325,
             opencodeCliPath: 'opencode',
-            opencodeAcpArgs: ['acp'],
             opencodeApiKey: '',
         };
 

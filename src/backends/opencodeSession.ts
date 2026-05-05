@@ -787,7 +787,7 @@ export class OpenCodeSession {
                     sm.dispatch({ kind: 'TERMINAL_EVENT', reason: 'done' });
                     this.callbacks?.onEvent?.('status', {
                         phase: 'finalizing',
-                        message: 'Processing fix result...',
+                        message: 'Verifying changes...',
                     });
                     void finalize();
                 } else {
@@ -834,7 +834,7 @@ export class OpenCodeSession {
 
             this.callbacks?.onEvent?.('status', {
                 phase: 'running',
-                message: `Waiting for OpenCode ${options.mode || 'server'} response...`,
+                message: 'Repairing with OpenCode...',
             });
         });
     }

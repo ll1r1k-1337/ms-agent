@@ -23,7 +23,7 @@ src/
 ## Important Constraints
 
 - All automated fixes run through OpenCode
-- Transport modes are only `server` and `acp`
+- Transport mode is only `server`
 - VS Code settings are the only configuration UI
 - Quick Fix targets diagnostics by `msAgentIndex`, not fuzzy line matching
 
@@ -51,10 +51,8 @@ Soft-close signals such as `session.idle` or connection end are not treated as s
 
 - `msagent.modelName`
 - `msagent.timeoutMs`
-- `msagent.opencodeMode`
 - `msagent.opencodeServePort`
 - `msagent.opencodeCliPath`
-- `msagent.opencodeAcpArgs`
 - `msagent.opencodeApiKey`
 
 ## Testing Patterns

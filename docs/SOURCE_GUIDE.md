@@ -18,7 +18,10 @@ src/
 │   ├── fixBackend.ts             # 修复后端接口
 │   ├── backendFactory.ts         # 固定返回 OpenCodeFixBackend
 │   ├── openCodeFixBackend.ts     # 修复入口与 prompt 组装
-│   ├── opencodeTransport.ts      # server / acp 传输层
+│   ├── opencodeTransport.ts      # 上层 transport 适配层
+│   ├── opencodeServerManager.ts  # 本地 opencode serve 生命周期
+│   ├── opencodeSdkClient.ts      # 官方 SDK 封装
+│   ├── opencodeTurnRunner.ts     # 单次修复 turn 编排
 │   ├── opencodeSession.ts        # 会话状态收敛、终态保护、diff 生成
 │   └── opencodeEventAdapter.ts   # 事件归一化
 ├── skills/
@@ -77,7 +80,9 @@ CodeActionProvider
 fixService
   -> createFixBackend()
   -> OpenCodeFixBackend
-  -> createTransport(server | acp)
+  -> createTransport()
+  -> OpenCodeTurnRunner
+  -> OpenCodeSdkClient
   -> OpenCodeSession.run()
   -> WebView event stream + final diff
 ```
@@ -120,14 +125,28 @@ fixService
 
 ### opencodeTransport.ts
 
-- `server` 模式：
-  - 负责 `opencode serve` 探测、复用、拉起
-  - 区分软关闭与硬终止
-  - 取消时先发 abort，再进入 grace period，最后才断开
-- `acp` 模式：
-  - 通过 stdio 跑 JSON-RPC
-  - 负责 initialize、建会话、prompt、cancel
-  - 把 `session/update` 归一化成统一事件流
+- 保留项目内 transport 抽象
+- 不再手写 HTTP + SSE 主流程
+- 把 session 回调接口接到 SDK-based runner
+
+### opencodeServerManager.ts
+
+- 探测端口上是否已有 `opencode serve`
+- 负责复用已有服务或自动拉起本地服务
+- 管理 CLI 启动失败、ready probe、共享进程表
+
+### opencodeSdkClient.ts
+
+- 使用官方 `@opencode-ai/sdk`
+- 统一封装 event subscribe、session create、prompt、abort、messages
+- 保留 SDK/CJS 互操作的懒加载处理，避免把仓库其它代码都拖进 ESM 改造
+
+### opencodeTurnRunner.ts
+
+- 强制执行 turn 顺序：先订阅事件，再建 session，再发 prompt
+- 只向 `OpenCodeSession` 暴露当前 session 的事件
+- 继续区分软关闭与硬终止
+- 取消时先调用 SDK abort，再走 grace period 收尾
 
 ### opencodeSession.ts
 
@@ -142,10 +161,8 @@ fixService
 
 - `modelName`
 - `timeoutMs`
-- `opencodeMode`
 - `opencodeServePort`
 - `opencodeCliPath`
-- `opencodeAcpArgs`
 - `opencodeApiKey`
 
 ## 命令入口
