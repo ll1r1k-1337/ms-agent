@@ -1,0 +1,33 @@
+{
+  "nodes": [
+    {"id": "skillLoader.ts", "label": "skillLoader.ts", "file_type": "code", "source_file": "src/skills/skillLoader.ts"},
+    {"id": "memcheck-skills.md", "label": "memcheck-skills.md", "file_type": "document", "source_file": "src/skills/memcheck-skills.md"},
+    {"id": "msagent-patterns.md", "label": "msagent-patterns.md", "file_type": "document", "source_file": "src/skills/msagent-patterns.md"},
+    {"id": "loadSkill", "label": "loadSkill()", "file_type": "code", "source_file": "src/skills/skillLoader.ts"},
+    {"id": "buildFixPrompt", "label": "buildFixPrompt()", "file_type": "code", "source_file": "src/skills/skillLoader.ts"},
+    {"id": "edit_file_tool", "label": "edit_file tool", "file_type": "document", "source_file": "src/skills/memcheck-skills.md"},
+    {"id": "read_file_tool", "label": "read_file tool", "file_type": "document", "source_file": "src/skills/skillLoader.ts"},
+    {"id": "ascend_memory_arch", "label": "Ascend C Kernel Memory Architecture", "file_type": "document", "source_file": "src/skills/memcheck-skills.md"},
+    {"id": "fix_strategies", "label": "Fix Strategies by Error Type", "file_type": "document", "source_file": "src/skills/memcheck-skills.md"},
+    {"id": "datacopy_api", "label": "DataCopy API", "file_type": "document", "source_file": "src/skills/memcheck-skills.md"},
+    {"id": "agent_loop_pattern", "label": "Tool-Based Agent Loop", "file_type": "document", "source_file": "src/skills/msagent-patterns.md"}
+  ],
+  "edges": [
+    {"source": "skillLoader.ts", "target": "loadSkill", "relation": "implements", "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "src/skills/skillLoader.ts"},
+    {"source": "skillLoader.ts", "target": "buildFixPrompt", "relation": "implements", "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "src/skills/skillLoader.ts"},
+    {"source": "buildFixPrompt", "target": "read_file_tool", "relation": "references", "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "src/skills/skillLoader.ts"},
+    {"source": "buildFixPrompt", "target": "edit_file_tool", "relation": "references", "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "src/skills/skillLoader.ts"},
+    {"source": "skillLoader.ts", "target": "memcheck-skills.md", "relation": "references", "confidence": "INFERRED", "confidence_score": 0.9, "source_file": "src/skills/skillLoader.ts"},
+    {"source": "memcheck-skills.md", "target": "edit_file_tool", "relation": "references", "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "src/skills/memcheck-skills.md"},
+    {"source": "memcheck-skills.md", "target": "ascend_memory_arch", "relation": "references", "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "src/skills/memcheck-skills.md"},
+    {"source": "memcheck-skills.md", "target": "fix_strategies", "relation": "references", "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "src/skills/memcheck-skills.md"},
+    {"source": "memcheck-skills.md", "target": "datacopy_api", "relation": "references", "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "src/skills/memcheck-skills.md"},
+    {"source": "msagent-patterns.md", "target": "memcheck-skills.md", "relation": "references", "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "src/skills/msagent-patterns.md"},
+    {"source": "msagent-patterns.md", "target": "skillLoader.ts", "relation": "references", "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "src/skills/msagent-patterns.md"},
+    {"source": "msagent-patterns.md", "target": "agent_loop_pattern", "relation": "references", "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "src/skills/msagent-patterns.md"},
+    {"source": "fix_strategies", "target": "datacopy_api", "relation": "references", "confidence": "INFERRED", "confidence_score": 0.85, "source_file": "src/skills/memcheck-skills.md"}
+  ],
+  "hyperedges": [],
+  "input_tokens": 0,
+  "output_tokens": 0
+}

@@ -1,0 +1,42 @@
+{
+  "nodes":[
+    {"id":"log_parser","label":"Log Parser (parser/)","file_type":"module","source_file":"docs/SOURCE_GUIDE.md"},
+    {"id":"agent_loop","label":"Agent Loop (agent/)","file_type":"module","source_file":"docs/SOURCE_GUIDE.md"},
+    {"id":"llm_provider","label":"LLM Provider (llm/)","file_type":"module","source_file":"docs/SOURCE_GUIDE.md"},
+    {"id":"tool_handlers","label":"Tool Handlers (tools/)","file_type":"module","source_file":"docs/SOURCE_GUIDE.md"},
+    {"id":"skills","label":"Skills / memcheck-skills","file_type":"module","source_file":"docs/SOURCE_GUIDE.md"},
+    {"id":"diagnostics_mgr","label":"Diagnostics Manager","file_type":"module","source_file":"docs/SOURCE_GUIDE.md"},
+    {"id":"codeaction","label":"CodeAction Provider","file_type":"module","source_file":"docs/SOURCE_GUIDE.md"},
+    {"id":"fix_service","label":"Fix Service","file_type":"module","source_file":"docs/SOURCE_GUIDE.md"},
+    {"id":"webview","label":"WebView Panel","file_type":"module","source_file":"docs/OPENCODE_AGENT_INTEGRATION_PLAN.md"},
+    {"id":"builtin_backend","label":"BuiltIn Backend","file_type":"module","source_file":"docs/OPENCODE_AGENT_INTEGRATION_PLAN.md"},
+    {"id":"opencode_backend","label":"OpenCode Backend","file_type":"module","source_file":"docs/OPENCODE_AGENT_INTEGRATION_PLAN.md"},
+    {"id":"event_protocol","label":"Event Protocol","file_type":"concept","source_file":"docs/OPENCODE_AGENT_INTEGRATION_PLAN.md"},
+    {"id":"transport","label":"Transport Layer (CLI/Serve/API)","file_type":"module","source_file":"docs/OPENCODE_AGENT_INTEGRATION_PLAN.md"},
+    {"id":"test_suite","label":"Test Suite (T1-T6)","file_type":"concept","source_file":"docs/TEST_GUIDE.md"},
+    {"id":"error_types","label":"8 Memory Error Types","file_type":"concept","source_file":"docs/SOURCE_GUIDE.md"}
+  ],
+  "edges":[
+    {"source":"log_parser","target":"diagnostics_mgr","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"docs/SOURCE_GUIDE.md"},
+    {"source":"diagnostics_mgr","target":"fix_service","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"docs/SOURCE_GUIDE.md"},
+    {"source":"codeaction","target":"fix_service","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"docs/SOURCE_GUIDE.md"},
+    {"source":"fix_service","target":"builtin_backend","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"docs/OPENCODE_AGENT_INTEGRATION_PLAN.md"},
+    {"source":"fix_service","target":"opencode_backend","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"docs/OPENCODE_AGENT_INTEGRATION_PLAN.md"},
+    {"source":"builtin_backend","target":"agent_loop","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"docs/OPENCODE_AGENT_INTEGRATION_PLAN.md"},
+    {"source":"agent_loop","target":"llm_provider","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"docs/SOURCE_GUIDE.md"},
+    {"source":"agent_loop","target":"tool_handlers","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"docs/SOURCE_GUIDE.md"},
+    {"source":"fix_service","target":"skills","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"docs/SOURCE_GUIDE.md"},
+    {"source":"opencode_backend","target":"transport","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"docs/OPENCODE_AGENT_INTEGRATION_PLAN.md"},
+    {"source":"opencode_backend","target":"event_protocol","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"docs/OPENCODE_AGENT_INTEGRATION_PLAN.md"},
+    {"source":"fix_service","target":"webview","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"docs/OPENCODE_AGENT_INTEGRATION_PLAN.md"},
+    {"source":"test_suite","target":"log_parser","relation":"cites","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"docs/TEST_GUIDE.md"},
+    {"source":"test_suite","target":"llm_provider","relation":"cites","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"docs/TEST_GUIDE.md"},
+    {"source":"test_suite","target":"agent_loop","relation":"cites","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"docs/TEST_GUIDE.md"},
+    {"source":"error_types","target":"log_parser","relation":"conceptually_related_to","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"docs/SOURCE_GUIDE.md"},
+    {"source":"builtin_backend","target":"opencode_backend","relation":"conceptually_related_to","confidence":"INFERRED","confidence_score":0.8,"source_file":"docs/OPENCODE_AGENT_INTEGRATION_PLAN.md"},
+    {"source":"transport","target":"event_protocol","relation":"conceptually_related_to","confidence":"INFERRED","confidence_score":0.8,"source_file":"docs/OPENCODE_AGENT_INTEGRATION_PLAN.md"}
+  ],
+  "hyperedges":[],
+  "input_tokens":0,
+  "output_tokens":0
+}

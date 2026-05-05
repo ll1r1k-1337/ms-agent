@@ -1,0 +1,38 @@
+{
+  "nodes": [
+    {"id":"Role","label":"Role type","file_type":"code","source_file":"src/agent/message.ts"},
+    {"id":"Message","label":"Message interface","file_type":"code","source_file":"src/agent/message.ts"},
+    {"id":"ContentBlock","label":"ContentBlock union type","file_type":"code","source_file":"src/agent/message.ts"},
+    {"id":"ToolCallContent","label":"ToolCallContent interface","file_type":"code","source_file":"src/agent/message.ts"},
+    {"id":"textMessage","label":"textMessage helper","file_type":"code","source_file":"src/agent/message.ts"},
+    {"id":"extractText","label":"extractText helper","file_type":"code","source_file":"src/agent/message.ts"},
+    {"id":"runAgent","label":"runAgent function","file_type":"code","source_file":"src/agent/agentLoop.ts"},
+    {"id":"AgentRunOptions","label":"AgentRunOptions interface","file_type":"code","source_file":"src/agent/agentLoop.ts"},
+    {"id":"handleStreamingLLM","label":"handleStreamingLLM function","file_type":"code","source_file":"src/agent/agentLoop.ts"},
+    {"id":"AgentRunAbortedError","label":"AgentRunAbortedError class","file_type":"code","source_file":"src/agent/agentLoop.ts"},
+    {"id":"parseLog","label":"parseLog function","file_type":"code","source_file":"src/parser/logParser.ts"},
+    {"id":"parseLogFile","label":"parseLogFile function","file_type":"code","source_file":"src/parser/logParser.ts"},
+    {"id":"SanitizerDiagnostic","label":"SanitizerDiagnostic type","file_type":"code","source_file":"src/parser/logParser.ts"},
+    {"id":"MemErrorType","label":"MemErrorType enum","file_type":"code","source_file":"src/parser/logParser.ts"},
+    {"id":"classifyError","label":"classifyError function","file_type":"code","source_file":"src/parser/logParser.ts"}
+  ],
+  "edges": [
+    {"source":"Message","target":"Role","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"src/agent/message.ts"},
+    {"source":"ContentBlock","target":"ToolCallContent","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"src/agent/message.ts"},
+    {"source":"textMessage","target":"Message","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"src/agent/message.ts"},
+    {"source":"extractText","target":"Message","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"src/agent/message.ts"},
+    {"source":"runAgent","target":"AgentRunOptions","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"src/agent/agentLoop.ts"},
+    {"source":"runAgent","target":"handleStreamingLLM","relation":"calls","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"src/agent/agentLoop.ts"},
+    {"source":"runAgent","target":"textMessage","relation":"calls","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"src/agent/agentLoop.ts"},
+    {"source":"runAgent","target":"extractText","relation":"calls","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"src/agent/agentLoop.ts"},
+    {"source":"runAgent","target":"AgentRunAbortedError","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"src/agent/agentLoop.ts"},
+    {"source":"handleStreamingLLM","target":"Message","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"src/agent/agentLoop.ts"},
+    {"source":"parseLogFile","target":"parseLog","relation":"calls","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"src/parser/logParser.ts"},
+    {"source":"parseLog","target":"SanitizerDiagnostic","relation":"references","confidence":"INFERRED","confidence_score":0.8,"source_file":"src/parser/logParser.ts"},
+    {"source":"SanitizerDiagnostic","target":"MemErrorType","relation":"references","confidence":"INFERRED","confidence_score":0.8,"source_file":"src/parser/logParser.ts"},
+    {"source":"classifyError","target":"MemErrorType","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"src/parser/logParser.ts"}
+  ],
+  "hyperedges": [],
+  "input_tokens": 0,
+  "output_tokens": 0
+}

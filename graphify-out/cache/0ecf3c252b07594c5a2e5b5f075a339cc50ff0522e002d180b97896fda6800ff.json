@@ -1,0 +1,140 @@
+{
+    "nodes": [
+        {
+            "id": "src_webview_settingspanelprovider_test_ts",
+            "label": "settingsPanelProvider.test.ts",
+            "file_type": "code",
+            "source_file": "src/webview/settingsPanelProvider.test.ts",
+            "source_location": "L1"
+        },
+        {
+            "id": "settingspanelprovider_test_makeextensioncontext",
+            "label": "makeExtensionContext()",
+            "file_type": "code",
+            "source_file": "src/webview/settingsPanelProvider.test.ts",
+            "source_location": "L7"
+        },
+        {
+            "id": "settingspanelprovider_test_makewebviewpanel",
+            "label": "makeWebviewPanel()",
+            "file_type": "code",
+            "source_file": "src/webview/settingsPanelProvider.test.ts",
+            "source_location": "L11"
+        }
+    ],
+    "edges": [
+        {
+            "source": "src_webview_settingspanelprovider_test_ts",
+            "target": "chai",
+            "relation": "imports_from",
+            "confidence": "EXTRACTED",
+            "source_file": "src/webview/settingsPanelProvider.test.ts",
+            "source_location": "L1",
+            "weight": 1.0
+        },
+        {
+            "source": "src_webview_settingspanelprovider_test_ts",
+            "target": "sinon",
+            "relation": "imports_from",
+            "confidence": "EXTRACTED",
+            "source_file": "src/webview/settingsPanelProvider.test.ts",
+            "source_location": "L2",
+            "weight": 1.0
+        },
+        {
+            "source": "src_webview_settingspanelprovider_test_ts",
+            "target": "vscode",
+            "relation": "imports_from",
+            "confidence": "EXTRACTED",
+            "source_file": "src/webview/settingsPanelProvider.test.ts",
+            "source_location": "L3",
+            "weight": 1.0
+        },
+        {
+            "source": "src_webview_settingspanelprovider_test_ts",
+            "target": "src_webview_llm_openaicompatprovider",
+            "relation": "imports_from",
+            "confidence": "EXTRACTED",
+            "source_file": "src/webview/settingsPanelProvider.test.ts",
+            "source_location": "L4",
+            "weight": 1.0
+        },
+        {
+            "source": "src_webview_settingspanelprovider_test_ts",
+            "target": "src_webview_settingspanelprovider",
+            "relation": "imports_from",
+            "confidence": "EXTRACTED",
+            "source_file": "src/webview/settingsPanelProvider.test.ts",
+            "source_location": "L5",
+            "weight": 1.0
+        },
+        {
+            "source": "src_webview_settingspanelprovider_test_ts",
+            "target": "settingspanelprovider_test_makeextensioncontext",
+            "relation": "contains",
+            "confidence": "EXTRACTED",
+            "source_file": "src/webview/settingsPanelProvider.test.ts",
+            "source_location": "L7",
+            "weight": 1.0
+        },
+        {
+            "source": "src_webview_settingspanelprovider_test_ts",
+            "target": "settingspanelprovider_test_makewebviewpanel",
+            "relation": "contains",
+            "confidence": "EXTRACTED",
+            "source_file": "src/webview/settingsPanelProvider.test.ts",
+            "source_location": "L11",
+            "weight": 1.0
+        }
+    ],
+    "raw_calls": [
+        {
+            "caller_nid": "settingspanelprovider_test_makewebviewpanel",
+            "callee": "resolves",
+            "source_file": "src/webview/settingsPanelProvider.test.ts",
+            "source_location": "L12"
+        },
+        {
+            "caller_nid": "settingspanelprovider_test_makewebviewpanel",
+            "callee": "stub",
+            "source_file": "src/webview/settingsPanelProvider.test.ts",
+            "source_location": "L12"
+        },
+        {
+            "caller_nid": "settingspanelprovider_test_makewebviewpanel",
+            "callee": "stub",
+            "source_file": "src/webview/settingsPanelProvider.test.ts",
+            "source_location": "L13"
+        },
+        {
+            "caller_nid": "settingspanelprovider_test_makewebviewpanel",
+            "callee": "returns",
+            "source_file": "src/webview/settingsPanelProvider.test.ts",
+            "source_location": "L14"
+        },
+        {
+            "caller_nid": "settingspanelprovider_test_makewebviewpanel",
+            "callee": "stub",
+            "source_file": "src/webview/settingsPanelProvider.test.ts",
+            "source_location": "L14"
+        },
+        {
+            "caller_nid": "settingspanelprovider_test_makewebviewpanel",
+            "callee": "returns",
+            "source_file": "src/webview/settingsPanelProvider.test.ts",
+            "source_location": "L15"
+        },
+        {
+            "caller_nid": "settingspanelprovider_test_makewebviewpanel",
+            "callee": "stub",
+            "source_file": "src/webview/settingsPanelProvider.test.ts",
+            "source_location": "L15"
+        },
+        {
+            "caller_nid": "settingspanelprovider_test_makewebviewpanel",
+            "callee": "stub",
+            "source_file": "src/webview/settingsPanelProvider.test.ts",
+            "source_location": "L25"
+        }
+    ]
+}
