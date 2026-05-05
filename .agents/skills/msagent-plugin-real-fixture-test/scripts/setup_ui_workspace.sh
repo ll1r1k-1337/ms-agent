@@ -20,7 +20,7 @@ fi
 REPO_ROOT=$1
 VSIX_PATH=$2
 MODEL_NAME=${3:-opencode/big-pickle}
-CLI_PATH=${4:-/Users/yangchenhua/.opencode/bin/opencode}
+CLI_PATH=${4:-}
 SERVE_PORT=${5:-7331}
 
 TMP_ROOT=/private/tmp/msagent-ui-test
@@ -29,6 +29,31 @@ EXTENSIONS_DIR=$TMP_ROOT/extensions
 USERDATA_DIR=$TMP_ROOT/userdata
 TEST_DIR=$WORKSPACE_DIR/test
 SETTINGS_DIR=$WORKSPACE_DIR/.vscode
+
+if [[ -z "$CLI_PATH" ]]; then
+  if command -v opencode >/dev/null 2>&1; then
+    CLI_PATH=$(command -v opencode)
+  elif [[ -x "${HOME}/.opencode/bin/opencode" ]]; then
+    CLI_PATH="${HOME}/.opencode/bin/opencode"
+  else
+    cat <<EOF
+Could not find the OpenCode CLI automatically.
+
+Tried:
+  - opencode from PATH
+  - ${HOME}/.opencode/bin/opencode
+
+Pass the CLI path explicitly:
+  setup_ui_workspace.sh <repo_root> <vsix_path> [model] <cli_path> [port]
+EOF
+    exit 1
+  fi
+fi
+
+if [[ ! -x "$CLI_PATH" ]]; then
+  echo "OpenCode CLI is not executable: $CLI_PATH" >&2
+  exit 1
+fi
 
 rm -rf "$TMP_ROOT"
 mkdir -p "$TEST_DIR" "$EXTENSIONS_DIR" "$USERDATA_DIR" "$SETTINGS_DIR"
@@ -45,12 +70,13 @@ cat > "$SETTINGS_DIR/settings.json" <<EOF
 }
 EOF
 
-python3 - <<'PY' "$WORKSPACE_DIR/TEST_HARNESS.md"
+python3 - <<'PY' "$WORKSPACE_DIR/TEST_HARNESS.md" "$WORKSPACE_DIR"
 import json
 import sys
 import urllib.parse
 
 target = sys.argv[1]
+workspace_dir = sys.argv[2]
 
 def command_uri(command, args):
     return f"command:{command}?{urllib.parse.quote(json.dumps(args, ensure_ascii=False))}"
@@ -58,7 +84,7 @@ def command_uri(command, args):
 lines = [
     "# msAgent UI Test Harness",
     "",
-    f"- [Run `msagent.parseLog` on fixture log]({command_uri('msagent.parseLog', ['/private/tmp/msagent-ui-test/workspace/test/out_of_bounds.log'])})",
+    f"- [Run `msagent.parseLog` on fixture log]({command_uri('msagent.parseLog', [f'{workspace_dir}/test/out_of_bounds.log'])})",
     f"- [Run `msagent.openSettings`]({command_uri('msagent.openSettings', [])})",
     f"- [Run `msagent.selectModel`]({command_uri('msagent.selectModel', [])})",
     "",

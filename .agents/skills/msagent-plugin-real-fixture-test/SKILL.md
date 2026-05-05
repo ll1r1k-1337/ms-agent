@@ -38,7 +38,7 @@ Prefer this skill over ad hoc testing because it reuses the repo fixtures and is
 
 If the user does not specify these, use:
 
-- CLI path: `/Users/yangchenhua/.opencode/bin/opencode`
+- CLI path: auto-detect `opencode` from `PATH`, then fall back to `$HOME/.opencode/bin/opencode`
 - Port: `7331`
 - Model: `opencode/big-pickle`
 
@@ -59,9 +59,7 @@ Run:
 bash .agents/skills/msagent-plugin-real-fixture-test/scripts/setup_ui_workspace.sh \
   /absolute/path/to/repo \
   /absolute/path/to/msagent-0.5.0.vsix \
-  opencode/big-pickle \
-  /Users/yangchenhua/.opencode/bin/opencode \
-  7331
+  opencode/big-pickle
 ```
 
 That script will:
@@ -72,6 +70,18 @@ That script will:
 - write `.vscode/settings.json`
 - write `TEST_HARNESS.md`
 - install the VSIX into the isolated profile
+- auto-detect the OpenCode CLI unless you pass it explicitly
+
+If auto-detection is not enough, pass the CLI path and port explicitly:
+
+```bash
+bash .agents/skills/msagent-plugin-real-fixture-test/scripts/setup_ui_workspace.sh \
+  /absolute/path/to/repo \
+  /absolute/path/to/msagent-0.5.0.vsix \
+  opencode/big-pickle \
+  /absolute/path/to/opencode \
+  7331
+```
 
 ### 2. Launch isolated VS Code for agent-browser
 
@@ -183,7 +193,7 @@ Run:
 
 ```bash
 MSAGENT_LOCAL_MODEL='opencode/big-pickle' \
-MSAGENT_LOCAL_OPENCODE_CLI_PATH='/Users/yangchenhua/.opencode/bin/opencode' \
+MSAGENT_LOCAL_OPENCODE_CLI_PATH="$(command -v opencode || echo "$HOME/.opencode/bin/opencode")" \
 MSAGENT_LOCAL_OPENCODE_PORT='7331' \
 npm run test:integration -- --grep 'OpenCode local integration'
 ```
