@@ -2,7 +2,7 @@
   "name": "msagent",
   "displayName": "msAgent",
   "description": "Agentic auto-fix for mssanitizer Ascend NPU operator memory errors",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "publisher": "msagent",
   "engines": {
     "vscode": "^1.85.0"

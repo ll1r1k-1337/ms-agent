@@ -49,6 +49,7 @@
             files: false,
             explanation: false,
         },
+        userPinnedToBottom: true,
     };
 
     const els = {};
@@ -57,6 +58,7 @@
 
     function initElements() {
         els.messages = $('messages');
+        els.jumpLatest = $('jump-latest');
         els.statusPill = $('status-pill');
         els.statusLabel = $('status-label');
         els.statusProgress = $('status-progress');
@@ -319,6 +321,35 @@
     function scrollToBottom() {
         if (!els.messages) return;
         els.messages.scrollTop = els.messages.scrollHeight;
+        updateJumpLatestVisibility();
+    }
+
+    function isPinnedToBottom() {
+        if (!els.messages) return true;
+        const el = els.messages;
+        const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+        // Generous threshold: within 80px counts as "at the bottom".
+        return distanceFromBottom <= 80;
+    }
+
+    function maybeStickyScroll() {
+        if (!els.messages) return;
+        if (state.userPinnedToBottom) {
+            // Defer to next frame so newly-rendered content is measured.
+            requestAnimationFrame(function () {
+                els.messages.scrollTop = els.messages.scrollHeight;
+                updateJumpLatestVisibility();
+            });
+        } else {
+            updateJumpLatestVisibility();
+        }
+    }
+
+    function updateJumpLatestVisibility() {
+        if (!els.jumpLatest || !els.messages) return;
+        const overflowing = els.messages.scrollHeight - els.messages.clientHeight > 8;
+        const shouldShow = overflowing && !isPinnedToBottom() && state.sessionActive;
+        els.jumpLatest.classList.toggle('is-visible', shouldShow);
     }
 
     function shouldIgnoreCollapseToggle(target) {
@@ -569,6 +600,7 @@
         state.explanation = getExplanationText();
         renderExplanation();
         renderIdleHint();
+        maybeStickyScroll();
         // messageId is part of the protocol but the panel does not segment by id.
         void messageId;
     }
@@ -621,6 +653,7 @@
         renderFiles();
         renderExplanation();
         renderIdleHint();
+        maybeStickyScroll();
     }
 
     function appendFinalDiff(payload) {
@@ -665,6 +698,7 @@
         state.phase = 'connecting';
         state.terminalLocked = false;
         state.opencodeSessionId = '';
+        state.userPinnedToBottom = true;
         state.backend = (payload && payload.backend) || state.backend;
         state.mode = (payload && payload.mode) || state.mode;
         state.model = (payload && payload.model) || state.model;
@@ -717,7 +751,9 @@
             files: false,
             explanation: false,
         };
+        state.userPinnedToBottom = true;
         if (els.metaElapsed) els.metaElapsed.textContent = '00:00';
+        if (els.jumpLatest) els.jumpLatest.classList.remove('is-visible');
         renderAll();
     }
 
@@ -841,6 +877,18 @@
         if (els.cancelBtn) {
             els.cancelBtn.addEventListener('click', function () {
                 vscode.postMessage({ type: 'cancel_current' });
+            });
+        }
+        if (els.messages) {
+            els.messages.addEventListener('scroll', function () {
+                state.userPinnedToBottom = isPinnedToBottom();
+                updateJumpLatestVisibility();
+            }, { passive: true });
+        }
+        if (els.jumpLatest) {
+            els.jumpLatest.addEventListener('click', function () {
+                state.userPinnedToBottom = true;
+                scrollToBottom();
             });
         }
         window.addEventListener('message', function (event) {
