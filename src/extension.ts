@@ -21,6 +21,10 @@ import {
     loadOpenCodeModelCatalog,
     OpenCodeModelEntry,
 } from './llm/opencodeModelCatalog';
+import {
+    DEFAULT_OPENCODE_MODEL,
+    LEGACY_DEFAULT_OPENCODE_MODELS,
+} from './llm/configResolver';
 
 let outputChannel: vscode.OutputChannel;
 
@@ -61,6 +65,7 @@ export async function activate(context: vscode.ExtensionContext) {
     (globalThis as any).__msAgentGetAiFixQueueStates = () => getAiFixQueueStates();
 
     DiagnosticsManager.activate(context);
+    await syncInitialOpenCodeModel();
 
     /**
      * Parse a sanitizer log and publish diagnostics.
@@ -233,6 +238,57 @@ function describeModelEntry(entry: OpenCodeModelEntry): string {
         default:
             return 'OpenCode model';
     }
+}
+
+function getMsAgentConfiguration(): vscode.WorkspaceConfiguration {
+    return vscode.workspace.getConfiguration('msagent');
+}
+
+function getEffectiveExplicitModelValue(
+    configuration: vscode.WorkspaceConfiguration,
+): string | undefined {
+    const inspect = typeof configuration.inspect === 'function'
+        ? configuration.inspect<string>('modelName')
+        : undefined;
+    const candidate =
+        inspect?.workspaceFolderValue
+        ?? inspect?.workspaceValue
+        ?? inspect?.globalValue;
+    return typeof candidate === 'string' ? candidate : undefined;
+}
+
+function shouldSyncInitialModel(configuration: vscode.WorkspaceConfiguration): boolean {
+    const explicitValue = getEffectiveExplicitModelValue(configuration);
+    if (explicitValue === undefined) {
+        return true;
+    }
+    const trimmed = explicitValue.trim();
+    return trimmed.length === 0 || LEGACY_DEFAULT_OPENCODE_MODELS.includes(trimmed as typeof LEGACY_DEFAULT_OPENCODE_MODELS[number]);
+}
+
+function getPreferredOpenCodeModel(entries: OpenCodeModelEntry[]): string {
+    const configured = entries.find((entry) => entry.source !== 'built-in');
+    return configured?.id ?? DEFAULT_OPENCODE_MODEL;
+}
+
+async function syncInitialOpenCodeModel(): Promise<void> {
+    const configuration = getMsAgentConfiguration();
+    if (!shouldSyncInitialModel(configuration)) {
+        return;
+    }
+
+    const entries = _deps.loadOpenCodeModelCatalog({ workspaceRoots: getWorkspaceRoots() });
+    const nextModel = getPreferredOpenCodeModel(entries);
+    const currentModel = configuration.get<string>('modelName')?.trim();
+    if (currentModel === nextModel) {
+        return;
+    }
+
+    const target = (vscode.workspace.workspaceFolders?.length ?? 0) > 0
+        ? vscode.ConfigurationTarget.Workspace
+        : vscode.ConfigurationTarget.Global;
+    await configuration.update('modelName', nextModel, target);
+    outputChannel.appendLine(`[Config] synced initial OpenCode model to ${nextModel}`);
 }
 
 export async function selectOpenCodeModel(): Promise<string | undefined> {

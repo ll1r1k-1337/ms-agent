@@ -96,6 +96,11 @@ export class DiagnosticsManager {
             groupByFile.set(uriStr, existing);
         });
 
+        // Replace the entire collection: VS Code's set([entries]) only updates
+        // the URIs in the array — it never removes URIs that are no longer
+        // present. Without clear(), squiggles for fully-fixed files stay on
+        // screen forever.
+        diagnosticCollection.clear();
         const entries: [vscode.Uri, vscode.Diagnostic[]][] = [];
         for (const [uriStr, diags] of groupByFile) {
             entries.push([vscode.Uri.parse(uriStr), diags]);
@@ -143,6 +148,19 @@ export class DiagnosticsManager {
         currentDiagnostics.splice(index, 1);
         DiagnosticsManager.publishDiagnostics();
         return true;
+    }
+
+    static clearDiagnosticsForFile(filePath: string): number {
+        const normalizedTarget = path.normalize(filePath);
+        const before = currentDiagnostics.length;
+        currentDiagnostics = currentDiagnostics.filter(
+            (d) => path.normalize(d.fileName) !== normalizedTarget,
+        );
+        const removed = before - currentDiagnostics.length;
+        if (removed > 0) {
+            DiagnosticsManager.publishDiagnostics();
+        }
+        return removed;
     }
 
     /**

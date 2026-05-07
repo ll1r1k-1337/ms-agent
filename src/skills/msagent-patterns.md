@@ -53,7 +53,6 @@ Soft-close signals such as `session.idle` or connection end are not treated as s
 - `msagent.timeoutMs`
 - `msagent.opencodeServePort`
 - `msagent.opencodeCliPath`
-- `msagent.opencodeApiKey`
 
 ## Testing Patterns
 

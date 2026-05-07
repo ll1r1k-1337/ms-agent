@@ -17,7 +17,7 @@ export interface FixContext {
 }
 
 export type FixOutcome = 'applied' | 'no_change' | 'failed';
-export type ExplanationKind = 'structured' | 'plain' | 'missing';
+export type ExplanationKind = 'structured' | 'synthetic' | 'plain' | 'missing';
 
 export interface FixResult {
     success: boolean;

@@ -146,19 +146,15 @@
     }
 
     function diffStat(oldText, newText) {
+        if (oldText === newText) return { added: 0, removed: 0 };
         const oldLines = String(oldText || '').split('\n');
         const newLines = String(newText || '').split('\n');
+        const ops = computeLineDiff(oldLines, newLines);
         let added = 0;
         let removed = 0;
-        const maxLen = Math.max(oldLines.length, newLines.length);
-        for (let i = 0; i < maxLen; i += 1) {
-            const oldLine = oldLines[i];
-            const newLine = newLines[i];
-            const hasOld = i < oldLines.length;
-            const hasNew = i < newLines.length;
-            if (hasOld && hasNew && oldLine === newLine) continue;
-            if (hasOld) removed += 1;
-            if (hasNew) added += 1;
+        for (let i = 0; i < ops.length; i += 1) {
+            if (ops[i].type === 'add') added += 1;
+            else if (ops[i].type === 'del') removed += 1;
         }
         return { added: added, removed: removed };
     }
@@ -174,43 +170,129 @@
         }
         const oldLines = String(oldText || '').split('\n');
         const newLines = String(newText || '').split('\n');
-        const out = [];
-        const maxLen = Math.max(oldLines.length, newLines.length);
-
-        let firstDiff = -1;
-        let lastDiff = -1;
-        for (let i = 0; i < maxLen; i += 1) {
-            if ((oldLines[i] || '') !== (newLines[i] || '')) {
-                if (firstDiff < 0) firstDiff = i;
-                lastDiff = i;
-            }
-        }
-        if (firstDiff < 0) {
+        if (oldText === newText) {
             return [{ type: 'meta', text: '(no textual changes)' }];
         }
 
-        const start = Math.max(0, firstDiff - 2);
-        const end = Math.min(maxLen - 1, lastDiff + 2);
-
-        if (start > 0) {
-            out.push({ type: 'meta', text: '@@ skipped ' + start + ' lines @@' });
+        // Build an LCS-based edit script so only truly-changed lines are marked.
+        const ops = computeLineDiff(oldLines, newLines);
+        if (!ops.some(function (op) { return op.type !== 'eq'; })) {
+            return [{ type: 'meta', text: '(no textual changes)' }];
         }
-        for (let i = start; i <= end; i += 1) {
-            const oldLine = oldLines[i];
-            const newLine = newLines[i];
-            const hasOld = i < oldLines.length;
-            const hasNew = i < newLines.length;
-            if (hasOld && hasNew && oldLine === newLine) {
-                out.push({ type: 'ctx', text: '  ' + oldLine });
-            } else {
-                if (hasOld) out.push({ type: 'del', text: '- ' + oldLine });
-                if (hasNew) out.push({ type: 'add', text: '+ ' + newLine });
+
+        // Group ops into hunks: keep CONTEXT_LINES of equal context around changes,
+        // collapse longer equal runs into a "@@ skipped N lines @@" marker.
+        const CONTEXT_LINES = 3;
+        const hunks = collectHunks(ops, CONTEXT_LINES);
+
+        const out = [];
+        for (let h = 0; h < hunks.length; h += 1) {
+            const hunk = hunks[h];
+            if (hunk.skipBefore > 0) {
+                out.push({ type: 'meta', text: '@@ skipped ' + hunk.skipBefore + ' lines @@' });
+            }
+            for (let i = 0; i < hunk.ops.length; i += 1) {
+                const op = hunk.ops[i];
+                if (op.type === 'eq') {
+                    out.push({ type: 'ctx', text: '  ' + op.line });
+                } else if (op.type === 'del') {
+                    out.push({ type: 'del', text: '- ' + op.line });
+                } else if (op.type === 'add') {
+                    out.push({ type: 'add', text: '+ ' + op.line });
+                }
+            }
+            if (h === hunks.length - 1 && hunk.skipAfter > 0) {
+                out.push({ type: 'meta', text: '@@ skipped ' + hunk.skipAfter + ' lines @@' });
             }
         }
-        if (end < maxLen - 1) {
-            out.push({ type: 'meta', text: '@@ skipped ' + (maxLen - 1 - end) + ' lines @@' });
-        }
         return out;
+    }
+
+    // Classic LCS dynamic programming: O(n*m) time and memory.
+    // Returns ops in source order: { type: 'eq' | 'del' | 'add', line: string }.
+    function computeLineDiff(a, b) {
+        const n = a.length;
+        const m = b.length;
+        // dp[i][j] = LCS length of a[0..i-1] and b[0..j-1]
+        const dp = new Array(n + 1);
+        for (let i = 0; i <= n; i += 1) {
+            dp[i] = new Int32Array(m + 1);
+        }
+        for (let i = 1; i <= n; i += 1) {
+            const row = dp[i];
+            const prev = dp[i - 1];
+            const ai = a[i - 1];
+            for (let j = 1; j <= m; j += 1) {
+                if (ai === b[j - 1]) {
+                    row[j] = prev[j - 1] + 1;
+                } else {
+                    row[j] = prev[j] >= row[j - 1] ? prev[j] : row[j - 1];
+                }
+            }
+        }
+        const ops = [];
+        let i = n;
+        let j = m;
+        while (i > 0 && j > 0) {
+            if (a[i - 1] === b[j - 1]) {
+                ops.push({ type: 'eq', line: a[i - 1] });
+                i -= 1;
+                j -= 1;
+            } else if (dp[i - 1][j] >= dp[i][j - 1]) {
+                ops.push({ type: 'del', line: a[i - 1] });
+                i -= 1;
+            } else {
+                ops.push({ type: 'add', line: b[j - 1] });
+                j -= 1;
+            }
+        }
+        while (i > 0) {
+            ops.push({ type: 'del', line: a[i - 1] });
+            i -= 1;
+        }
+        while (j > 0) {
+            ops.push({ type: 'add', line: b[j - 1] });
+            j -= 1;
+        }
+        ops.reverse();
+        return ops;
+    }
+
+    // Slice the op stream into hunks separated by long stretches of unchanged lines.
+    // Each hunk keeps `context` lines of surrounding context.
+    function collectHunks(ops, context) {
+        const changeIdx = [];
+        for (let i = 0; i < ops.length; i += 1) {
+            if (ops[i].type !== 'eq') changeIdx.push(i);
+        }
+        if (changeIdx.length === 0) {
+            return [];
+        }
+        const hunks = [];
+        let cursor = 0;
+        let prevHunkEnd = -1;
+        while (cursor < changeIdx.length) {
+            const startChange = changeIdx[cursor];
+            // expand window forward, merging adjacent changes within 2*context
+            let endChange = startChange;
+            let next = cursor + 1;
+            while (next < changeIdx.length && changeIdx[next] - endChange <= 2 * context) {
+                endChange = changeIdx[next];
+                next += 1;
+            }
+            const hunkStart = Math.max(0, startChange - context);
+            const hunkEnd = Math.min(ops.length - 1, endChange + context);
+            const slice = ops.slice(hunkStart, hunkEnd + 1);
+            const skipBefore = hunkStart - (prevHunkEnd + 1);
+            hunks.push({
+                ops: slice,
+                skipBefore: skipBefore > 0 ? skipBefore : 0,
+                skipAfter: ops.length - 1 - hunkEnd,
+            });
+            prevHunkEnd = hunkEnd;
+            cursor = next;
+        }
+        return hunks;
     }
 
     function renderInlineMarkdown(text) {
@@ -526,17 +608,13 @@
         const sections = parseExplanationSections(text, state.finalMessage, state.currentOutcome);
         let html = '';
         if (state.currentOutcome === 'applied') {
-            if (state.finalExplanationKind === 'structured' && sections.hasStructuredHeadings) {
+            if ((state.finalExplanationKind === 'structured' || state.finalExplanationKind === 'synthetic') && sections.hasStructuredHeadings) {
                 html = [
                     explanationSectionHtml('Problem Explanation', sections.problem),
                     explanationSectionHtml('Fix Explanation', sections.fix),
                     explanationSectionHtml('Why it works', sections.why),
                     explanationSectionHtml('Notes', sections.notes),
                 ].filter(Boolean).join('');
-            } else if (state.finalExplanationKind === 'plain') {
-                html = explanationSectionHtml('OpenCode Explanation', sections.raw);
-            } else if (state.finalExplanationKind === 'missing') {
-                html = explanationSectionHtml('Explanation unavailable', sections.raw);
             } else if (sections.hasStructuredHeadings) {
                 html = [
                     explanationSectionHtml('Problem Explanation', sections.problem),
@@ -545,7 +623,7 @@
                     explanationSectionHtml('Notes', sections.notes),
                 ].filter(Boolean).join('');
             } else {
-                html = explanationSectionHtml('OpenCode Explanation', sections.raw);
+                html = explanationSectionHtml('Full Explanation', sections.raw);
             }
         } else if (state.currentOutcome === 'failed' && !sections.hasStructuredHeadings) {
             html = explanationSectionHtml('Failure Reason', sections.raw);

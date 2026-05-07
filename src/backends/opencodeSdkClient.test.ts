@@ -55,7 +55,6 @@ describe('OpenCodeSdkClient', () => {
         const client = new OpenCodeSdkClient({
             baseUrl: 'http://127.0.0.1:7325',
             timeoutMs: 1000,
-            apiKey: 'token',
         });
 
         await client.promptSession('sess_123', {
@@ -96,5 +95,30 @@ describe('OpenCodeSdkClient', () => {
         expect(messages).to.deep.equal([
             { id: 'msg_1', role: 'assistant', parts: [{ type: 'text', text: 'done' }] },
         ]);
+    });
+
+    it('does not pass Authorization headers through the SDK client config', async () => {
+        const capturedConfigs: Record<string, unknown>[] = [];
+        _setSdkClientTestFactory((config) => {
+            capturedConfigs.push(config);
+            return {
+                session: {
+                    create: async () => ({ data: { id: 'sess_123' } }),
+                },
+            };
+        });
+
+        const client = new OpenCodeSdkClient({
+            baseUrl: 'http://127.0.0.1:7325',
+            timeoutMs: 1000,
+        });
+
+        await client.createSession();
+
+        expect(capturedConfigs).to.have.length(1);
+        expect(capturedConfigs[0]).to.deep.equal({
+            baseUrl: 'http://127.0.0.1:7325',
+            timeout: 1000,
+        });
     });
 });

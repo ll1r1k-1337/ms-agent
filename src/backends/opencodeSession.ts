@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import { ExplanationKind, FixOutcome, FixResult } from './fixBackend';
 import { OpenCodeTransport } from './opencodeTransport';
 import { StreamChunk } from '../llm/types';
+import { MemErrorType, SanitizerDiagnostic } from '../parser/types';
 import {
     extractToolCall,
     extractToolResult,
@@ -9,15 +10,59 @@ import {
     extractErrorMessage,
     extractSessionId,
     isCompletionEvent,
+    extractAssistantFinishReason,
     extractMessageId,
     extractMessageRole,
     extractPartMessageId,
+    isToolCallContinuationBoundary,
     ToolCallInfo,
     ToolResultInfo,
     OpenCodeEvent,
 } from './opencodeEventAdapter';
 import { SessionStateMachine } from '../agent/sessionStateMachine';
 import { DisposableStore } from '../agent/disposableStore';
+
+type ToolKind = 'read' | 'edit' | 'other';
+
+const EDIT_TOOL_NAMES: ReadonlySet<string> = new Set([
+    'edit_file',
+    'apply_patch',
+    'write_file',
+    'write',
+    'patch',
+]);
+
+const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
+    'read',
+    'read_file',
+    'glob',
+    'grep',
+    'list',
+    'list_files',
+]);
+
+function getOutputChannel(): { appendLine: (msg: string) => void } {
+    const globalAny = global as any;
+    if (globalAny.msAgentOutputChannel) {
+        return globalAny.msAgentOutputChannel;
+    }
+    return { appendLine: (msg: string) => console.log(msg) };
+}
+
+function logSession(message: string): void {
+    getOutputChannel().appendLine(`[OpenCodeSession] ${message}`);
+}
+
+function classifyToolKind(name: string): ToolKind {
+    const normalized = name.trim().toLowerCase();
+    if (EDIT_TOOL_NAMES.has(normalized)) {
+        return 'edit';
+    }
+    if (READ_ONLY_TOOL_NAMES.has(normalized)) {
+        return 'read';
+    }
+    return 'other';
+}
 
 // Guard against models that echo the prompt's example placeholder or emit a
 // truncated summary instead of the full file. Writing such a response would
@@ -91,6 +136,14 @@ interface AssistantExplanation {
     kind: ExplanationKind;
 }
 
+interface RunDiagnosticContext {
+    errorType: MemErrorType;
+    fileName: string;
+    lineNumber: number;
+    addressSpace: string;
+    byteSize: number;
+}
+
 function hasStructuredExplanation(text: string): boolean {
     return /^(Problem|Fix|Why it works|Notes)\s*:/im.test(text);
 }
@@ -121,10 +174,20 @@ function classifyAssistantExplanation(text: string): AssistantExplanation | null
     if (hasStructuredExplanation(trimmed)) {
         return { text: trimmed, kind: 'structured' };
     }
-    if (looksLikeProcessNarration(trimmed)) {
+    // Drop only short, single-sentence pre-tool narration ("I'll check the
+    // file", "Let me read it"). Longer text that opens with such phrasing
+    // typically carries real content (root cause, change rationale) and is
+    // strictly more useful than the canned "Explanation unavailable" notice.
+    if (looksLikeProcessNarration(trimmed) && isShortSingleSentence(trimmed)) {
         return null;
     }
     return { text: trimmed, kind: 'plain' };
+}
+
+function isShortSingleSentence(text: string): boolean {
+    if (text.length > 160) return false;
+    const sentenceBreaks = (text.match(/[.!?。！？]\s+\S/g) || []).length;
+    return sentenceBreaks <= 1 && !/\n\s*\n/.test(text);
 }
 
 function extractAssistantExplanationFromTextMap(
@@ -273,6 +336,111 @@ function missingExplanation(): AssistantExplanation {
     };
 }
 
+function formatStructuredExplanation(problem: string, fix: string, why: string): string {
+    return `Problem: ${problem}\nFix: ${fix}\nWhy it works: ${why}`;
+}
+
+function normalizeInlineCode(line: string): string {
+    const trimmed = line.trim();
+    return trimmed ? `\`${trimmed}\`` : '`the reported line`';
+}
+
+function getLineAt(content: string, lineNumber: number): string {
+    const lines = content.split(/\r?\n/);
+    const index = Math.max(0, Math.min(lines.length - 1, lineNumber - 1));
+    return lines[index] || '';
+}
+
+function getChangedLines(originalContent: string, newContent: string): Array<{ lineNumber: number; before: string; after: string }> {
+    const originalLines = originalContent.replace(/\r\n/g, '\n').split('\n');
+    const newLines = newContent.replace(/\r\n/g, '\n').split('\n');
+    const maxLines = Math.max(originalLines.length, newLines.length);
+    const changed: Array<{ lineNumber: number; before: string; after: string }> = [];
+    for (let index = 0; index < maxLines; index += 1) {
+        const before = originalLines[index] ?? '';
+        const after = newLines[index] ?? '';
+        if (before !== after) {
+            changed.push({ lineNumber: index + 1, before, after });
+        }
+    }
+    return changed;
+}
+
+function describeProblem(diagnostic?: RunDiagnosticContext | SanitizerDiagnostic, changedLine?: string): string {
+    if (!diagnostic) {
+        return 'the reported memory-safety issue required a code change at the flagged location.';
+    }
+    switch (diagnostic.errorType) {
+        case MemErrorType.OUT_OF_BOUNDS:
+            if (/\bDataCopy\s*\(/.test(changedLine || '')) {
+                return 'the DataCopy operation at the reported line could write past the destination buffer bounds.';
+            }
+            return 'the reported memory access could go out of bounds at the flagged line.';
+        case MemErrorType.ILLEGAL_ADDR_WRITE:
+            return 'the reported write could target an invalid address range.';
+        case MemErrorType.ILLEGAL_ADDR_READ:
+            return 'the reported read could access an invalid address range.';
+        case MemErrorType.MISALIGNED_ACCESS:
+            return 'the reported memory access used an invalid alignment for the target buffer.';
+        case MemErrorType.UNINITIALIZED_READ:
+            return 'the reported read could consume data before it was initialized.';
+        case MemErrorType.MEM_LEAK:
+            return 'the reported allocation path did not release memory correctly.';
+        case MemErrorType.ILLEGAL_FREE:
+            return 'the reported free operation could release an invalid or already-freed allocation.';
+        case MemErrorType.MEM_UNUSED:
+            return 'the reported allocation path kept memory that was not used correctly.';
+        default:
+            return `the reported ${diagnostic.errorType} issue required a targeted code change.`;
+    }
+}
+
+function describeWhyItWorks(diagnostic?: RunDiagnosticContext | SanitizerDiagnostic, beforeLine?: string, afterLine?: string): string {
+    if (diagnostic?.errorType === MemErrorType.OUT_OF_BOUNDS && /\bDataCopy\s*\(/.test(beforeLine || '') && /\bDataCopy\s*\(/.test(afterLine || '')) {
+        return 'the updated copy length now matches the destination buffer capacity, so the write stays within bounds.';
+    }
+    if (diagnostic?.errorType === MemErrorType.UNINITIALIZED_READ) {
+        return 'the updated code ensures the value is initialized before it is consumed on the flagged path.';
+    }
+    if (diagnostic?.errorType === MemErrorType.MISALIGNED_ACCESS) {
+        return 'the updated access now uses a buffer or offset that satisfies the required alignment.';
+    }
+    if (diagnostic?.errorType === MemErrorType.ILLEGAL_ADDR_READ || diagnostic?.errorType === MemErrorType.ILLEGAL_ADDR_WRITE) {
+        return 'the updated code narrows the memory access to a valid address range for the reported operation.';
+    }
+    return 'the applied change adjusts the implementation at the reported location so the flagged memory-safety condition is no longer triggered on that path.';
+}
+
+function buildSyntheticExplanation(
+    originalContent: string,
+    newContent: string,
+    diagnostic?: RunDiagnosticContext | SanitizerDiagnostic,
+): AssistantExplanation {
+    const changedLines = getChangedLines(originalContent, newContent);
+    const targetLineNumber = diagnostic?.lineNumber;
+    const targetChange = changedLines.find((entry) => entry.lineNumber === targetLineNumber) || changedLines[0];
+    const beforeLine = targetChange?.before ?? (targetLineNumber ? getLineAt(originalContent, targetLineNumber) : '');
+    const afterLine = targetChange?.after ?? (targetLineNumber ? getLineAt(newContent, targetLineNumber) : '');
+    const problem = describeProblem(diagnostic, beforeLine);
+    const fix = targetChange
+        ? `changed ${normalizeInlineCode(beforeLine)} to ${normalizeInlineCode(afterLine)}.`
+        : diagnostic
+            ? `updated ${normalizeInlineCode(diagnostic.fileName + ':' + diagnostic.lineNumber)} to address the reported ${diagnostic.errorType} issue.`
+            : 'applied a targeted code change to the reported location.';
+    const why = describeWhyItWorks(diagnostic, beforeLine, afterLine);
+    return {
+        kind: 'synthetic',
+        text: formatStructuredExplanation(problem, fix, why),
+    };
+}
+
+function isIgnorablePostApplyError(message: string): boolean {
+    const normalized = message.trim().toLowerCase();
+    return normalized === 'aborted'
+        || normalized.includes('messageabortederror')
+        || normalized.includes('aborted');
+}
+
 function extractTerminalReason(
     parsedText: string,
     marker: 'NO_FIX_NEEDED' | 'CANNOT_FIX',
@@ -309,6 +477,7 @@ export class OpenCodeSession {
         workspaceRoot: string;
         resolvedPath: string;
         originalContent: string;
+        diagnostic?: RunDiagnosticContext | SanitizerDiagnostic;
         timeoutMs: number;
         messageId?: string;
         mode?: string;
@@ -344,6 +513,14 @@ export class OpenCodeSession {
             let toolCallCount = 0;
             let finalized = false;
             let transportError: Error | null = null;
+            let opencodeSessionId: string | undefined;
+            let seenReadOnlyToolCall = false;
+            let seenEditToolCall = false;
+            let seenEditToolResult = false;
+            let lastAssistantFinishReason: string | null = null;
+            let waitingForToolContinuation = false;
+            const toolKindsById = new Map<string, ToolKind>();
+            const normalizedOriginalContent = options.originalContent.replace(/\r\n/g, '\n').trim();
 
             // Single source of truth: SessionStateMachine. All lifecycle
             // signals (events, transport close, abort, timeout, errors) are
@@ -377,6 +554,15 @@ export class OpenCodeSession {
             // anywhere else, so SM state remains the single source of truth.
             let observedHardTerminal = false;
             const sawHardTerminal = (): boolean => observedHardTerminal;
+
+            const hasDiskChanged = (): boolean => {
+                try {
+                    const current = fs.readFileSync(options.resolvedPath, 'utf-8');
+                    return current.replace(/\r\n/g, '\n').trim() !== normalizedOriginalContent;
+                } catch {
+                    return false;
+                }
+            };
 
             const unsubscribeSm = sm.subscribe((snap) => {
                 if (snap.state === 'applying_patch') {
@@ -461,18 +647,6 @@ export class OpenCodeSession {
                     return;
                 }
 
-                if (errorMessages.length > 0) {
-                    emitSessionEnd('failed', errorMessages.join('; '));
-                    doResolve({
-                        success: false,
-                        outcome: 'failed',
-                        finalMessage: errorMessages.join('; '),
-                        toolCallCount,
-                        fileChanged: false,
-                    });
-                    return;
-                }
-
                 if (!sawHardTerminal()) {
                     const msg =
                         'Transport closed before hard terminal event; original file preserved (protocol incomplete).';
@@ -495,17 +669,33 @@ export class OpenCodeSession {
                 // before we compare the on-disk content.
                 await new Promise((resolve) => setTimeout(resolve, 150));
 
-                const normalizedOriginal = options.originalContent.replace(/\r\n/g, '\n').trim();
-
                 let diskContent: string | null = null;
                 try {
                     diskContent = fs.readFileSync(options.resolvedPath, 'utf-8');
                 } catch (err) {
                 }
+                const normalizedDisk = diskContent === null
+                    ? null
+                    : diskContent.replace(/\r\n/g, '\n').trim();
+                const diskChanged = normalizedDisk !== null && normalizedDisk !== normalizedOriginalContent;
+                logSession(
+                    `finalize_check diskChanged=${diskChanged} hardTerminal=${sawHardTerminal()} finish=${lastAssistantFinishReason || 'none'} errors=${errorMessages.length}`,
+                );
 
                 if (diskContent !== null) {
-                    const normalizedDisk = diskContent.replace(/\r\n/g, '\n').trim();
-                    if (normalizedDisk !== normalizedOriginal) {
+                    if (diskChanged) {
+                        const hasFatalError = errorMessages.some((message) => !isIgnorablePostApplyError(message));
+                        if (hasFatalError) {
+                            emitSessionEnd('failed', errorMessages.join('; '));
+                            doResolve({
+                                success: false,
+                                outcome: 'failed',
+                                finalMessage: errorMessages.join('; '),
+                                toolCallCount,
+                                fileChanged: false,
+                            });
+                            return;
+                        }
                         const streamExplanation = extractAssistantExplanationFromTextMap(
                             messageTexts,
                             assistantMessageOrder,
@@ -515,12 +705,23 @@ export class OpenCodeSession {
                             ? null
                             : await this.transport.readSessionMessages();
                         const assistantExplanation =
-                            streamExplanation
-                            || extractAssistantExplanationFromSessionMessages(
-                                sessionMessages,
-                                completedAssistantMessageId,
-                            )
-                            || missingExplanation();
+                            (() => {
+                                const sessionExplanation = extractAssistantExplanationFromSessionMessages(
+                                    sessionMessages,
+                                    completedAssistantMessageId,
+                                );
+                                if (streamExplanation?.kind === 'structured') {
+                                    return streamExplanation;
+                                }
+                                if (sessionExplanation?.kind === 'structured') {
+                                    return sessionExplanation;
+                                }
+                                return buildSyntheticExplanation(
+                                    options.originalContent,
+                                    diskContent,
+                                    options.diagnostic,
+                                );
+                            })();
                         this.callbacks?.onDiff?.(options.resolvedPath, options.originalContent, diskContent, 'opencode_edit');
                         emitSessionEnd(
                             'applied',
@@ -541,6 +742,18 @@ export class OpenCodeSession {
                     }
                 }
 
+                if (errorMessages.length > 0) {
+                    emitSessionEnd('failed', errorMessages.join('; '));
+                    doResolve({
+                        success: false,
+                        outcome: 'failed',
+                        finalMessage: errorMessages.join('; '),
+                        toolCallCount,
+                        fileChanged: false,
+                    });
+                    return;
+                }
+
                 // Find ALL code blocks and use the LAST one (models typically put final answer last)
                 const codeBlockRegex = /```(?:cpp|c\+\+|c)\s*\n([\s\S]*?)```/g;
                 let lastMatch: RegExpExecArray | null = null;
@@ -553,7 +766,7 @@ export class OpenCodeSession {
                     const fixedCode = lastMatch[1].trim();
                     const normalizedFixed = fixedCode.replace(/\r\n/g, '\n').trim();
 
-                    if (normalizedOriginal !== normalizedFixed) {
+                    if (normalizedOriginalContent !== normalizedFixed) {
                         // Preservation invariant: never overwrite the file from a
                         // code block when no hard protocol terminal was observed.
                         // The wire may have closed mid-stream; the candidate patch
@@ -582,6 +795,7 @@ export class OpenCodeSession {
                         const msg = placeholderReason
                             ? `Model returned a placeholder or truncated response; original file preserved (${placeholderReason}).`
                             : 'OpenCode returned a C/C++ code block instead of applying an edit tool; original file preserved to avoid replacing the whole file with partial model output.';
+                        logSession('rejected_code_block reason=no-native-edit');
                         emitSessionEnd('failed', msg);
                         doResolve({
                             success: false,
@@ -680,9 +894,11 @@ export class OpenCodeSession {
 
                 const e = event as OpenCodeEvent;
                 if (e.type === 'session_start') {
-                    const opencodeSessionId = extractSessionId(e);
-                    if (opencodeSessionId) {
-                        this.callbacks?.onEvent?.('session_metadata', { opencodeSessionId });
+                    const sessionId = extractSessionId(e);
+                    if (sessionId) {
+                        opencodeSessionId = sessionId;
+                        this.callbacks?.onEvent?.('session_metadata', { opencodeSessionId: sessionId });
+                        logSession(`session=${sessionId} model=${options.model || 'default'} started`);
                     }
                 }
 
@@ -699,6 +915,9 @@ export class OpenCodeSession {
 
                 const textDelta = extractTextDelta(e);
                 if (textDelta && isAssistantScopedPart) {
+                    if (waitingForToolContinuation) {
+                        waitingForToolContinuation = false;
+                    }
                     // Promote SM from sending -> streaming on first meaningful chunk.
                     // The SM ignores TEXT_DELTA in states that don't accept it.
                     sm.dispatch({ kind: 'TEXT_DELTA', chunk: textDelta });
@@ -735,6 +954,17 @@ export class OpenCodeSession {
                 if (toolCallInfo && isAssistantScopedPart) {
                     const toolCallId = toolCallInfo.toolCallId || `tc_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
                     if (!seenToolCallIds.has(toolCallId)) {
+                        const toolKind = classifyToolKind(toolCallInfo.name);
+                        toolKindsById.set(toolCallId, toolKind);
+                        if (toolKind === 'read') {
+                            seenReadOnlyToolCall = true;
+                        } else if (toolKind === 'edit') {
+                            seenEditToolCall = true;
+                        }
+                        if (waitingForToolContinuation) {
+                            waitingForToolContinuation = false;
+                        }
+                        logSession(`tool_call name=${toolCallInfo.name} id=${toolCallId} kind=${toolKind}`);
                         seenToolCallIds.add(toolCallId);
                         toolCallCount++;
                         sm.dispatch({ kind: 'TOOL_CALL', name: toolCallInfo.name, toolCallId });
@@ -757,6 +987,13 @@ export class OpenCodeSession {
 
                 const toolResultInfo: ToolResultInfo | null = extractToolResult(e);
                 if (toolResultInfo && isAssistantScopedPart) {
+                    const toolKind = toolKindsById.get(toolResultInfo.toolCallId) || 'other';
+                    if (toolKind === 'edit' && !toolResultInfo.isError) {
+                        seenEditToolResult = true;
+                    }
+                    logSession(
+                        `tool_result id=${toolResultInfo.toolCallId} isError=${toolResultInfo.isError} kind=${toolKind}`,
+                    );
                     sm.dispatch({ kind: 'TOOL_RESULT_SENT', toolCallId: toolResultInfo.toolCallId });
                     this.callbacks?.onToolResult?.(
                         toolResultInfo.toolCallId,
@@ -774,16 +1011,38 @@ export class OpenCodeSession {
                 }
 
                 if (isCompletionEvent(e)) {
+                    const finishReason = extractAssistantFinishReason(e);
+                    if (finishReason) {
+                        lastAssistantFinishReason = finishReason;
+                    }
                     if (messageRole === 'assistant' && eventMessageId) {
                         completedAssistantMessageId = eventMessageId;
                     }
-                    // After the adapter tightening, this branch fires ONLY on
-                    // hard terminal events (done / step_end / session.end /
-                    // session.done / message.updated:info.time.completed /
-                    // choices[0].finish_reason). Soft signals like session.idle
-                    // / server.disconnect no longer reach here — they bypass
-                    // this branch and only affect transport.onClose handling.
-                    // SM observer flips observedHardTerminal when state -> applying_patch.
+                    if (messageRole === 'assistant') {
+                        logSession(
+                            `assistant_completed message=${eventMessageId || 'unknown'} finish=${finishReason || 'none'} readOnly=${seenReadOnlyToolCall} editTool=${seenEditToolCall} editResult=${seenEditToolResult}`,
+                        );
+                    }
+                    if (
+                        isToolCallContinuationBoundary(e)
+                        && !seenEditToolCall
+                        && !seenEditToolResult
+                        && !hasDiskChanged()
+                    ) {
+                        waitingForToolContinuation = true;
+                        logSession(
+                            `waiting_for_continuation reason=tool-calls-without-edit message=${eventMessageId || 'unknown'}`,
+                        );
+                        this.callbacks?.onEvent?.('status', {
+                            phase: 'running',
+                            message: 'Waiting for OpenCode to continue after read-only tool call...',
+                        });
+                        return;
+                    }
+                    // Hard terminal events advance to final disk verification.
+                    // Assistant finish="tool-calls" is only allowed through
+                    // here after an edit-capable tool or real disk change;
+                    // read-only tool boundaries keep streaming instead.
                     sm.dispatch({ kind: 'TERMINAL_EVENT', reason: 'done' });
                     this.callbacks?.onEvent?.('status', {
                         phase: 'finalizing',

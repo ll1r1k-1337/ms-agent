@@ -11,6 +11,8 @@
 - Runs fixes through OpenCode server only
 - Reuses or auto-starts local `opencode serve`, then talks to it through the official `@opencode-ai/sdk`
 - Uses a trimmed Fix Details panel: status, current action, result, and changed files stay on the first screen; raw details are folded into `Technical details`
+- Enforces a successful-fix explanation contract: applied fixes always end with `Problem:` / `Fix:` / `Why it works:`
+- Generates a synthetic explanation from the diagnostic and applied diff when OpenCode does not persist a compliant explanation
 - Distinguishes no-op outcomes: `NO_FIX_NEEDED` becomes a neutral "No Change" result, while `CANNOT_FIX` shows the OpenCode reason directly
 
 ## Supported Error Types
@@ -47,11 +49,10 @@ All settings are exposed through native VS Code settings under `msagent`.
 
 | Setting | Default | Description |
 |---|---|---|
-| `msagent.modelName` | `opencode/big-pickle` | Full OpenCode model ID used for repairs |
+| `msagent.modelName` | `opencode/minimax-m2.5-free` | Full OpenCode model ID used for repairs; msAgent tries to sync it from OpenCode config on first activation |
 | `msagent.timeoutMs` | `300000` | Per-fix timeout |
-| `msagent.opencodeServePort` | `7325` | Port for `opencode serve` |
+| `msagent.opencodeServePort` | `4096` | Port for `opencode serve` |
 | `msagent.opencodeCliPath` | `opencode` | OpenCode executable path |
-| `msagent.opencodeApiKey` | `""` | Optional API key forwarded to OpenCode |
 
 ## Commands
 
@@ -60,8 +61,27 @@ All settings are exposed through native VS Code settings under `msagent`.
 | `msAgent: Parse Log File` | Parse a log file and publish diagnostics |
 | `msAgent: Fix All Issues` | Fix all msAgent diagnostics for the active file |
 | `msAgent: Clear Diagnostics` | Clear all msAgent diagnostics |
+| `msAgent: Select OpenCode Model` | Pick a model from the local OpenCode config and write it back to `msagent.modelName` |
+| `msAgent: Open Settings` | Open the native VS Code `msagent` settings page |
+
+Notes:
+
+- VS Code settings cannot expose runtime-populated dropdowns for extension configuration
+- `msagent.modelName` therefore stays a string setting
+- On first activation, msAgent tries to sync the model from your OpenCode config files
+- After that, dynamic model choice continues through `msAgent: Select OpenCode Model`
 
 `msagent.fixProblem` remains as the internal single-problem entrypoint used by Quick Fix and tests.
+
+## Fix Details Behavior
+
+When a fix is applied, the Fix Details panel always shows a three-part explanation:
+
+- `Problem:` what was wrong
+- `Fix:` what changed
+- `Why it works:` why the edit resolves the issue
+
+If OpenCode finishes the patch but does not persist a natural-language explanation, msAgent synthesizes one from the diagnostic and the applied diff. Successful runs therefore no longer surface `Explanation unavailable`.
 
 ## Current Architecture
 

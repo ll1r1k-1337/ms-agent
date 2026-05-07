@@ -63,72 +63,8 @@
       "properties": {
         "msagent.modelName": {
           "type": "string",
-          "default": "opencode/big-pickle",
-          "enum": [
-            "opencode/big-pickle",
-            "opencode/gpt-5-nano",
-            "opencode/hy3-preview-free",
-            "opencode/ling-2.6-flash-free",
-            "opencode/minimax-m2.5-free",
-            "opencode/nemotron-3-super-free",
-            "bailian-coding-plan/glm-4.7",
-            "bailian-coding-plan/glm-5",
-            "bailian-coding-plan/kimi-k2.5",
-            "bailian-coding-plan/MiniMax-M2.5",
-            "bailian-coding-plan/qwen3-coder-next",
-            "bailian-coding-plan/qwen3-coder-plus",
-            "bailian-coding-plan/qwen3-max-2026-01-23",
-            "bailian-coding-plan/qwen3.5-plus",
-            "moonshot/kimi-k2.6",
-            "volcengine-plan/ark-code-latest",
-            "volcengine-plan/deepseek-v3.2",
-            "volcengine-plan/doubao-seed-2.0-code",
-            "volcengine-plan/doubao-seed-2.0-lite",
-            "volcengine-plan/doubao-seed-2.0-pro",
-            "volcengine-plan/doubao-seed-code",
-            "volcengine-plan/glm-4.7",
-            "volcengine-plan/glm-5.1",
-            "volcengine-plan/kimi-k2.5",
-            "volcengine-plan/kimi-k2.6",
-            "volcengine-plan/minimax-m2.5",
-            "zhipuai-coding-plan/glm-4.5-air",
-            "zhipuai-coding-plan/glm-4.7",
-            "zhipuai-coding-plan/glm-5-turbo",
-            "zhipuai-coding-plan/glm-5.1"
-          ],
-          "markdownEnumDescriptions": [
-            "OpenCode: Big Pickle (free)",
-            "OpenCode: GPT-5 Nano (free)",
-            "OpenCode: HY3 Preview (free)",
-            "OpenCode: Ling 2.6 Flash (free)",
-            "OpenCode: MiniMax M2.5 (free)",
-            "OpenCode: Nemotron 3 Super (free)",
-            "Bailian Coding: GLM 4.7",
-            "Bailian Coding: GLM 5",
-            "Bailian Coding: Kimi K2.5",
-            "Bailian Coding: MiniMax M2.5",
-            "Bailian Coding: Qwen3 Coder Next",
-            "Bailian Coding: Qwen3 Coder Plus",
-            "Bailian Coding: Qwen3 Max 2026-01-23",
-            "Bailian Coding: Qwen3.5 Plus",
-            "Moonshot: Kimi K2.6",
-            "Volcengine: Ark Code Latest",
-            "Volcengine: DeepSeek V3.2",
-            "Volcengine: Doubao Seed 2.0 Code",
-            "Volcengine: Doubao Seed 2.0 Lite",
-            "Volcengine: Doubao Seed 2.0 Pro",
-            "Volcengine: Doubao Seed Code",
-            "Volcengine: GLM 4.7",
-            "Volcengine: GLM 5.1",
-            "Volcengine: Kimi K2.5",
-            "Volcengine: Kimi K2.6",
-            "Volcengine: MiniMax M2.5",
-            "ZhipuAI Coding: GLM 4.5 Air",
-            "ZhipuAI Coding: GLM 4.7",
-            "ZhipuAI Coding: GLM 5 Turbo",
-            "ZhipuAI Coding: GLM 5.1"
-          ],
-          "description": "OpenCode full model ID used for repair sessions. Use msAgent: Select OpenCode Model to include models from your OpenCode config files."
+          "default": "opencode/minimax-m2.5-free",
+          "markdownDescription": "OpenCode full model ID used for repair sessions. On first activation, msAgent will try to sync this value from your workspace or user OpenCode config. This setting remains a free-form string because VS Code settings do not support runtime-populated dropdowns. Use **msAgent: Select OpenCode Model** to choose from the models discovered in your OpenCode config files."
         },
         "msagent.timeoutMs": {
           "type": "number",
@@ -139,18 +75,13 @@
         },
         "msagent.opencodeServePort": {
           "type": "number",
-          "default": 7325,
+          "default": 4096,
           "description": "Port used by the OpenCode server flow."
         },
         "msagent.opencodeCliPath": {
           "type": "string",
           "default": "opencode",
           "description": "Path to the OpenCode executable used for `opencode serve`."
-        },
-        "msagent.opencodeApiKey": {
-          "type": "string",
-          "default": "",
-          "description": "Optional API key for authenticating to the OpenCode server."
         }
       }
     },

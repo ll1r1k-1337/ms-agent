@@ -248,6 +248,30 @@ export function extractToolCall(event: unknown): ToolCallInfo | null {
     }
 
     const part = resolvePart(event);
+    if (isToolUsePart(part)) {
+        const name = part.tool || part.toolName || part.name;
+        if (name) {
+            if (isRecordLike(part.state)) {
+                const stateType = readStringField(part.state, 'type', 'status');
+                if (stateType && stateType !== 'pending') {
+                    return null;
+                }
+            }
+            const params = isRecordLike(part.state)
+                ? safeParseParams(part.state.input)
+                : safeParseParams(part.input || part.args || part.arguments);
+            const toolCallId =
+                (typeof part.callID === 'string' ? part.callID : undefined) ||
+                (typeof part.callId === 'string' ? part.callId : undefined) ||
+                (typeof part.id === 'string' ? part.id : undefined) ||
+                'unknown';
+            return {
+                name: String(name),
+                params,
+                toolCallId,
+            };
+        }
+    }
     if (isToolCallPart(part)) {
         const tc = part.tool_call || part.toolCall || part;
         const name = resolveToolName(tc);
@@ -504,6 +528,30 @@ export function extractErrorMessage(event: OpenCodeEvent): string | null {
     return null;
 }
 
+export function extractAssistantFinishReason(event: OpenCodeEvent): string | null {
+    if (event.type === 'message.updated' && isRecordLike(event.properties)) {
+        const info = event.properties.info;
+        if (isRecordLike(info) && info.role === 'assistant') {
+            const finish = info.finish;
+            if (typeof finish === 'string' && finish.length > 0) {
+                return finish;
+            }
+        }
+    }
+
+    if (isRecordLike(event.choices) && Array.isArray(event.choices) && event.choices.length > 0) {
+        const choice = event.choices[0];
+        if (isRecordLike(choice)) {
+            const finish = choice.finish_reason ?? choice.finishReason;
+            if (typeof finish === 'string' && finish.length > 0) {
+                return finish;
+            }
+        }
+    }
+
+    return null;
+}
+
 /**
  * Hard, protocol-level terminal events. These are the ONLY signals that may
  * advance the session to applying_patch. Soft-close signals such as
@@ -555,6 +603,10 @@ export function isCompletionEvent(event: OpenCodeEvent): boolean {
         }
     }
     return false;
+}
+
+export function isToolCallContinuationBoundary(event: OpenCodeEvent): boolean {
+    return isCompletionEvent(event) && extractAssistantFinishReason(event) === 'tool-calls';
 }
 
 /**

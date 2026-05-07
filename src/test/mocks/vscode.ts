@@ -24,6 +24,13 @@ const workspace = {
         }
         return defaultValue;
       },
+      inspect<T>(key: string) {
+        const value = map && map.has(key) ? map.get(key) as T : undefined;
+        return {
+          key: `${section}.${key}`,
+          defaultValue: value,
+        };
+      },
       update: () => Promise.resolve(),
     };
   },

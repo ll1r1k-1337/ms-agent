@@ -1,0 +1,138 @@
+{
+  "description": "OpenCode first completes an assistant message with finish=tool-calls after a read-only read_file tool, then continues with a second assistant message that applies an edit_file patch. msAgent must wait through the read-only boundary and only finalize after the real disk edit.",
+  "steps": [
+    {
+      "kind": "event",
+      "event": {
+        "type": "message.updated",
+        "properties": {
+          "info": {
+            "role": "assistant",
+            "id": "msg_read"
+          }
+        }
+      }
+    },
+    {
+      "kind": "event",
+      "event": {
+        "type": "message.part.updated",
+        "properties": {
+          "part": {
+            "type": "tool",
+            "tool": "read_file",
+            "callID": "tc_read_1",
+            "messageID": "msg_read",
+            "state": {
+              "type": "pending",
+              "input": "{\"path\":\"kernel.cpp\"}"
+            }
+          }
+        }
+      }
+    },
+    {
+      "kind": "event",
+      "event": {
+        "type": "message.part.updated",
+        "properties": {
+          "part": {
+            "type": "tool",
+            "tool": "read_file",
+            "callID": "tc_read_1",
+            "messageID": "msg_read",
+            "state": {
+              "type": "completed",
+              "output": "int function_0() { return 0 * 2; }\\nint function_1() { return 1 * 2; }\\n"
+            }
+          }
+        }
+      }
+    },
+    {
+      "kind": "event",
+      "event": {
+        "type": "message.updated",
+        "properties": {
+          "info": {
+            "role": "assistant",
+            "id": "msg_read",
+            "finish": "tool-calls",
+            "time": {
+              "completed": 1735080000000
+            }
+          }
+        }
+      }
+    },
+    {
+      "kind": "event",
+      "event": {
+        "type": "message.updated",
+        "properties": {
+          "info": {
+            "role": "assistant",
+            "id": "msg_edit"
+          }
+        }
+      }
+    },
+    {
+      "kind": "event",
+      "event": {
+        "type": "message.part.updated",
+        "properties": {
+          "part": {
+            "type": "tool",
+            "tool": "edit_file",
+            "callID": "tc_edit_1",
+            "messageID": "msg_edit",
+            "state": {
+              "type": "pending",
+              "input": "{\"path\":\"kernel.cpp\"}"
+            }
+          }
+        }
+      }
+    },
+    {
+      "kind": "fsWrite",
+      "relPath": "kernel.cpp",
+      "content": "int function_0() { return 0 * 2; }\nint function_1_fixed() { return 1 * 2; }\n"
+    },
+    {
+      "kind": "event",
+      "event": {
+        "type": "message.part.updated",
+        "properties": {
+          "part": {
+            "type": "tool",
+            "tool": "edit_file",
+            "callID": "tc_edit_1",
+            "messageID": "msg_edit",
+            "state": {
+              "type": "completed",
+              "output": "ok"
+            }
+          }
+        }
+      }
+    },
+    {
+      "kind": "event",
+      "event": {
+        "type": "message.updated",
+        "properties": {
+          "info": {
+            "role": "assistant",
+            "id": "msg_edit",
+            "finish": "tool-calls",
+            "time": {
+              "completed": 1735080000100
+            }
+          }
+        }
+      }
+    }
+  ]
+}

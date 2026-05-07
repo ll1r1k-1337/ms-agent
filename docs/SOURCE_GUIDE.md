@@ -154,6 +154,8 @@ fixService
 - 不再执行宿主侧工具
 - 在最终完成前不提前 dispose
 - 对软关闭场景保守处理，避免“未完成但已写盘”
+- 成功修复时强制产出统一三段式 explanation：`Problem:` / `Fix:` / `Why it works:`
+- 若 OpenCode 只留下工具调用或非结构化说明，会基于诊断和最终 diff 生成 synthetic explanation
 
 ## 配置来源
 
@@ -163,7 +165,28 @@ fixService
 - `timeoutMs`
 - `opencodeServePort`
 - `opencodeCliPath`
-- `opencodeApiKey`
+
+其中模型配置的当前约定是：
+
+- 默认值为 `opencode/minimax-m2.5-free`
+- 首次激活会优先尝试从 OpenCode 配置文件同步模型
+- 设置项保持字符串，不做运行时动态下拉
+- 动态候选统一走 `msAgent: Select OpenCode Model`
+
+## Explanation 流程
+
+成功修复的 explanation 现在有明确优先级：
+
+1. 优先使用 OpenCode 返回的三段式 explanation
+2. 若 session messages 中存在合规 explanation，则回退到该内容
+3. 若只有 patch/diff，没有合规 explanation，则生成 synthetic explanation
+
+对 UI 来说，`applied` 终态只应该看到两类 explanation：
+
+- `structured`
+- `synthetic`
+
+`missing` 只允许停留在内部诊断或日志中，不再直接展示为成功态结果。
 
 ## 命令入口
 

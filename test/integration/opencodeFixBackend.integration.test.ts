@@ -73,6 +73,17 @@ function collectingCallbacks(): CollectingCallbacks {
     };
 }
 
+function getOriginalAddCustomSource(): string {
+    const current = fs.readFileSync(
+        path.resolve(__dirname, '..', 'fixtures-src', 'add_custom.cpp'),
+        'utf-8',
+    );
+    return current.replace(
+        '        DataCopy(zLocal, xLocal, TILE_LENGTH);',
+        '        DataCopy(zLocal, xLocal, 2* TILE_LENGTH);',
+    );
+}
+
 async function runFixture(
     fixtureName: string,
     originalContent: string,
@@ -295,10 +306,48 @@ describe('OpenCodeFixBackend (integration via FixtureTransport)', () => {
                 expect(run.result.fileChanged).to.equal(true);
                 expect(run.diskContent).to.equal(expectedAfterEdit);
                 expect(run.callbacks.diffs.length).to.equal(1);
-                // The session must reach the disk-diff finalize path and keep
-                // the assistant's final explanation when available.
-                expect(run.result.finalMessage.toLowerCase()).to.include('renamed function_1');
-                expect(run.result.finalMessage.toLowerCase()).to.not.include('did not return an explanation');
+                expect(run.result.explanationKind).to.equal('synthetic');
+                expect(run.result.finalMessage).to.include('Problem:');
+                expect(run.result.finalMessage).to.include('Fix:');
+                expect(run.result.finalMessage).to.include('Why it works:');
+            } finally {
+                run.workspace.cleanup();
+            }
+        });
+    });
+
+    describe('read-tool continuation boundaries', () => {
+        it('waits through finish=tool-calls after read_file and applies the later edit_file patch', async () => {
+            const original = 'int function_0() { return 0 * 2; }\nint function_1() { return 1 * 2; }\n';
+            const expectedAfterEdit =
+                'int function_0() { return 0 * 2; }\nint function_1_fixed() { return 1 * 2; }\n';
+
+            const run = await runFixture('read-tool-then-edit-continuation', original);
+            try {
+                expect(run.result.success).to.equal(true);
+                expect(run.result.outcome).to.equal('applied');
+                expect(run.result.fileChanged).to.equal(true);
+                expect(run.diskContent).to.equal(expectedAfterEdit);
+                expect(run.callbacks.diffs.length).to.equal(1);
+                expect(run.result.explanationKind).to.equal('synthetic');
+                expect(run.result.finalMessage).to.include('Problem:');
+                expect(run.result.finalMessage).to.include('Fix:');
+                expect(run.result.finalMessage).to.include('Why it works:');
+            } finally {
+                run.workspace.cleanup();
+            }
+        });
+
+        it('waits through read_file continuation but still rejects a later C++ code block', async () => {
+            const original = 'int main() { return 0; }\n';
+            const run = await runFixture('read-tool-then-codeblock', original);
+            try {
+                expect(run.result.success).to.equal(false);
+                expect(run.result.outcome).to.equal('failed');
+                expect(run.result.fileChanged).to.equal(false);
+                expect(run.result.finalMessage).to.include('code block');
+                expect(run.diskContent).to.equal(original);
+                expect(run.callbacks.diffs.length).to.equal(0);
             } finally {
                 run.workspace.cleanup();
             }
@@ -307,10 +356,7 @@ describe('OpenCodeFixBackend (integration via FixtureTransport)', () => {
 
     describe('add-custom-minimal-edit', () => {
         it('applies the bounded write fix to add_custom.cpp', async () => {
-            const original = fs.readFileSync(
-                path.resolve(__dirname, '..', 'fixtures-src', 'add_custom.cpp'),
-                'utf-8',
-            );
+            const original = getOriginalAddCustomSource();
             const run = await runFixture('add-custom-minimal-edit', original, {
                 fileName: 'add_custom.cpp',
                 line: 30,
@@ -319,7 +365,10 @@ describe('OpenCodeFixBackend (integration via FixtureTransport)', () => {
                 expect(run.result.success).to.equal(true);
                 expect(run.result.outcome).to.equal('applied');
                 expect(run.result.fileChanged).to.equal(true);
-                expect(run.result.finalMessage.toLowerCase()).to.match(/fix applied|edit tools|opencode/);
+                expect(run.result.explanationKind).to.equal('synthetic');
+                expect(run.result.finalMessage).to.include('Problem:');
+                expect(run.result.finalMessage).to.include('Fix:');
+                expect(run.result.finalMessage).to.include('Why it works:');
                 expect(run.diskContent).to.not.include('DataCopy(zGlobal[progress], zLocal, TILE_LENGTH);');
                 expect(run.diskContent).to.include('DataCopy(zGlobal[progress], zLocal, copyLen);');
                 expect(run.callbacks.diffs.length).to.equal(1);
@@ -331,10 +380,7 @@ describe('OpenCodeFixBackend (integration via FixtureTransport)', () => {
 
     describe('no-op retry add_custom line 30', () => {
         it('retries once and applies only the diagnostic DataCopy size fix', async () => {
-            const original = fs.readFileSync(
-                path.resolve(__dirname, '..', 'fixtures-src', 'add_custom.cpp'),
-                'utf-8',
-            );
+            const original = getOriginalAddCustomSource();
             const run = await runFixtureSequence(
                 ['same-code-no-reason', 'add-custom-line30-tilelength-edit'],
                 original,
@@ -344,9 +390,14 @@ describe('OpenCodeFixBackend (integration via FixtureTransport)', () => {
                 expect(run.transports).to.have.length(2);
                 expect(run.result.success).to.equal(true);
                 expect(run.result.outcome).to.equal('applied');
+                expect(run.result.explanationKind).to.equal('synthetic');
                 const sessionEndEvents = run.callbacks.events.filter((event) => event.type === 'session_end');
                 expect(sessionEndEvents).to.have.length(1);
                 expect((sessionEndEvents[0].payload as any).outcome).to.equal('applied');
+                expect((sessionEndEvents[0].payload as any).explanationKind).to.equal('synthetic');
+                expect(run.result.finalMessage).to.include('Problem:');
+                expect(run.result.finalMessage).to.include('Fix:');
+                expect(run.result.finalMessage).to.include('Why it works:');
                 expect(run.diskContent).to.include('DataCopy(zLocal, xLocal, TILE_LENGTH);');
                 expect(run.diskContent).to.not.include('DataCopy(zLocal, xLocal, 2* TILE_LENGTH);');
                 expect(run.diskContent).to.include('DataCopy(zGlobal[progress * 3], zLocal, TILE_LENGTH);');
@@ -370,10 +421,7 @@ describe('OpenCodeFixBackend (integration via FixtureTransport)', () => {
 
     describe('successful explanation fallback from session messages', () => {
         it('uses the current session message list when the streamed text never contained the final explanation', async () => {
-            const original = fs.readFileSync(
-                path.resolve(__dirname, '..', 'fixtures-src', 'add_custom.cpp'),
-                'utf-8',
-            );
+            const original = getOriginalAddCustomSource();
             const run = await runFixture('add-custom-line30-tilelength-edit-session-explanation', original, {
                 fileName: 'add_custom.cpp',
                 line: 30,
@@ -391,11 +439,8 @@ describe('OpenCodeFixBackend (integration via FixtureTransport)', () => {
             }
         });
 
-        it('reports explanation unavailable when the successful session transcript contains no final explanation', async () => {
-            const original = fs.readFileSync(
-                path.resolve(__dirname, '..', 'fixtures-src', 'add_custom.cpp'),
-                'utf-8',
-            );
+        it('synthesizes a structured explanation when the successful session transcript contains no final explanation', async () => {
+            const original = getOriginalAddCustomSource();
             const run = await runFixture('add-custom-line30-tilelength-edit-no-explanation', original, {
                 fileName: 'add_custom.cpp',
                 line: 30,
@@ -403,12 +448,31 @@ describe('OpenCodeFixBackend (integration via FixtureTransport)', () => {
             try {
                 expect(run.result.success).to.equal(true);
                 expect(run.result.outcome).to.equal('applied');
-                expect(run.result.explanationKind).to.equal('missing');
-                expect(run.result.finalMessage).to.equal(
-                    'OpenCode applied the fix but did not return an explanation in this session.',
-                );
+                expect(run.result.explanationKind).to.equal('synthetic');
+                expect(run.result.finalMessage).to.include('Problem:');
+                expect(run.result.finalMessage).to.include('Fix:');
+                expect(run.result.finalMessage).to.include('Why it works:');
                 expect(run.diskContent).to.include('DataCopy(zLocal, xLocal, TILE_LENGTH);');
                 expect(run.callbacks.diffs.length).to.equal(1);
+            } finally {
+                run.workspace.cleanup();
+            }
+        });
+
+        it('synthesizes a structured explanation when a patch is followed by an aborted assistant message', async () => {
+            const original = getOriginalAddCustomSource();
+            const run = await runFixture('add-custom-line30-tilelength-edit-no-explanation-aborted', original, {
+                fileName: 'add_custom.cpp',
+                line: 30,
+            });
+            try {
+                expect(run.result.success).to.equal(true);
+                expect(run.result.outcome).to.equal('applied');
+                expect(run.result.explanationKind).to.equal('synthetic');
+                expect(run.result.finalMessage).to.include('Problem:');
+                expect(run.result.finalMessage).to.include('Fix:');
+                expect(run.result.finalMessage).to.include('Why it works:');
+                expect(run.diskContent).to.include('DataCopy(zLocal, xLocal, TILE_LENGTH);');
             } finally {
                 run.workspace.cleanup();
             }
@@ -460,8 +524,10 @@ describe('OpenCodeFixBackend (integration via FixtureTransport)', () => {
                 expect(run.result.outcome).to.equal('applied');
                 expect(run.result.fileChanged).to.equal(true);
                 expect(run.diskContent).to.equal(expectedAfterEdit);
-                expect(run.result.finalMessage.toLowerCase()).to.include('updated the bounded write length');
-                expect(run.result.finalMessage.toLowerCase()).to.not.include('did not return an explanation');
+                expect(run.result.explanationKind).to.equal('synthetic');
+                expect(run.result.finalMessage).to.include('Problem:');
+                expect(run.result.finalMessage).to.include('Fix:');
+                expect(run.result.finalMessage).to.include('Why it works:');
             } finally {
                 run.workspace.cleanup();
             }

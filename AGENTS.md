@@ -11,7 +11,7 @@ The repository is now **OpenCode-only**:
 - no built-in OpenAI-compatible backend
 - no host-side custom tool executor
 - no settings webview
-- no OpenCode `cli` or `api` transport mode
+- no OpenCode `cli`, `api`, or `acp` transport mode
 
 ## Build, Lint, and Test
 
@@ -32,7 +32,6 @@ The extension reads settings from `workspace.getConfiguration('msagent')`.
 - `msagent.timeoutMs`
 - `msagent.opencodeServePort`
 - `msagent.opencodeCliPath`
-- `msagent.opencodeApiKey`
 
 ## Source Code Architecture
 
@@ -103,6 +102,8 @@ implementation when changing finalize logic.
 - `codeActionProvider.ts` routes Quick Fix directly through `msagent.fixProblem(index)`.
 - `OpenCodeSession` must not finalize success on soft-close signals such as `session.idle` or `server.disconnect`. See `opencode-protocol` skill, R2.
 - `OpenCodeFixBackend` disposes transport only after `session.run()` settles. See `opencode-protocol` skill, R3.
+- Successful fixes must end with a three-part explanation: `Problem:` / `Fix:` / `Why it works:`.
+- If OpenCode does not persist a compliant explanation, `OpenCodeSession` must synthesize one from the diagnostic and applied diff instead of surfacing `Explanation unavailable` as a success result.
 
 ## Test Layout
 

@@ -77,7 +77,7 @@ export interface FinalDiffPayload {
     oldContent: string;
     newContent: string;
     message: string;
-    explanationKind?: 'structured' | 'plain' | 'missing';
+    explanationKind?: 'structured' | 'synthetic' | 'plain' | 'missing';
 }
 
 export interface MessageCompletePayload {
@@ -118,7 +118,7 @@ export interface SessionEndPayload {
     success: boolean;
     outcome: 'applied' | 'no_change' | 'failed';
     finalMessage: string;
-    explanationKind?: 'structured' | 'plain' | 'missing';
+    explanationKind?: 'structured' | 'synthetic' | 'plain' | 'missing';
 }
 
 export interface StatusPayload {

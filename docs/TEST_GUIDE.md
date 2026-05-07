@@ -64,6 +64,7 @@ npm run test:coverage
 - 取消与暂停
 - `no_change` 不生成 `final_diff`
 - `no_change` 不触发 generic transport error 提示
+- 修复成功后只移除当前问题高亮，不清空同文件其他问题
 
 关键文件：
 
@@ -76,6 +77,7 @@ npm run test:coverage
 - backendFactory 固定返回 `OpenCodeFixBackend`
 - prompt 与 transport config 构造
 - `NO_FIX_NEEDED` / `CANNOT_FIX` terminal marker 提示
+- retry prompt 明确要求 `Problem:` / `Fix:` / `Why it works:`
 - 运行结束后再释放 transport
 
 关键文件：
@@ -94,6 +96,8 @@ npm run test:coverage
 - 原生文件改动的最终 diff 检测
 - `NO_FIX_NEEDED` -> `no_change`
 - `CANNOT_FIX` -> 带原因的失败
+- 成功但缺失 explanation -> synthetic 三段式 explanation
+- patch 成功后跟随 `MessageAbortedError` -> 仍按成功并补 synthetic explanation
 - 无解释 no-op -> 新 fallback 文案
 
 关键文件：
@@ -110,6 +114,7 @@ npm run test:coverage
 
 - 首屏状态 / 当前动作 / 结果聚合
 - `no_change` / failed / applied 三种结果态
+- `applied` 只展示 `structured` 或 `synthetic` explanation
 - 原始流、工具参数、diff 下沉到 `Technical details`
 
 关键文件：
@@ -139,6 +144,8 @@ npm run test:coverage
 2. 确认 Fix Details 首屏能快速看出“现在在做什么 / 最终结果是什么”
 3. 确认修复结束前不会提前报 `aborted`
 4. 若 OpenCode 未修改代码，确认首屏直接展示原因而不是 generic same-code 文案
+5. 若 OpenCode 成功修改代码，确认首屏始终出现 `Problem:` / `Fix:` / `Why it works:`
+6. 若同文件还有其他诊断，确认本次成功修复后只移除当前问题高亮
 
 ### M4. 批量修复
 
@@ -152,8 +159,7 @@ npm run test:coverage
 
 - `MSAGENT_LOCAL_MODEL`
 - 可执行的 `MSAGENT_LOCAL_OPENCODE_CLI_PATH`，默认 `opencode`
-- `MSAGENT_LOCAL_OPENCODE_PORT`，默认 `7325`
-- `MSAGENT_LOCAL_OPENCODE_MODE`，固定为 `server`
+- `MSAGENT_LOCAL_OPENCODE_PORT`，默认 `4096`
 
 该命令是 fail-fast 的：如果本地 `opencode` 或模型配置缺失，会直接失败并提示缺失项。
 
@@ -164,13 +170,14 @@ npm run test:coverage
 - `opencode serve` 能被复用或自动拉起
 - 官方 SDK 能正确接到本地 server
 - 修复过程能展示文本流和工具调用
+- 成功态 explanation 始终符合三段式协议
 - 失败时保留原文件
 
 ## 覆盖率目标
 
 - parser / diagnostics / codeAction：高覆盖
 - transport / session：覆盖关键生命周期分支
-- WebView 状态：覆盖事件归一化与渲染状态更新
+- WebView 状态：覆盖事件归一化、三段式 explanation 渲染与状态更新
 
 ## 故障排查
 

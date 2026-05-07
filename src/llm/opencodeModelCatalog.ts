@@ -27,11 +27,11 @@ export interface LoadOpenCodeModelCatalogOptions {
 }
 
 export const BUILTIN_FREE_OPENCODE_MODELS = [
+    'opencode/minimax-m2.5-free',
     'opencode/big-pickle',
     'opencode/gpt-5-nano',
     'opencode/hy3-preview-free',
     'opencode/ling-2.6-flash-free',
-    'opencode/minimax-m2.5-free',
     'opencode/nemotron-3-super-free',
 ] as const;
 
