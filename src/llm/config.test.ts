@@ -24,13 +24,12 @@ describe('resolveLLMConfig', () => {
         expect(result).to.deep.equal({
             modelName: DEFAULT_OPENCODE_MODEL,
             providerID: 'opencode',
-            modelID: 'big-pickle',
+            modelID: 'minimax-m2.5-free',
             modelFullName: DEFAULT_OPENCODE_MODEL,
             modelWarning: undefined,
             timeoutMs: 300000,
-            opencodeServePort: 7325,
+            opencodeServePort: 4096,
             opencodeCliPath: 'opencode',
-            opencodeApiKey: '',
         });
     });
 
@@ -40,6 +39,8 @@ describe('resolveLLMConfig', () => {
         );
         expect(packageJson.contributes.configuration.properties['msagent.modelName'].default)
             .to.equal(DEFAULT_OPENCODE_MODEL);
+        expect(packageJson.contributes.configuration.properties['msagent.opencodeServePort'].default)
+            .to.equal(4096);
     });
 
     it('keeps the VS Code settings manifest discoverable', () => {
@@ -54,8 +55,12 @@ describe('resolveLLMConfig', () => {
         expect(Object.keys(config.properties)).to.include('msagent.modelName');
         expect(commands).to.include('msagent.openSettings');
         expect(packageJson.activationEvents).to.include('onCommand:msagent.openSettings');
+        expect(config.properties).to.not.have.property('msagent.opencodeApiKey');
+        expect(modelSetting).to.not.have.property('enum');
         expect(modelSetting).to.not.have.property('enumItemLabels');
-        expect(modelSetting.markdownEnumDescriptions).to.have.length(modelSetting.enum.length);
+        expect(modelSetting).to.not.have.property('markdownEnumDescriptions');
+        expect(modelSetting.markdownDescription).to.include('msAgent: Select OpenCode Model');
+        expect(modelSetting.markdownDescription).to.include('first activation');
     });
 
     it('reads custom OpenCode values', () => {
@@ -64,7 +69,6 @@ describe('resolveLLMConfig', () => {
             timeoutMs: 450000,
             opencodeServePort: 8123,
             opencodeCliPath: '/usr/local/bin/opencode',
-            opencodeApiKey: 'oc-test',
         }));
 
         expect(result).to.deep.equal({
@@ -76,7 +80,6 @@ describe('resolveLLMConfig', () => {
             timeoutMs: 450000,
             opencodeServePort: 8123,
             opencodeCliPath: '/usr/local/bin/opencode',
-            opencodeApiKey: 'oc-test',
         });
     });
 
@@ -108,7 +111,6 @@ describe('resolveLLMConfig', () => {
             'timeoutMs',
             'opencodeServePort',
             'opencodeCliPath',
-            'opencodeApiKey',
         ];
 
         for (const key of expectedKeys) {

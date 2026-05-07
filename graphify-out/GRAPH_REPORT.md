@@ -1,12 +1,12 @@
-# Graph Report - .  (2026-04-27)
+# Graph Report - .  (2026-05-07)
 
 ## Corpus Check
-- 51 files · ~54,509 words
+- 56 files · ~82,991 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 564 nodes · 907 edges · 89 communities detected
-- Extraction: 86% EXTRACTED · 14% INFERRED · 0% AMBIGUOUS · INFERRED: 129 edges (avg confidence: 0.8)
+- 582 nodes · 962 edges · 89 communities detected
+- Extraction: 83% EXTRACTED · 17% INFERRED · 0% AMBIGUOUS · INFERRED: 167 edges (avg confidence: 0.8)
 - Token cost: 0 input · 0 output
 
 ## Community Hubs (Navigation)
@@ -101,16 +101,16 @@
 - [[_COMMUNITY_Community 88|Community 88]]
 
 ## God Nodes (most connected - your core abstractions)
-1. `AcpTransport` - 41 edges
-2. `ServeTransport` - 32 edges
-3. `isRecordLike()` - 23 edges
-4. `msAgent` - 19 edges
+1. `isRecordLike()` - 24 edges
+2. `OpenCodeTurnRunner` - 22 edges
+3. `msAgent` - 19 edges
+4. `DiagnosticsManager` - 18 edges
 5. `handleMessage()` - 17 edges
-6. `DiagnosticsManager` - 17 edges
-7. `MockTransport` - 13 edges
-8. `FixtureTransport` - 12 edges
-9. `extractToolCall()` - 12 edges
-10. `WebviewPanelProvider` - 11 edges
+6. `extractToolCall()` - 13 edges
+7. `appendTextStream()` - 12 edges
+8. `MockTransport` - 12 edges
+9. `FixtureTransport` - 11 edges
+10. `SdkServerTransport` - 11 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `msAgent` --conceptually_related_to--> `raw/服务器 | OpenCode.pdf`  [AMBIGUOUS]
@@ -148,96 +148,96 @@
 ## Communities
 
 ### Community 0 - "Community 0"
-Cohesion: 0.05
-Nodes (4): AcpTransport, isRecordLike(), _resetTestDeps(), ServeTransport
+Cohesion: 0.09
+Nodes (58): $(), appendDiff(), appendFinalDiff(), appendSessionResult(), appendTextStream(), appendToolCall(), appendToolResult(), appendUserMessage() (+50 more)
 
 ### Community 1 - "Community 1"
-Cohesion: 0.09
-Nodes (54): add_custom(), $(), appendDiff(), appendFinalDiff(), appendSessionResult(), appendTextStream(), appendToolCall(), appendToolResult() (+46 more)
+Cohesion: 0.07
+Nodes (28): createFixBackend(), makeContext(), _addFixedIndex(), clearConversationIfCancelledAndIdle(), createFixRunId(), createQueueTaskId(), ensureFixDetailsPanel(), fixAllDiagnostics() (+20 more)
 
 ### Community 2 - "Community 2"
-Cohesion: 0.08
-Nodes (23): createFixBackend(), clearConversationIfCancelledAndIdle(), createFixRunId(), ensureFixDetailsPanel(), fixAllDiagnostics(), fixProblem(), fixSingleDiagnostic(), formatOpenCodeConnectionError() (+15 more)
+Cohesion: 0.06
+Nodes (24): deactivate(), _resetSdkClientTestFactory(), _setSdkClientTestFactory(), disposeAllManagedServers(), ensureManagedServer(), getCliPath(), getServerKey(), OpenCodeServerManager (+16 more)
 
 ### Community 3 - "Community 3"
-Cohesion: 0.11
-Nodes (18): buildFocusedSnippet(), buildOpenCodePrompt(), buildRetryPrompt(), buildTargetedRepairHint(), buildTransportConfig(), getLine(), getOutputChannel(), collectingCallbacks() (+10 more)
+Cohesion: 0.07
+Nodes (27): FixActionProvider, registerFixActions(), getLLMConfig(), parseModelName(), resolveLLMConfig(), activate(), getEffectiveExplicitModelValue(), getMsAgentConfiguration() (+19 more)
 
 ### Community 4 - "Community 4"
-Cohesion: 0.21
-Nodes (24): extractErrorMessage(), extractMessageId(), extractMessageRole(), extractPartMessageId(), extractSessionId(), extractTextDelta(), extractToolCall(), extractToolResult() (+16 more)
+Cohesion: 0.09
+Nodes (6): MockTransport, buildPromptBody(), classifyToolKind(), getConfiguredModel(), isRecordLike(), OpenCodeTurnRunner
 
 ### Community 5 - "Community 5"
-Cohesion: 0.08
-Nodes (11): makeContext(), CancellationTokenSource, CodeAction, Diagnostic, DiagnosticRelatedInformation, EventEmitter, Location, Position (+3 more)
+Cohesion: 0.09
+Nodes (20): buildFocusedSnippet(), buildOpenCodePrompt(), buildRetryPrompt(), buildTargetedRepairHint(), buildTransportConfig(), getLine(), getOutputChannel(), collectingCallbacks() (+12 more)
 
 ### Community 6 - "Community 6"
-Cohesion: 0.1
-Nodes (13): FixActionProvider, registerFixActions(), activate(), deactivate(), getWorkspaceRoots(), selectOpenCodeModel(), extractModelsFromOpenCodeConfig(), getConfigPathSpecs() (+5 more)
+Cohesion: 0.18
+Nodes (26): extractAssistantFinishReason(), extractErrorMessage(), extractMessageId(), extractMessageRole(), extractPartMessageId(), extractSessionId(), extractTextDelta(), extractToolCall() (+18 more)
 
 ### Community 7 - "Community 7"
+Cohesion: 0.11
+Nodes (18): add_custom(), _enqueueFixTask(), buildSyntheticExplanation(), classifyAssistantExplanation(), describeProblem(), describeWhyItWorks(), extractAssistantExplanationFromSessionMessages(), extractAssistantExplanationFromTextMap() (+10 more)
+
+### Community 8 - "Community 8"
 Cohesion: 0.08
 Nodes (20): Ollama, OpenAI-compatible API, msagent.modelEndpoint, docs/MSTT_INTEGRATION_ARCHITECTURE.md, docs/OPENCODE_AGENT_INTEGRATION_PLAN.md, docs/SOURCE_GUIDE.md, ILLEGAL_ADDR_READ, ILLEGAL_ADDR_WRITE (+12 more)
 
-### Community 8 - "Community 8"
-Cohesion: 0.09
-Nodes (7): bodyOf(), MockChildProcess, MockClientRequest, MockIncomingMessage, MockWritable, respondWithJson(), SessionStateMachine
-
 ### Community 9 - "Community 9"
 Cohesion: 0.14
-Nodes (4): DiagnosticsManager, parseLogAtPathAndNotify(), resetAiFixHistory(), resolveFilePath()
+Nodes (7): extractDataPayload(), getErrorMessage(), normalizeEventSubscription(), normalizeMessageList(), normalizeSessionId(), OpenCodeSdkClient, SessionStateMachine
 
 ### Community 10 - "Community 10"
-Cohesion: 0.15
-Nodes (10): createQueueTaskId(), ensureManagedServer(), getCliPath(), getServerKey(), probePort(), waitForServerReady(), wrapSpawnError(), clearConfig() (+2 more)
+Cohesion: 0.09
+Nodes (10): CancellationTokenSource, CodeAction, Diagnostic, DiagnosticRelatedInformation, EventEmitter, Location, Position, Range (+2 more)
 
 ### Community 11 - "Community 11"
-Cohesion: 0.18
-Nodes (11): getLLMConfig(), normalizeArgs(), normalizeOpenCodeMode(), parseModelName(), resolveLLMConfig(), collectEvents(), makeDiagnostic(), makeWorkspace() (+3 more)
+Cohesion: 0.14
+Nodes (3): DiagnosticsManager, dirname(), resolveFilePath()
 
 ### Community 12 - "Community 12"
-Cohesion: 0.15
+Cohesion: 0.16
 Nodes (3): FixtureTransport, loadFixture(), wait()
 
 ### Community 13 - "Community 13"
-Cohesion: 0.18
-Nodes (7): classifyAssistantExplanation(), extractAssistantExplanationFromSessionMessages(), extractAssistantExplanationFromTextMap(), extractMessageSnapshotText(), hasStructuredExplanation(), looksLikeProcessNarration(), OpenCodeSession
-
-### Community 14 - "Community 14"
-Cohesion: 0.14
-Nodes (1): MockTransport
-
-### Community 15 - "Community 15"
 Cohesion: 0.33
 Nodes (12): classifyError(), extractInt(), extractStr(), groupLines(), isMemoryError(), parseAddressSpace(), parseBlockType(), parseFileSize() (+4 more)
 
-### Community 16 - "Community 16"
+### Community 14 - "Community 14"
+Cohesion: 0.2
+Nodes (1): SdkServerTransport
+
+### Community 15 - "Community 15"
 Cohesion: 0.25
 Nodes (0): 
 
-### Community 17 - "Community 17"
+### Community 16 - "Community 16"
 Cohesion: 0.29
 Nodes (1): DisposableStore
 
-### Community 18 - "Community 18"
+### Community 17 - "Community 17"
 Cohesion: 0.53
-Nodes (4): computeChangeSummary(), createInitialState(), phaseToTimelineType(), reduceSessionState()
+Nodes (5): computeChangeSummary(), createInitialState(), formatDiffToLines(), phaseToTimelineType(), reduceSessionState()
 
-### Community 19 - "Community 19"
+### Community 18 - "Community 18"
 Cohesion: 0.33
 Nodes (6): Tool Dispatch, Rationale: Tool Dispatch design, edit_file, list_files, read_diagnostics, read_file
 
-### Community 20 - "Community 20"
+### Community 19 - "Community 19"
 Cohesion: 0.4
 Nodes (1): MockRange
 
-### Community 21 - "Community 21"
+### Community 20 - "Community 20"
 Cohesion: 0.67
 Nodes (0): 
 
-### Community 22 - "Community 22"
+### Community 21 - "Community 21"
 Cohesion: 1.0
 Nodes (3): docs/TEST_GUIDE.md, docs/TEST_PLAN.md, T1: Log Parser Test
+
+### Community 22 - "Community 22"
+Cohesion: 1.0
+Nodes (0): 
 
 ### Community 23 - "Community 23"
 Cohesion: 1.0
@@ -249,15 +249,15 @@ Nodes (0):
 
 ### Community 25 - "Community 25"
 Cohesion: 1.0
-Nodes (0): 
+Nodes (2): msagent.modelName, qwen3:8b
 
 ### Community 26 - "Community 26"
 Cohesion: 1.0
-Nodes (2): Agent Loop, Rationale: Loop until done design
+Nodes (0): 
 
 ### Community 27 - "Community 27"
 Cohesion: 1.0
-Nodes (2): Skill Loading, Rationale: On-demand Skills design
+Nodes (2): FixBackend Interface, Rationale: Backend-agnostic UI
 
 ### Community 28 - "Community 28"
 Cohesion: 1.0
@@ -265,19 +265,19 @@ Nodes (2): Event Protocol, Rationale: Event-driven real-time updates
 
 ### Community 29 - "Community 29"
 Cohesion: 1.0
-Nodes (2): msagent.modelName, qwen3:8b
+Nodes (2): Degradation Strategy, Rationale: Graceful degradation
 
 ### Community 30 - "Community 30"
 Cohesion: 1.0
-Nodes (0): 
+Nodes (2): Skill Loading, Rationale: On-demand Skills design
 
 ### Community 31 - "Community 31"
 Cohesion: 1.0
-Nodes (2): FixBackend Interface, Rationale: Backend-agnostic UI
+Nodes (2): Agent Loop, Rationale: Loop until done design
 
 ### Community 32 - "Community 32"
 Cohesion: 1.0
-Nodes (2): Degradation Strategy, Rationale: Graceful degradation
+Nodes (0): 
 
 ### Community 33 - "Community 33"
 Cohesion: 1.0
@@ -510,33 +510,35 @@ Nodes (1): Rationale: LLM Streaming UX
 ## Knowledge Gaps
 - **72 isolated node(s):** `msSanitizer`, `skills/memcheck-skills.md`, `Agent Loop`, `Streaming WebView`, `CodeAction Quick Fix` (+67 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **Thin community `Community 23`** (2 nodes): `makeReader()`, `config.test.ts`
+- **Thin community `Community 22`** (2 nodes): `makeReader()`, `config.test.ts`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 24`** (2 nodes): `makeDiag()`, `diagnosticsManager.test.ts`
+- **Thin community `Community 23`** (2 nodes): `makeDiag()`, `diagnosticsManager.test.ts`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 25`** (2 nodes): `makeDiag()`, `fixService.test.ts`
+- **Thin community `Community 24`** (2 nodes): `makeDiag()`, `fixService.test.ts`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 26`** (2 nodes): `Agent Loop`, `Rationale: Loop until done design`
+- **Thin community `Community 25`** (2 nodes): `msagent.modelName`, `qwen3:8b`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 27`** (2 nodes): `Skill Loading`, `Rationale: On-demand Skills design`
+- **Thin community `Community 26`** (2 nodes): `AGENTS.md`, `CLAUDE.md`
+  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
+- **Thin community `Community 27`** (2 nodes): `FixBackend Interface`, `Rationale: Backend-agnostic UI`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 - **Thin community `Community 28`** (2 nodes): `Event Protocol`, `Rationale: Event-driven real-time updates`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 29`** (2 nodes): `msagent.modelName`, `qwen3:8b`
+- **Thin community `Community 29`** (2 nodes): `Degradation Strategy`, `Rationale: Graceful degradation`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 30`** (2 nodes): `AGENTS.md`, `CLAUDE.md`
+- **Thin community `Community 30`** (2 nodes): `Skill Loading`, `Rationale: On-demand Skills design`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 31`** (2 nodes): `FixBackend Interface`, `Rationale: Backend-agnostic UI`
+- **Thin community `Community 31`** (2 nodes): `Agent Loop`, `Rationale: Loop until done design`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 32`** (2 nodes): `Degradation Strategy`, `Rationale: Graceful degradation`
+- **Thin community `Community 32`** (1 nodes): `setup.ts`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 33`** (1 nodes): `setup.ts`
+- **Thin community `Community 33`** (1 nodes): `types.ts`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 34`** (1 nodes): `types.ts`
+- **Thin community `Community 34`** (1 nodes): `opencodeModelCatalog.test.ts`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 35`** (1 nodes): `opencodeModelCatalog.test.ts`
+- **Thin community `Community 35`** (1 nodes): `openCodeFixBackend.test.ts`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 36`** (1 nodes): `openCodeFixBackend.test.ts`
+- **Thin community `Community 36`** (1 nodes): `opencodeSdkClient.test.ts`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 - **Thin community `Community 37`** (1 nodes): `fixBackend.ts`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
@@ -648,15 +650,15 @@ _Questions this graph is uniquely positioned to answer:_
 
 - **What is the exact relationship between `msAgent` and `raw/服务器 | OpenCode.pdf`?**
   _Edge tagged AMBIGUOUS (relation: conceptually_related_to) - confidence is low._
-- **Why does `AcpTransport` connect `Community 0` to `Community 1`, `Community 10`?**
-  _High betweenness centrality (0.090) - this node is a cross-community bridge._
-- **Why does `ServeTransport` connect `Community 0` to `Community 10`?**
-  _High betweenness centrality (0.060) - this node is a cross-community bridge._
-- **Why does `loadFixture()` connect `Community 12` to `Community 3`, `Community 4`?**
-  _High betweenness centrality (0.054) - this node is a cross-community bridge._
+- **Why does `_resetTestDeps()` connect `Community 2` to `Community 1`?**
+  _High betweenness centrality (0.053) - this node is a cross-community bridge._
+- **Why does `OpenCodeTurnRunner` connect `Community 4` to `Community 6`?**
+  _High betweenness centrality (0.041) - this node is a cross-community bridge._
+- **Why does `ensureManagedServer()` connect `Community 2` to `Community 0`?**
+  _High betweenness centrality (0.034) - this node is a cross-community bridge._
 - **What connects `msSanitizer`, `skills/memcheck-skills.md`, `Agent Loop` to the rest of the system?**
   _72 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `Community 0` be split into smaller, more focused modules?**
-  _Cohesion score 0.05 - nodes in this community are weakly interconnected._
-- **Should `Community 1` be split into smaller, more focused modules?**
   _Cohesion score 0.09 - nodes in this community are weakly interconnected._
+- **Should `Community 1` be split into smaller, more focused modules?**
+  _Cohesion score 0.07 - nodes in this community are weakly interconnected._

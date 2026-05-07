@@ -41,7 +41,7 @@ function requireEnv(name: string): string {
 function resolveHarness(): LocalHarness {
     const model = requireEnv('MSAGENT_LOCAL_MODEL');
     const cliPath = (process.env.MSAGENT_LOCAL_OPENCODE_CLI_PATH || 'opencode').trim();
-    const servePort = Number(process.env.MSAGENT_LOCAL_OPENCODE_PORT || '7325');
+    const servePort = Number(process.env.MSAGENT_LOCAL_OPENCODE_PORT || '4096');
     if (!Number.isFinite(servePort) || servePort <= 0) {
         throw new Error('MSAGENT_LOCAL_OPENCODE_PORT must be a positive integer.');
     }
@@ -140,7 +140,6 @@ async function runLocalFix(harness: LocalHarness) {
         timeoutMs: 300000,
         opencodeServePort: harness.servePort,
         opencodeCliPath: harness.cliPath,
-        opencodeApiKey: process.env.MSAGENT_LOCAL_OPENCODE_API_KEY || '',
     });
 
     try {

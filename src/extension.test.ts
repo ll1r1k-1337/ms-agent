@@ -100,6 +100,109 @@ describe('extension', () => {
             expect(commands).to.not.include('msagent.testWebview');
             expect(activateDiagnosticsStub.calledOnce).to.be.true;
         });
+
+        it('syncs the initial model from OpenCode config when no explicit model is configured', async () => {
+            const updateStub = sinon.stub().resolves();
+            sinon.stub(vscode.workspace, 'getConfiguration').returns({
+                get: (key: string) => key === 'modelName' ? 'opencode/minimax-m2.5-free' : undefined,
+                inspect: () => ({
+                    key: 'msagent.modelName',
+                    defaultValue: 'opencode/minimax-m2.5-free',
+                }),
+                update: updateStub,
+            } as any);
+            _setTestDeps({
+                loadOpenCodeModelCatalog: () => [
+                    { id: 'volcengine-plan/doubao-seed-2.0-code', source: 'user', sourcePath: '/Users/test/.config/opencode/opencode.json' },
+                    { id: 'opencode/minimax-m2.5-free', source: 'built-in' },
+                ],
+            });
+
+            await activate(makeContext());
+
+            expect(updateStub.calledOnceWith(
+                'modelName',
+                'volcengine-plan/doubao-seed-2.0-code',
+                vscode.ConfigurationTarget.Global,
+            )).to.equal(true);
+        });
+
+        it('does not overwrite an explicit user-selected model on activate', async () => {
+            const updateStub = sinon.stub().resolves();
+            sinon.stub(vscode.workspace, 'getConfiguration').returns({
+                get: (key: string) => key === 'modelName' ? 'volcengine-plan/doubao-seed-2.0-code' : undefined,
+                inspect: () => ({
+                    key: 'msagent.modelName',
+                    defaultValue: 'opencode/minimax-m2.5-free',
+                    globalValue: 'volcengine-plan/doubao-seed-2.0-code',
+                }),
+                update: updateStub,
+            } as any);
+            _setTestDeps({
+                loadOpenCodeModelCatalog: () => [
+                    { id: 'volcengine-plan/doubao-seed-2.0-code', source: 'user', sourcePath: '/Users/test/.config/opencode/opencode.json' },
+                    { id: 'opencode/minimax-m2.5-free', source: 'built-in' },
+                ],
+            });
+
+            await activate(makeContext());
+
+            expect(updateStub.called).to.equal(false);
+        });
+
+        it('replaces the legacy gpt-5-nano default with the first configured OpenCode model', async () => {
+            const updateStub = sinon.stub().resolves();
+            sinon.stub(vscode.workspace, 'getConfiguration').returns({
+                get: (key: string) => key === 'modelName' ? 'opencode/gpt-5-nano' : undefined,
+                inspect: () => ({
+                    key: 'msagent.modelName',
+                    defaultValue: 'opencode/minimax-m2.5-free',
+                    globalValue: 'opencode/gpt-5-nano',
+                }),
+                update: updateStub,
+            } as any);
+            _setTestDeps({
+                loadOpenCodeModelCatalog: () => [
+                    { id: 'moonshot/kimi-k2.6', source: 'user', sourcePath: '/Users/test/.config/opencode/opencode.json' },
+                    { id: 'opencode/minimax-m2.5-free', source: 'built-in' },
+                ],
+            });
+
+            await activate(makeContext());
+
+            expect(updateStub.calledOnceWith(
+                'modelName',
+                'moonshot/kimi-k2.6',
+                vscode.ConfigurationTarget.Global,
+            )).to.equal(true);
+        });
+
+        it('replaces the legacy default model with the new default when no config model is found', async () => {
+            const updateStub = sinon.stub().resolves();
+            sinon.stub(vscode.workspace, 'getConfiguration').returns({
+                get: (key: string) => key === 'modelName' ? 'opencode/big-pickle' : undefined,
+                inspect: () => ({
+                    key: 'msagent.modelName',
+                    defaultValue: 'opencode/minimax-m2.5-free',
+                    globalValue: 'opencode/big-pickle',
+                }),
+                update: updateStub,
+            } as any);
+            _setTestDeps({
+                loadOpenCodeModelCatalog: () => [
+                    { id: 'opencode/minimax-m2.5-free', source: 'built-in' },
+                    { id: 'opencode/gpt-5-nano', source: 'built-in' },
+                ],
+            });
+
+            await activate(makeContext());
+
+            expect(updateStub.calledOnceWith(
+                'modelName',
+                'opencode/minimax-m2.5-free',
+                vscode.ConfigurationTarget.Global,
+            )).to.equal(true);
+        });
     });
 
     describe('openMsAgentSettings', () => {
@@ -116,7 +219,7 @@ describe('extension', () => {
         it('writes the selected model to workspace settings', async () => {
             const updateStub = sinon.stub().resolves();
             const getConfigurationStub = sinon.stub(vscode.workspace, 'getConfiguration').returns({
-                get: (key: string) => key === 'modelName' ? 'opencode/big-pickle' : undefined,
+                get: (key: string) => key === 'modelName' ? 'opencode/minimax-m2.5-free' : undefined,
                 update: updateStub,
             } as any);
             const showQuickPickStub = sinon.stub(vscode.window, 'showQuickPick').callsFake(async (items: any) => {
@@ -127,7 +230,7 @@ describe('extension', () => {
             workspace.workspaceFolders = [{ uri: vscode.Uri.file('/workspace') }];
             _setTestDeps({
                 loadOpenCodeModelCatalog: () => [
-                    { id: 'opencode/big-pickle', source: 'built-in' },
+                    { id: 'opencode/minimax-m2.5-free', source: 'built-in' },
                     { id: 'volcengine-plan/doubao-seed-2.0-code', source: 'workspace', sourcePath: '/workspace/opencode.json' },
                 ],
             });

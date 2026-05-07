@@ -11,6 +11,8 @@
 - OpenCode-only 修复：修复链路统一走 OpenCode `server`
 - SDK 驱动：扩展会复用或自动拉起本地 `opencode serve`，再通过官方 `@opencode-ai/sdk` 发起 session / event / abort / messages
 - 精简后的 Fix Details 面板：首屏聚焦状态、当前动作、结果和改动文件
+- 成功修复解释强约束：成功结果始终展示 `Problem:` / `Fix:` / `Why it works:` 三段式说明
+- Synthetic fallback：若 OpenCode 没有返回合规 explanation，msAgent 会基于诊断和已落地 diff 自动补齐解释
 - no-op 语义：`NO_FIX_NEEDED` 会显示为“未修改代码”，`CANNOT_FIX` 会直接展示 OpenCode 原因
 
 ## 支持的错误类型
@@ -47,21 +49,19 @@ npm run compile
 
 | 设置项 | 默认值 | 说明 |
 |---|---|---|
-| `msagent.modelName` | `opencode/big-pickle` | OpenCode 使用的完整模型 ID |
+| `msagent.modelName` | `opencode/minimax-m2.5-free` | OpenCode 使用的完整模型 ID；首次启动会尝试从 OpenCode 配置自动同步 |
 | `msagent.timeoutMs` | `300000` | 单次修复超时 |
-| `msagent.opencodeServePort` | `7325` | `opencode serve` 端口 |
+| `msagent.opencodeServePort` | `4096` | `opencode serve` 端口 |
 | `msagent.opencodeCliPath` | `opencode` | OpenCode 可执行文件路径 |
-| `msagent.opencodeApiKey` | `""` | 可选，传给 OpenCode 的 API Key |
 
 示例：
 
 ```json
 {
-  "msagent.modelName": "opencode/big-pickle",
+  "msagent.modelName": "opencode/minimax-m2.5-free",
   "msagent.timeoutMs": 300000,
-  "msagent.opencodeServePort": 7325,
-  "msagent.opencodeCliPath": "opencode",
-  "msagent.opencodeApiKey": ""
+  "msagent.opencodeServePort": 4096,
+  "msagent.opencodeCliPath": "opencode"
 }
 ```
 
@@ -72,6 +72,15 @@ npm run compile
 | `msAgent: Parse Log File` | 解析日志并发布诊断 |
 | `msAgent: Fix All Issues` | 修复当前文件中的全部 msAgent 诊断 |
 | `msAgent: Clear Diagnostics` | 清空当前 msAgent 诊断 |
+| `msAgent: Select OpenCode Model` | 从本地 OpenCode 配置中选择模型并写回 `msagent.modelName` |
+| `msAgent: Open Settings` | 打开 VS Code 原生 `msagent` 设置页 |
+
+说明：
+
+- VS Code 原生 setting 不支持运行时动态下拉
+- `msagent.modelName` 因此保持为字符串
+- 首次启动时，msAgent 会优先尝试从 OpenCode 配置文件同步模型
+- 后续动态选择统一通过 `msAgent: Select OpenCode Model`
 
 内部命令 `msagent.fixProblem` 由 Quick Fix 和测试链路调用。
 
@@ -81,6 +90,16 @@ npm run compile
 2. 在 VS Code 中执行 `msAgent: Parse Log File`。
 3. 在 Problems 面板或灯泡菜单触发单个修复，或执行 `msAgent: Fix All Issues`。
 4. 在 Fix Details 面板观察当前动作和最终结果；若 OpenCode 没改文件，会直接展示原因。
+
+## Fix Details 说明
+
+成功修复时，Fix Details 面板会统一显示三段式 explanation：
+
+- `Problem:` 说明原始问题
+- `Fix:` 说明具体改动
+- `Why it works:` 说明为什么该修改能解决问题
+
+如果 OpenCode 没有在当前 session 中持久化自然语言 explanation，msAgent 会根据诊断和实际 patch 自动生成同格式的 synthetic explanation，因此成功态不再显示 `Explanation unavailable`。
 
 ## 架构概览
 

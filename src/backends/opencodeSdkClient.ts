@@ -9,7 +9,6 @@ export interface OpenCodePromptBody {
 export interface OpenCodeSdkClientConfig {
     baseUrl: string;
     timeoutMs: number;
-    apiKey?: string;
 }
 
 interface EventSubscriptionResponse {
@@ -220,7 +219,6 @@ export class OpenCodeSdkClient {
             this.clientPromise = Promise.resolve(clientFactory({
                 baseUrl: this.config.baseUrl,
                 timeout: this.config.timeoutMs,
-                headers: this.config.apiKey ? { Authorization: `Bearer ${this.config.apiKey}` } : undefined,
             }));
         }
         return this.clientPromise;

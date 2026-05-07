@@ -237,6 +237,126 @@ describe('opencodeTransport', () => {
         expect(events.some((event: any) => event?.properties?.sessionID === 'sess_current')).to.equal(true);
     });
 
+    it('keeps the SDK event stream open after a read-only tool-calls boundary', async () => {
+        const logs: string[] = [];
+        const transport = createTransport(serverConfig({ timeoutMs: 5000 }), (message) => logs.push(message));
+        const events: unknown[] = [];
+        const closeSpy = sinon.spy();
+        transport.onEvent((event) => events.push(event));
+        transport.onClose(closeSpy);
+        transport.start('fix this');
+        await waitFor(() => sdkCalls.includes('promptAsync'), 'expected promptAsync to be called');
+
+        stream.push({
+            type: 'message.updated',
+            properties: {
+                sessionID: 'sess_current',
+                info: { id: 'msg_read', role: 'assistant', sessionID: 'sess_current', time: { created: 1 } },
+            },
+        });
+        stream.push({
+            type: 'message.part.updated',
+            properties: {
+                sessionID: 'sess_current',
+                part: {
+                    type: 'tool',
+                    tool: 'read',
+                    callID: 'tool_read_1',
+                    messageID: 'msg_read',
+                    sessionID: 'sess_current',
+                    state: { status: 'pending', input: {} },
+                },
+            },
+        });
+        stream.push({
+            type: 'message.part.updated',
+            properties: {
+                sessionID: 'sess_current',
+                part: {
+                    type: 'tool',
+                    tool: 'read',
+                    callID: 'tool_read_1',
+                    messageID: 'msg_read',
+                    sessionID: 'sess_current',
+                    state: { status: 'completed', output: 'file content' },
+                },
+            },
+        });
+        stream.push({
+            type: 'message.updated',
+            properties: {
+                sessionID: 'sess_current',
+                info: {
+                    id: 'msg_read',
+                    role: 'assistant',
+                    sessionID: 'sess_current',
+                    finish: 'tool-calls',
+                    time: { created: 1, completed: 2 },
+                },
+            },
+        });
+        await flushMicrotasks();
+        clock.tick(1000);
+
+        expect(closeSpy.called).to.equal(false);
+        expect(abortSpy.called).to.equal(false);
+        expect(events.some((event: any) => event?.properties?.info?.id === 'msg_read')).to.equal(true);
+        expect(logs.some((line) => line.includes('keeping event stream open after read-only tool boundary'))).to.equal(true);
+
+        stream.push({
+            type: 'message.updated',
+            properties: {
+                sessionID: 'sess_current',
+                info: { id: 'msg_edit', role: 'assistant', sessionID: 'sess_current', time: { created: 3 } },
+            },
+        });
+        stream.push({
+            type: 'message.part.updated',
+            properties: {
+                sessionID: 'sess_current',
+                part: {
+                    type: 'tool',
+                    tool: 'edit_file',
+                    callID: 'tool_edit_1',
+                    messageID: 'msg_edit',
+                    sessionID: 'sess_current',
+                    state: { status: 'pending', input: { path: 'test.cpp' } },
+                },
+            },
+        });
+        stream.push({
+            type: 'message.part.updated',
+            properties: {
+                sessionID: 'sess_current',
+                part: {
+                    type: 'tool',
+                    tool: 'edit_file',
+                    callID: 'tool_edit_1',
+                    messageID: 'msg_edit',
+                    sessionID: 'sess_current',
+                    state: { status: 'completed', output: 'ok' },
+                },
+            },
+        });
+        stream.push({
+            type: 'message.updated',
+            properties: {
+                sessionID: 'sess_current',
+                info: {
+                    id: 'msg_edit',
+                    role: 'assistant',
+                    sessionID: 'sess_current',
+                    finish: 'tool-calls',
+                    time: { created: 3, completed: 4 },
+                },
+            },
+        });
+        await flushMicrotasks();
+        clock.tick(250);
+
+        expect(closeSpy.calledOnceWith(0)).to.equal(true);
+    });
+
     it('cancel waits for the abort grace period before closing the event stream', async () => {
         const transport = createTransport(serverConfig());
         const closeSpy = sinon.spy();

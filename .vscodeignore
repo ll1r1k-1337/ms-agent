@@ -6,6 +6,8 @@
 tsconfig.json
 .gitignore
 .yarnrc
+.claude/**
+.agents/**
 
 # 源码与测试文件
 src/**
@@ -18,9 +20,11 @@ test/**
 .git/**
 .github/**
 
-# 依赖
-node_modules/**
-.graphify-out/**
+# 打包噪音
+.opencode/**
+coverage/**
+graphify-out/**
+raw/**
 
 # 临时文件
 *.log

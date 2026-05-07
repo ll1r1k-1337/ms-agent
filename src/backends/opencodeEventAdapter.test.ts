@@ -17,7 +17,9 @@ import {
     parseEventLine,
     extractTextDelta,
     extractErrorMessage,
+    extractAssistantFinishReason,
     isCompletionEvent,
+    isToolCallContinuationBoundary,
     extractSessionId,
     extractMessageRole,
     extractMessageId,
@@ -121,6 +123,29 @@ describe('opencodeEventAdapter', () => {
                 name: 'read_file',
                 params: { path: 'test.cpp' },
                 toolCallId: 'sse_call_123',
+            });
+        });
+
+        it('should extract pending OpenCode ToolPart calls from SSE properties.part format', () => {
+            const event: OpenCodeEvent = {
+                type: 'message.part.updated',
+                properties: {
+                    part: {
+                        type: 'tool',
+                        tool: 'read_file',
+                        callID: 'tc_read_1',
+                        state: {
+                            type: 'pending',
+                            input: '{"path":"test.cpp"}',
+                        },
+                    },
+                },
+            };
+            const result = extractToolCall(event);
+            expect(result).to.deep.equal({
+                name: 'read_file',
+                params: { path: 'test.cpp' },
+                toolCallId: 'tc_read_1',
             });
         });
 
@@ -408,6 +433,74 @@ describe('opencodeEventAdapter', () => {
                 type: 'message.updated',
                 properties: { info: { role: 'user', time: { completed: 1735080000000 } } },
             })).to.be.false;
+        });
+    });
+
+    describe('extractAssistantFinishReason', () => {
+        it('should extract tool-calls from assistant message.updated', () => {
+            const event: OpenCodeEvent = {
+                type: 'message.updated',
+                properties: {
+                    info: {
+                        role: 'assistant',
+                        finish: 'tool-calls',
+                        time: { completed: 1735080000000 },
+                    },
+                },
+            };
+            expect(extractAssistantFinishReason(event)).to.equal('tool-calls');
+        });
+
+        it('should extract stop from assistant message.updated', () => {
+            const event: OpenCodeEvent = {
+                type: 'message.updated',
+                properties: {
+                    info: {
+                        role: 'assistant',
+                        finish: 'stop',
+                        time: { completed: 1735080000000 },
+                    },
+                },
+            };
+            expect(extractAssistantFinishReason(event)).to.equal('stop');
+        });
+
+        it('should return null when finish is missing', () => {
+            const event: OpenCodeEvent = {
+                type: 'message.updated',
+                properties: {
+                    info: {
+                        role: 'assistant',
+                        time: { completed: 1735080000000 },
+                    },
+                },
+            };
+            expect(extractAssistantFinishReason(event)).to.be.null;
+        });
+
+        it('should identify tool-call continuation boundaries', () => {
+            const toolBoundary: OpenCodeEvent = {
+                type: 'message.updated',
+                properties: {
+                    info: {
+                        role: 'assistant',
+                        finish: 'tool-calls',
+                        time: { completed: 1735080000000 },
+                    },
+                },
+            };
+            const stopBoundary: OpenCodeEvent = {
+                type: 'message.updated',
+                properties: {
+                    info: {
+                        role: 'assistant',
+                        finish: 'stop',
+                        time: { completed: 1735080000000 },
+                    },
+                },
+            };
+            expect(isToolCallContinuationBoundary(toolBoundary)).to.be.true;
+            expect(isToolCallContinuationBoundary(stopBoundary)).to.be.false;
         });
     });
 

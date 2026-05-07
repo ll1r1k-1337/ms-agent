@@ -6,14 +6,13 @@ import { LLMConfig } from '../llm/configResolver';
 describe('createFixBackend', () => {
     it('always returns OpenCodeFixBackend', () => {
         const config: LLMConfig = {
-            modelName: 'opencode/big-pickle',
+            modelName: 'opencode/minimax-m2.5-free',
             providerID: 'opencode',
-            modelID: 'big-pickle',
-            modelFullName: 'opencode/big-pickle',
+            modelID: 'minimax-m2.5-free',
+            modelFullName: 'opencode/minimax-m2.5-free',
             timeoutMs: 300000,
             opencodeServePort: 7325,
             opencodeCliPath: 'opencode',
-            opencodeApiKey: '',
         };
 
         const backend = createFixBackend(config);

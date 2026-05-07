@@ -52,12 +52,21 @@ describe('OpenCodeSession', () => {
     let session: OpenCodeSession;
     let tempDir: string;
     let testFilePath: string;
+    let outputLines: string[];
+    let previousOutputChannel: unknown;
 
     const baseOptions = () => ({
         prompt: 'fix this code',
         workspaceRoot: tempDir,
         resolvedPath: testFilePath,
         originalContent: 'int main() { return 0; }',
+        diagnostic: {
+            errorType: 'OUT_OF_BOUNDS' as any,
+            fileName: testFilePath,
+            lineNumber: 1,
+            addressSpace: 'GM',
+            byteSize: 4,
+        },
         timeoutMs: 5000,
     });
 
@@ -67,9 +76,19 @@ describe('OpenCodeSession', () => {
         fs.writeFileSync(testFilePath, 'int main() { return 0; }', 'utf-8');
         transport = new MockTransport();
         session = new OpenCodeSession(transport);
+        outputLines = [];
+        previousOutputChannel = (global as any).msAgentOutputChannel;
+        (global as any).msAgentOutputChannel = {
+            appendLine: (line: string) => outputLines.push(line),
+        };
     });
 
     afterEach(() => {
+        if (previousOutputChannel === undefined) {
+            delete (global as any).msAgentOutputChannel;
+        } else {
+            (global as any).msAgentOutputChannel = previousOutputChannel;
+        }
         if (fs.existsSync(tempDir)) {
             fs.rmSync(tempDir, { recursive: true, force: true });
         }
@@ -167,7 +186,7 @@ describe('OpenCodeSession', () => {
         expect(result.explanationKind).to.equal('structured');
     });
 
-    it('reads session messages for a final explanation when streaming only contained planning text', async () => {
+    it('synthesizes a structured final explanation when streaming only contained planning text', async () => {
         transport.sessionMessages = [
             {
                 id: 'msg_plan',
@@ -207,13 +226,13 @@ describe('OpenCodeSession', () => {
         const result = await runPromise;
 
         expect(result.success).to.equal(true);
-        expect(result.finalMessage).to.equal(
-            'Changed the DataCopy length to TILE_LENGTH so the write fits the local buffer.',
-        );
-        expect(result.explanationKind).to.equal('plain');
+        expect(result.finalMessage).to.include('Problem:');
+        expect(result.finalMessage).to.include('Fix:');
+        expect(result.finalMessage).to.include('Why it works:');
+        expect(result.explanationKind).to.equal('synthetic');
     });
 
-    it('reports explanation unavailable when the successful session contains no final explanation', async () => {
+    it('synthesizes a structured final explanation when the successful session contains no final explanation', async () => {
         transport.sessionMessages = [
             {
                 id: 'msg_plan',
@@ -245,10 +264,354 @@ describe('OpenCodeSession', () => {
         const result = await runPromise;
 
         expect(result.success).to.equal(true);
-        expect(result.finalMessage).to.equal(
-            'OpenCode applied the fix but did not return an explanation in this session.',
-        );
-        expect(result.explanationKind).to.equal('missing');
+        expect(result.finalMessage).to.include('Problem:');
+        expect(result.finalMessage).to.include('Fix:');
+        expect(result.finalMessage).to.include('Why it works:');
+        expect(result.explanationKind).to.equal('synthetic');
+    });
+
+    it('synthesizes a structured final explanation when a successful patch is followed by an aborted assistant message', async () => {
+        transport.sessionMessages = [];
+
+        const runPromise = session.run(baseOptions());
+        fs.writeFileSync(testFilePath, 'int main() { return 42; }', 'utf-8');
+        transport.emitEvent({
+            type: 'message.updated',
+            properties: { info: { role: 'assistant', id: 'msg_patch', time: { completed: 1 }, finish: 'tool-calls' } },
+        });
+        transport.emitEvent({
+            type: 'message.updated',
+            properties: {
+                info: {
+                    role: 'assistant',
+                    id: 'msg_aborted',
+                    time: { completed: 2 },
+                    error: { name: 'MessageAbortedError', data: { message: 'Aborted' } },
+                },
+            },
+        });
+        const result = await runPromise;
+
+        expect(result.success).to.equal(true);
+        expect(result.outcome).to.equal('applied');
+        expect(result.finalMessage).to.include('Problem:');
+        expect(result.finalMessage).to.include('Fix:');
+        expect(result.finalMessage).to.include('Why it works:');
+        expect(result.explanationKind).to.equal('synthetic');
+    });
+
+    it('does not finalize on a read-only tool boundary with finish tool-calls', async () => {
+        const events: Array<{ type: string; payload: unknown }> = [];
+        session = new OpenCodeSession(transport, {
+            onEvent: (type, payload) => events.push({ type, payload }),
+        });
+
+        let settled = false;
+        const runPromise = session.run(baseOptions()).finally(() => {
+            settled = true;
+        });
+        transport.emitEvent({
+            type: 'message.updated',
+            properties: { info: { role: 'assistant', id: 'msg_read' } },
+        });
+        transport.emitEvent({
+            type: 'message.part.updated',
+            properties: {
+                part: {
+                    type: 'tool',
+                    tool: 'read_file',
+                    callID: 'tc_read_1',
+                    messageID: 'msg_read',
+                    state: { type: 'pending', input: '{"path":"test.cpp"}' },
+                },
+            },
+        });
+        transport.emitEvent({
+            type: 'message.part.updated',
+            properties: {
+                part: {
+                    type: 'tool',
+                    tool: 'read_file',
+                    callID: 'tc_read_1',
+                    messageID: 'msg_read',
+                    state: { type: 'completed', output: 'int main() { return 0; }' },
+                },
+            },
+        });
+        transport.emitEvent({
+            type: 'message.updated',
+            properties: {
+                info: {
+                    role: 'assistant',
+                    id: 'msg_read',
+                    finish: 'tool-calls',
+                    time: { completed: 1 },
+                },
+            },
+        });
+
+        await wait(25);
+        expect(settled).to.equal(false);
+        expect(events.filter((event) => event.type === 'session_end')).to.have.length(0);
+        expect(outputLines.some((line) => line.includes('waiting_for_continuation'))).to.equal(true);
+
+        transport.emitEvent({
+            type: 'message.updated',
+            properties: { info: { role: 'assistant', id: 'msg_final' } },
+        });
+        transport.emitEvent({
+            type: 'message.part.updated',
+            properties: {
+                part: {
+                    type: 'text',
+                    messageID: 'msg_final',
+                    text: 'NO_FIX_NEEDED: the fixture was already safe.',
+                },
+            },
+        });
+        transport.emitEvent({
+            type: 'message.updated',
+            properties: {
+                info: {
+                    role: 'assistant',
+                    id: 'msg_final',
+                    finish: 'stop',
+                    time: { completed: 2 },
+                },
+            },
+        });
+        const result = await runPromise;
+
+        expect(result.outcome).to.equal('no_change');
+        expect(result.finalMessage).to.equal('the fixture was already safe.');
+    });
+
+    it('continues after a read-only tool boundary and applies a later edit tool result', async () => {
+        const events: Array<{ type: string; payload: unknown }> = [];
+        session = new OpenCodeSession(transport, {
+            onEvent: (type, payload) => events.push({ type, payload }),
+        });
+
+        const runPromise = session.run(baseOptions());
+        transport.emitEvent({ type: 'session_start', sessionId: 'ses_read_edit' });
+        transport.emitEvent({
+            type: 'message.updated',
+            properties: { info: { role: 'assistant', id: 'msg_read' } },
+        });
+        transport.emitEvent({
+            type: 'message.part.updated',
+            properties: {
+                part: {
+                    type: 'tool',
+                    tool: 'read_file',
+                    callID: 'tc_read_1',
+                    messageID: 'msg_read',
+                    state: { type: 'pending', input: '{"path":"test.cpp"}' },
+                },
+            },
+        });
+        transport.emitEvent({
+            type: 'message.part.updated',
+            properties: {
+                part: {
+                    type: 'tool',
+                    tool: 'read_file',
+                    callID: 'tc_read_1',
+                    messageID: 'msg_read',
+                    state: { type: 'completed', output: 'int main() { return 0; }' },
+                },
+            },
+        });
+        transport.emitEvent({
+            type: 'message.updated',
+            properties: {
+                info: {
+                    role: 'assistant',
+                    id: 'msg_read',
+                    finish: 'tool-calls',
+                    time: { completed: 1 },
+                },
+            },
+        });
+        await wait(25);
+
+        transport.emitEvent({
+            type: 'message.updated',
+            properties: { info: { role: 'assistant', id: 'msg_edit' } },
+        });
+        transport.emitEvent({
+            type: 'message.part.updated',
+            properties: {
+                part: {
+                    type: 'tool',
+                    tool: 'edit_file',
+                    callID: 'tc_edit_1',
+                    messageID: 'msg_edit',
+                    state: { type: 'pending', input: '{"path":"test.cpp"}' },
+                },
+            },
+        });
+        fs.writeFileSync(testFilePath, 'int main() { return 42; }', 'utf-8');
+        transport.emitEvent({
+            type: 'message.part.updated',
+            properties: {
+                part: {
+                    type: 'tool',
+                    tool: 'edit_file',
+                    callID: 'tc_edit_1',
+                    messageID: 'msg_edit',
+                    state: { type: 'completed', output: 'ok' },
+                },
+            },
+        });
+        transport.emitEvent({
+            type: 'message.updated',
+            properties: {
+                info: {
+                    role: 'assistant',
+                    id: 'msg_edit',
+                    finish: 'tool-calls',
+                    time: { completed: 2 },
+                },
+            },
+        });
+        const result = await runPromise;
+
+        expect(result.success).to.equal(true);
+        expect(result.outcome).to.equal('applied');
+        expect(result.fileChanged).to.equal(true);
+        expect(result.explanationKind).to.equal('synthetic');
+        expect(events.filter((event) => event.type === 'session_end')).to.have.length(1);
+        expect(outputLines.some((line) => line.includes('tool_call name=read_file id=tc_read_1 kind=read'))).to.equal(true);
+        expect(outputLines.some((line) => line.includes('tool_call name=edit_file id=tc_edit_1 kind=edit'))).to.equal(true);
+        expect(outputLines.some((line) => line.includes('waiting_for_continuation'))).to.equal(true);
+        expect(outputLines.some((line) => line.includes('finalize_check diskChanged=true'))).to.equal(true);
+    });
+
+    it('still rejects a later C++ code block after a read-only tool boundary', async () => {
+        const runPromise = session.run(baseOptions());
+        transport.emitEvent({
+            type: 'message.updated',
+            properties: { info: { role: 'assistant', id: 'msg_read' } },
+        });
+        transport.emitEvent({
+            type: 'message.part.updated',
+            properties: {
+                part: {
+                    type: 'tool',
+                    tool: 'read_file',
+                    callID: 'tc_read_1',
+                    messageID: 'msg_read',
+                    state: { type: 'pending', input: '{"path":"test.cpp"}' },
+                },
+            },
+        });
+        transport.emitEvent({
+            type: 'message.part.updated',
+            properties: {
+                part: {
+                    type: 'tool',
+                    tool: 'read_file',
+                    callID: 'tc_read_1',
+                    messageID: 'msg_read',
+                    state: { type: 'completed', output: 'int main() { return 0; }' },
+                },
+            },
+        });
+        transport.emitEvent({
+            type: 'message.updated',
+            properties: {
+                info: {
+                    role: 'assistant',
+                    id: 'msg_read',
+                    finish: 'tool-calls',
+                    time: { completed: 1 },
+                },
+            },
+        });
+        await wait(25);
+
+        transport.emitEvent({
+            type: 'message.updated',
+            properties: { info: { role: 'assistant', id: 'msg_code' } },
+        });
+        transport.emitEvent({
+            type: 'message.part.updated',
+            properties: {
+                part: {
+                    type: 'text',
+                    messageID: 'msg_code',
+                    text: '```cpp\nint main() { return 7; }\n```',
+                },
+            },
+        });
+        transport.emitEvent({
+            type: 'message.updated',
+            properties: {
+                info: {
+                    role: 'assistant',
+                    id: 'msg_code',
+                    finish: 'stop',
+                    time: { completed: 2 },
+                },
+            },
+        });
+        const result = await runPromise;
+
+        expect(result.success).to.equal(false);
+        expect(result.outcome).to.equal('failed');
+        expect(result.finalMessage).to.include('code block');
+        expect(fs.readFileSync(testFilePath, 'utf-8')).to.equal('int main() { return 0; }');
+        expect(outputLines.some((line) => line.includes('rejected_code_block reason=no-native-edit'))).to.equal(true);
+    });
+
+    it('does not mark an edit tool as applied unless disk content really changed', async () => {
+        const runPromise = session.run(baseOptions());
+        transport.emitEvent({
+            type: 'message.updated',
+            properties: { info: { role: 'assistant', id: 'msg_edit' } },
+        });
+        transport.emitEvent({
+            type: 'message.part.updated',
+            properties: {
+                part: {
+                    type: 'tool',
+                    tool: 'edit_file',
+                    callID: 'tc_edit_1',
+                    messageID: 'msg_edit',
+                    state: { type: 'pending', input: '{"path":"test.cpp"}' },
+                },
+            },
+        });
+        transport.emitEvent({
+            type: 'message.part.updated',
+            properties: {
+                part: {
+                    type: 'tool',
+                    tool: 'edit_file',
+                    callID: 'tc_edit_1',
+                    messageID: 'msg_edit',
+                    state: { type: 'completed', output: 'ok' },
+                },
+            },
+        });
+        transport.emitEvent({
+            type: 'message.updated',
+            properties: {
+                info: {
+                    role: 'assistant',
+                    id: 'msg_edit',
+                    finish: 'tool-calls',
+                    time: { completed: 1 },
+                },
+            },
+        });
+        const result = await runPromise;
+
+        expect(result.success).to.equal(false);
+        expect(result.outcome).to.equal('failed');
+        expect(result.fileChanged).to.equal(false);
+        expect(outputLines.some((line) => line.includes('finalize_check diskChanged=false'))).to.equal(true);
     });
 
     it('forwards OpenCode transport session metadata without treating it as completion', async () => {
@@ -375,6 +738,10 @@ describe('OpenCodeSession', () => {
         expect(result.fileChanged).to.equal(false);
     });
 });
+
+function wait(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 describe('detectPlaceholderResponse', () => {
     it('detects explicit placeholder phrases', () => {

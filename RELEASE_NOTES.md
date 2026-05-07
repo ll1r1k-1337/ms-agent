@@ -1,229 +1,104 @@
-# Release Notes - msAgent v0.2.0
+# Release Notes - msAgent v0.5.0
 
 **English** | [中文](#概述)
 
-**发布日期：** 2026-04-01
+**Release date:** 2026-05-06
 
 ## 概述
 
-msAgent v0.2.0 带来了革命性的 **实时流式 WebView 输出面板**，让开发者能够全程观察 LLM 的推理过程、工具调用和代码修改，大幅提升了修复过程的透明度和可控性。
+msAgent v0.5.0 把修复链路正式收敛成了 **OpenCode server + official SDK** 架构，并且把“修复成功后的 explanation 输出”升级成了强约束协议。
 
----
+这次版本的核心目标有两个：
 
-## ✨ 核心改进：实时流式 WebView
+- 降低 OpenCode 协议维护成本
+- 让成功修复的结果解释始终稳定、统一、可读
 
-### 1. 实时文本流输出
+## 核心改进
 
-修复过程中，WebView 面板会自动打开并实时显示 LLM 的生成内容：
+### 1. SDK 驱动的 OpenCode 架构
 
-- **逐字流式渲染** — 文本内容逐字出现，配合光标动画效果，完整呈现 LLM 的思考过程
-- **完整输出捕获** — 包括 LLM 的分析推理、错误诊断思路和修复策略描述
-- **自动滚动跟随** — 内容更新时自动滚动到最新位置，无需手动操作
+当前修复主链路为：
 
-**技术实现：**
-- 使用 AsyncGenerator 模式解析 SSE (Server-Sent Events) 流
-- 支持 Ollama、vLLM 等所有 OpenAI-compatible 后端的流式输出
-- 兼容 qwen3 系列模型的 `reasoning` 字段（思考过程）
-
----
-
-### 2. 工具调用可视化
-
-Agent 循环中的每个工具调用都会在 WebView 中清晰展示：
-
-#### 工具调用卡片
-```
-🔧 Tool Call: read_file
-   Parameters:
-   - path: "/workspace/operator/add_custom.cpp"
-   
-   Result:
-   ✓ File loaded (152 lines)
+```text
+fixService
+  -> OpenCodeFixBackend
+  -> opencodeTransport
+  -> opencodeTurnRunner
+  -> opencodeSdkClient
+  -> local opencode serve
 ```
 
-#### 支持的工具类型
-- `read_file` — 读取源文件内容，显示文件路径和行数
-- `edit_file` — 应用代码修改，显示旧文本和新文本对比
-- `list_files` — 列出工作区文件，显示文件树结构
-- `read_diagnostics` — 获取诊断信息，显示错误详情
+这意味着：
 
-**交互体验：**
-- 工具调用以独立区块显示，带有图标标识
-- 参数以格式化 JSON 展示，易于阅读
-- 执行结果实时显示，成功/失败状态清晰
-- 工具调用计数实时更新（如 "Tool Calls: 3/10"）
+- 扩展会复用或自动拉起本地 `opencode serve`
+- Session / event / abort / message 获取统一走官方 `@opencode-ai/sdk`
+- 不再依赖仓库主路径中的手写 HTTP + SSE 客户端实现
 
----
+### 2. 成功修复 explanation 强约束
 
-### 3. 代码对比视图（Side-by-Side Diff）
+成功应用修复时，Fix Details 现在统一展示三段式 explanation：
 
-当 Agent 调用 `edit_file` 工具修改代码时，WebView 会渲染专业的 diff 视图：
+- `Problem:`
+- `Fix:`
+- `Why it works:`
 
-```
-┌─────────────────────────────────────────────────┐
-│  Original Code (Left)  │  Modified Code (Right) │
-├─────────────────────────────────────────────────┤
-│   int data[10];        │   int data[11];  [+1] │ ← 绿色高亮
-│   for(int i=0; i<10;   │   for(int i=0; i<11;  │ ← 绿色高亮
-│       i++) {           │       i++) {           │
-│       data[i] = 0;     │       data[i] = 0;     │
-│   }                    │   }                    │
-│   free(ptr);  [-]      │                        │ ← 红色删除线
-└─────────────────────────────────────────────────┘
-```
+如果 OpenCode 应用了 patch，但没有在 session 中持久化自然语言 explanation，msAgent 会基于：
 
-**视觉设计：**
-- ✅ **新增行** — 绿色背景高亮，显示新增内容
-- ❌ **删除行** — 红色背景标记，显示被移除的代码
-- 📝 **修改行** — 黄色背景，显示变更前后对比
-- 行号清晰标注，便于定位
+- 当前诊断
+- 实际落地的 patch / diff
+- 最终文件内容
 
-**实现技术：**
-- 使用 diff2html 渲染引擎（CDN 加载）
-- highlight.js 提供语法高亮
-- 支持 C/C++ 语法识别
+自动生成一份 **synthetic explanation**。
 
----
+这让成功态不再出现：
 
-### 4. 停止按钮与取消控制
+- `Explanation unavailable`
 
-WebView 提供实时的修复流程控制：
+### 3. 更稳的成功判定
 
-- **⏸ Stop Button** — 顶部工具栏的停止按钮，点击即可中断当前 LLM 生成
-- **即时取消** — 停止信号传递到 Agent 循环，立即终止后续工具调用
-- **状态反馈** — 点击后显示 "Fix stopped by user" 提示
+v0.5.0 继续保持保守的协议安全语义：
 
-**底层机制：**
-- CancellationToken 跨组件传递
-- AbortSignal getter 模式确保实时响应
-- 所有 LLM HTTP 请求支持中断
+- `session.idle`、`server.disconnect` 这类软关闭不算成功
+- 只有确认磁盘真的发生改动，才算 `applied`
+- transport 只会在 `session.run()` 完整 settle 后释放
 
----
+同时补上了一个重要边界：
 
-### 5. 安全 CSP 机制
+- 如果 patch 已经成功落盘，但后续 assistant explanation message 因 `MessageAbortedError` 中断，结果仍会保持成功，并补上 synthetic explanation
 
-WebView 严格遵循 VSCode 安全规范：
+### 4. 更好的修复体验
 
-- **Content Security Policy** — 使用 `webview.cspSource` 和 nonce 机制
-- **无外部依赖** — 所有资源通过 VSCode API 加载，不依赖外部 CDN
-- **只读交互** — 禁止用户输入，仅作为输出展示窗口
-- **右键菜单限制** — WebView 内禁用右键菜单（VSCode 默认行为）
+Fix Details 面板和修复流程的体验也同步收紧了：
 
-**CSP 配置示例：**
-```html
-<meta http-equiv="Content-Security-Policy" 
-      content="default-src 'none'; 
-               style-src ${webview.cspSource} 'unsafe-inline'; 
-               script-src 'nonce-${nonce}';">
-```
+- 连接阶段更聚焦 `Starting OpenCode` / `Connecting to OpenCode`
+- 运行阶段更聚焦 `Repairing`
+- 结束阶段更聚焦 `Verifying changes`
+- 成功修复只移除当前问题高亮，不会把同文件其他问题一起清掉
 
----
+## 测试与验证
 
-## 🔧 技术架构升级
+这次版本重点补了以下回归覆盖：
 
-### 新增组件
+- applied patch + no assistant explanation
+- applied patch + aborted follow-up assistant message
+- successful fix preserves other diagnostics in the same file
+- UI renders `structured` and `synthetic` explanations consistently
 
-| 文件 | 功能 |
-|---|---|
-| `src/webview/webviewPanelProvider.ts` | WebView 面板生命周期管理 |
-| `src/webview/messages.ts` | WebView ↔ Extension 消息协议定义 |
-| `src/llm/types.ts` | Streaming 类型定义（StreamChunk, StreamingLLMProvider） |
-
-### 消息协议
-
-WebView 与 Extension 通过 JSON 消息通信：
-
-```typescript
-// Extension → WebView
-{ type: 'text_chunk', content: 'string' }
-{ type: 'tool_use_start', toolCall: { id, name, input } }
-{ type: 'tool_result', toolCallId: 'string', result: 'string' }
-{ type: 'diff', oldText: 'string', newText: 'string', filePath: 'string' }
-{ type: 'finish', message: 'string' }
-
-// WebView → Extension
-{ type: 'stop_fix' }
-```
-
----
-
-## 📊 性能优化
-
-- **零额外依赖** — 使用原生 JavaScript AsyncGenerator，无需第三方流式库
-- **轻量渲染** — HTML 内联 CSS，避免额外网络请求
-- **内存友好** — 流式处理避免大文本缓存，实时清理已渲染内容
-
----
-
-## 🎯 使用体验
-
-### 工作流程演示
-
-1. **触发修复** — 点击灯泡图标或运行 `msAgent: Fix All Issues`
-2. **WebView 自动打开** — 侧边栏显示 "msAgent: Fix Details" 面板
-3. **观察 LLM 推理** — 文本流式出现，显示错误分析过程
-4. **查看工具调用** — 每次 read_file/edit_file 都清晰展示
-5. **审查代码变更** — diff 视图显示修改前后对比
-6. **随时停止** — 发现问题时点击 Stop 按钮中断
-
----
-
-## 🐛 Bug 修复
-
-本次版本修复了以下 WebView 相关问题：
-
-1. ✅ **WebView 白屏问题** — CSP 配置错误导致外部 CDN 资源被阻止，已修复为完全本地化
-2. ✅ **Ollama 流式解析错误** — tool_calls 参数格式差异（对象 vs 字符串），现已兼容处理
-3. ✅ **取消按钮无效** — AbortSignal snapshot 模式导致取消信号不更新，已改为 getter 模式
-4. ✅ **diff 视图缺失** — edit_file 工具调用未触发 diff 显示，现已集成完整 diff 流程
-5. ✅ **工具调用 ID 缺失** — Ollama 返回的 tool_calls 无 ID 字段，已添加自动生成逻辑
-
----
-
-## 📚 文档更新
-
-- ✅ [README.md](./README.md) — 添加 WebView 功能说明和使用截图
-- ✅ [README_EN.md](./README_EN.md) — 英文版同步更新
-- ✅ [CHANGELOG.md](./CHANGELOG.md) — 详细版本历史记录
-- ✅ [SPEC.md](./SPEC.md) — 技术规范文档（新增）
-
----
-
-## 🔮 下一版本计划（v0.3.0）
-
-- [ ] 本地语法高亮（下载 highlight.js 到本地，避免 CDN）
-- [ ] 本地 diff 渲染（下载 diff2html 到本地）
-- [ ] TreeView 诊断浏览器（按错误类型分组）
-- [ ] 修复历史记录与回滚功能
-- [ ] 多文件同时修复支持
-- [ ] 配置向导（首次使用引导）
-
----
-
-## 📦 安装升级
-
-### 从源码构建
-
-```bash
-git pull origin main
-npm install
-npm run compile
-```
-
-### VSIX 安装
+推荐验证命令：
 
 ```bash
 npm run compile
-npx vsce package
-# 生成 msagent-0.2.0.vsix
+npm test
+npm run test:integration
+npm run test:coverage
 ```
 
----
+## 升级提醒
 
-## 🤝 反馈与贡献
+当前版本的对外事实是：
 
-遇到问题或有改进建议？欢迎提交 [Issue](../../issues) 或 [Pull Request](../../pulls)！
+- msAgent 是 **OpenCode-only**
+- 修复路径是 **local `opencode serve` + official SDK**
+- 成功修复 explanation 必须为三段式
 
----
-
-感谢使用 msAgent v0.2.0！🎉
+如果你看到成功修复后仍出现 `Explanation unavailable`，应优先视为回归。

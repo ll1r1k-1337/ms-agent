@@ -162,8 +162,6 @@ describe('fixDetailsScript string inclusion', () => {
     expect(fixDetailsScript).to.include('Problem Explanation');
     expect(fixDetailsScript).to.include('Fix Explanation');
     expect(fixDetailsScript).to.include('Why it works');
-    expect(fixDetailsScript).to.include('OpenCode Explanation');
-    expect(fixDetailsScript).to.include('Explanation unavailable');
     expect(fixDetailsScript).to.include('Full Explanation');
     expect(fixDetailsScript).to.include('Failure Reason');
     expect(fixDetailsScript).to.include("if (!finished) {");

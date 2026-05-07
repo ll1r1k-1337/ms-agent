@@ -59,6 +59,20 @@ function logFixQueue(message: string): void {
     getOutputChannel().appendLine(`[QUEUE] ${message}`);
 }
 
+function logFixResult(
+    outcome: 'applied' | 'no_change' | 'failed',
+    finalMessage: string,
+    explanationKind?: 'structured' | 'synthetic' | 'plain' | 'missing',
+): void {
+    const normalizedMessage = String(finalMessage || '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    const kind = explanationKind ?? 'none';
+    getOutputChannel().appendLine(
+        `[FIX] session_end outcome=${outcome} explanationKind=${kind} message=${normalizedMessage || '(empty)'}`,
+    );
+}
+
 function getOutputChannel(): vscode.OutputChannel {
     if (!outputChannel) {
         const globalChannel = (global as any).msAgentOutputChannel;
@@ -586,13 +600,26 @@ async function fixSingleDiagnostic(
                                 });
                                 break;
                             case 'session_end':
+                                {
+                                    const sessionEndPayload = payload as {
+                                        success: boolean;
+                                        outcome: 'applied' | 'no_change' | 'failed';
+                                        finalMessage: string;
+                                        explanationKind?: 'structured' | 'synthetic' | 'plain' | 'missing';
+                                    };
+                                    logFixResult(
+                                        sessionEndPayload.outcome,
+                                        sessionEndPayload.finalMessage,
+                                        sessionEndPayload.explanationKind,
+                                    );
+                                }
                                 postRunMessage({
                                     type: 'session_end',
                                     payload: payload as {
                                         success: boolean;
                                         outcome: 'applied' | 'no_change' | 'failed';
                                         finalMessage: string;
-                                        explanationKind?: 'structured' | 'plain' | 'missing';
+                                        explanationKind?: 'structured' | 'synthetic' | 'plain' | 'missing';
                                     },
                                 });
                                 break;
@@ -671,12 +698,15 @@ async function fixSingleDiagnostic(
             },
         );
 
-        const removedDiagnostic = (
+        const fixSucceeded = (
             !cancellationTokenSource.token.isCancellationRequested
             && result.outcome === 'applied'
             && result.success
             && result.fileChanged
-        )
+        );
+        // Only clear the diagnostic that was actually fixed so unrelated
+        // issues in the same file keep their highlights and remain actionable.
+        const removedDiagnostic = fixSucceeded
             ? DiagnosticsManager.removeDiagnostic(diagnostic)
             : false;
 
@@ -723,6 +753,7 @@ function formatOpenCodeConnectionError(
 
 function handleFixError(e: unknown, config: ReturnType<typeof getLLMConfig>) {
     const message = e instanceof Error ? e.message : String(e);
+    getOutputChannel().appendLine(`[FIX] exception ${message}`);
     if (
         message.includes('Transport error')
         || message.includes('ECONNREFUSED')
@@ -755,6 +786,10 @@ export function _resetFixState() {
     activeFixTitle = undefined;
     pausedActiveFixTask = undefined;
     fixedSanitizerIndices.clear();
+}
+
+export function _resetFixOutputChannelForTests() {
+    outputChannel = undefined;
 }
 
 export function _enqueueFixTask(task: Omit<QueuedFixTask, 'id'> & { id?: string }) {

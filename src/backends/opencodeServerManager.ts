@@ -4,7 +4,6 @@ import * as http from 'http';
 export interface OpenCodeServerManagerConfig {
     cliPath?: string;
     servePort?: number;
-    apiKey?: string;
     workspaceRoot?: string;
     timeoutMs: number;
 }
@@ -203,10 +202,7 @@ async function ensureManagedServer(
         child = deps.spawn(cliPath, ['serve', '--port', String(port)], {
             timeout: config.timeoutMs,
             cwd: config.workspaceRoot,
-            env: {
-                ...process.env,
-                ...(config.apiKey ? { OPENCODE_API_KEY: config.apiKey } : {}),
-            },
+            env: process.env,
         });
     } catch (error) {
         throw wrapSpawnError(error, cliPath);

@@ -1,0 +1,110 @@
+{
+  "description": "OpenCode completes a read-only tool stage with finish=tool-calls, then continues by returning a C/C++ code block instead of applying a native edit. msAgent must wait through the read-only boundary but still reject the code block and preserve the original file.",
+  "steps": [
+    {
+      "kind": "event",
+      "event": {
+        "type": "message.updated",
+        "properties": {
+          "info": {
+            "role": "assistant",
+            "id": "msg_read"
+          }
+        }
+      }
+    },
+    {
+      "kind": "event",
+      "event": {
+        "type": "message.part.updated",
+        "properties": {
+          "part": {
+            "type": "tool",
+            "tool": "read_file",
+            "callID": "tc_read_1",
+            "messageID": "msg_read",
+            "state": {
+              "type": "pending",
+              "input": "{\"path\":\"kernel.cpp\"}"
+            }
+          }
+        }
+      }
+    },
+    {
+      "kind": "event",
+      "event": {
+        "type": "message.part.updated",
+        "properties": {
+          "part": {
+            "type": "tool",
+            "tool": "read_file",
+            "callID": "tc_read_1",
+            "messageID": "msg_read",
+            "state": {
+              "type": "completed",
+              "output": "int main() { return 0; }\\n"
+            }
+          }
+        }
+      }
+    },
+    {
+      "kind": "event",
+      "event": {
+        "type": "message.updated",
+        "properties": {
+          "info": {
+            "role": "assistant",
+            "id": "msg_read",
+            "finish": "tool-calls",
+            "time": {
+              "completed": 1735080000000
+            }
+          }
+        }
+      }
+    },
+    {
+      "kind": "event",
+      "event": {
+        "type": "message.updated",
+        "properties": {
+          "info": {
+            "role": "assistant",
+            "id": "msg_code"
+          }
+        }
+      }
+    },
+    {
+      "kind": "event",
+      "event": {
+        "type": "message.part.updated",
+        "properties": {
+          "part": {
+            "type": "text",
+            "messageID": "msg_code",
+            "text": "```cpp\nint main() { return 7; }\n```"
+          }
+        }
+      }
+    },
+    {
+      "kind": "event",
+      "event": {
+        "type": "message.updated",
+        "properties": {
+          "info": {
+            "role": "assistant",
+            "id": "msg_code",
+            "finish": "stop",
+            "time": {
+              "completed": 1735080000100
+            }
+          }
+        }
+      }
+    }
+  ]
+}

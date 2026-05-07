@@ -1,4 +1,9 @@
-export const DEFAULT_OPENCODE_MODEL = 'opencode/big-pickle';
+export const DEFAULT_OPENCODE_MODEL = 'opencode/minimax-m2.5-free';
+export const LEGACY_DEFAULT_OPENCODE_MODELS = [
+    'opencode/big-pickle',
+    'opencode/gpt-5-nano',
+] as const;
+export const LEGACY_DEFAULT_OPENCODE_MODEL = LEGACY_DEFAULT_OPENCODE_MODELS[0];
 
 export interface LLMConfig {
     /** Full OpenCode model ID persisted in settings, for example "provider/model". */
@@ -14,7 +19,6 @@ export interface LLMConfig {
     timeoutMs: number;
     opencodeServePort: number;
     opencodeCliPath: string;
-    opencodeApiKey: string;
 }
 
 export interface ConfigReader {
@@ -58,8 +62,7 @@ export function resolveLLMConfig(cfg: ConfigReader): LLMConfig {
         modelFullName: model.modelFullName,
         modelWarning: model.modelWarning,
         timeoutMs: cfg.get<number>('timeoutMs') ?? 300000,
-        opencodeServePort: cfg.get<number>('opencodeServePort') ?? 7325,
+        opencodeServePort: cfg.get<number>('opencodeServePort') ?? 4096,
         opencodeCliPath: cfg.get<string>('opencodeCliPath') || 'opencode',
-        opencodeApiKey: cfg.get<string>('opencodeApiKey') || '',
     };
 }

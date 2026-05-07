@@ -1,4 +1,13 @@
-import { extractSessionId, isCompletionEvent, OpenCodeEvent } from './opencodeEventAdapter';
+import {
+    extractAssistantFinishReason,
+    extractMessageId,
+    extractSessionId,
+    extractToolCall,
+    extractToolResult,
+    isCompletionEvent,
+    isToolCallContinuationBoundary,
+    OpenCodeEvent,
+} from './opencodeEventAdapter';
 import {
     OpenCodePromptBody,
     OpenCodeSdkClient,
@@ -20,6 +29,40 @@ export interface OpenCodeTurnRunnerCallbacks {
     onProgress?: (message: string) => void;
     onError?: (error: Error) => void;
     onClose?: (exitCode: number | null) => void;
+}
+
+type ToolKind = 'read' | 'edit' | 'other';
+
+const EDIT_TOOL_NAMES: ReadonlySet<string> = new Set([
+    'edit_file',
+    'apply_patch',
+    'write_file',
+    'write',
+    'patch',
+]);
+
+const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
+    'read',
+    'read_file',
+    'glob',
+    'grep',
+    'list',
+    'list_files',
+]);
+
+function isRecordLike(value: unknown): value is Record<string, unknown> {
+    return value !== null && typeof value === 'object';
+}
+
+function classifyToolKind(name: string): ToolKind {
+    const normalized = name.trim().toLowerCase();
+    if (EDIT_TOOL_NAMES.has(normalized)) {
+        return 'edit';
+    }
+    if (READ_ONLY_TOOL_NAMES.has(normalized)) {
+        return 'read';
+    }
+    return 'other';
 }
 
 function getConfiguredModel(
@@ -67,6 +110,11 @@ export class OpenCodeTurnRunner {
     private pendingSessionEvents: unknown[] = [];
     private eventSubscriptionClose: (() => void) | null = null;
     private sdkClient: OpenCodeSdkClient | null = null;
+    private seenReadOnlyToolCall = false;
+    private seenEditToolCall = false;
+    private seenEditToolResult = false;
+    private seenFileChangeSignal = false;
+    private readonly toolKindsById = new Map<string, ToolKind>();
 
     constructor(
         config: OpenCodeTurnRunnerConfig,
@@ -164,7 +212,6 @@ export class OpenCodeTurnRunner {
         this.sdkClient = new OpenCodeSdkClient({
             baseUrl,
             timeoutMs: this.config.timeoutMs,
-            apiKey: this.config.apiKey,
         });
 
         this.setupHardTimeout();
@@ -229,8 +276,9 @@ export class OpenCodeTurnRunner {
         if (!this.shouldEmitEventForSession(event)) {
             return;
         }
+        this.trackRepairEvent(event);
         this.emitEvent(event);
-        if (this.isCompletionLikeEvent(event)) {
+        if (this.shouldCloseAfterCompletion(event)) {
             this.scheduleCompletionClose();
         }
     }
@@ -245,9 +293,44 @@ export class OpenCodeTurnRunner {
             if (!this.shouldEmitEventForSession(event)) {
                 continue;
             }
+            this.trackRepairEvent(event);
             this.emitEvent(event);
-            if (this.isCompletionLikeEvent(event)) {
+            if (this.shouldCloseAfterCompletion(event)) {
                 this.scheduleCompletionClose();
+            }
+        }
+    }
+
+    private trackRepairEvent(event: unknown): void {
+        const toolCall = extractToolCall(event);
+        if (toolCall) {
+            const toolCallId = toolCall.toolCallId || 'unknown';
+            const kind = classifyToolKind(toolCall.name);
+            this.toolKindsById.set(toolCallId, kind);
+            if (kind === 'read') {
+                this.seenReadOnlyToolCall = true;
+            } else if (kind === 'edit') {
+                this.seenEditToolCall = true;
+            }
+        }
+
+        const toolResult = extractToolResult(event);
+        if (toolResult) {
+            const kind = this.toolKindsById.get(toolResult.toolCallId) || 'other';
+            if (kind === 'edit' && !toolResult.isError) {
+                this.seenEditToolResult = true;
+            }
+        }
+
+        if (isRecordLike(event)) {
+            if (event.type === 'file.edited') {
+                this.seenFileChangeSignal = true;
+            }
+            if (event.type === 'session.diff' && isRecordLike(event.properties)) {
+                const diff = event.properties.diff;
+                if (Array.isArray(diff) && diff.length > 0) {
+                    this.seenFileChangeSignal = true;
+                }
             }
         }
     }
@@ -310,6 +393,24 @@ export class OpenCodeTurnRunner {
             this.clearTimers();
             this.emitClose(0);
         }, 250);
+    }
+
+    private shouldCloseAfterCompletion(event: unknown): boolean {
+        if (!this.isCompletionLikeEvent(event)) {
+            return false;
+        }
+        const openCodeEvent = event as OpenCodeEvent;
+        if (
+            isToolCallContinuationBoundary(openCodeEvent)
+            && !this.seenEditToolResult
+            && !this.seenFileChangeSignal
+        ) {
+            this.logger?.(
+                `[OpenCodeTurnRunner] keeping event stream open after read-only tool boundary session=${this.sessionId || 'unknown'} message=${extractMessageId(openCodeEvent) || 'unknown'} finish=${extractAssistantFinishReason(openCodeEvent) || 'none'} readOnly=${this.seenReadOnlyToolCall} editTool=${this.seenEditToolCall} editResult=${this.seenEditToolResult}`,
+            );
+            return false;
+        }
+        return true;
     }
 
     private isCompletionLikeEvent(event: unknown): boolean {

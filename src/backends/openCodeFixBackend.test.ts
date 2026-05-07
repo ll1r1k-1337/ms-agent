@@ -51,7 +51,6 @@ describe('OpenCodeFixBackend', () => {
         timeoutMs: 300000,
         opencodeCliPath: '/usr/bin/opencode',
         opencodeServePort: 7325,
-        opencodeApiKey: 'test-api-key',
     };
 
     const mockSessionResult = {
@@ -115,7 +114,6 @@ describe('OpenCodeFixBackend', () => {
         expect(createTransportStub.firstCall.args[0]).to.deep.equal({
             cliPath: '/usr/bin/opencode',
             servePort: 7325,
-            apiKey: 'test-api-key',
             timeoutMs: 300000,
             model: 'doubao-seed-2.0-code',
             providerID: 'volcengine-plan',
@@ -230,6 +228,7 @@ describe('OpenCodeFixBackend', () => {
         expect(retryPrompt).to.include('You MUST use OpenCode');
         expect(retryPrompt).to.include('Problem:');
         expect(retryPrompt).to.include('Why it works:');
+        expect(retryPrompt).to.include('msAgent will synthesize one from the applied patch and diagnostic');
         expect(retryPrompt).to.include('Your first assistant response MUST be the native edit action or a terminal marker');
         expect(retryPrompt).to.include('Do NOT emit process narration like "I will verify the patch"');
         expect(events.some((event) =>

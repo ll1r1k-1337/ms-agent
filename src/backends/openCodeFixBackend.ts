@@ -107,6 +107,7 @@ Required behavior:
 3. Use OpenCode's native edit capability to change ONLY the diagnostic target line unless an adjacent bound variable is strictly necessary.
 4. Preserve all other code, comments, whitespace, and formatting exactly.
 5. Do NOT describe a plan, verification steps, or what you are about to do before editing. Your first assistant response must be a native tool action, or a terminal marker if no edit is needed.
+   If you read the file first, continue in the same session and then call a write-capable native edit tool such as \`edit_file\` or \`apply_patch\`; a read-only tool call is not a fix.
 6. If the code is already correct or no safe code change is needed, respond with a single line:
    \`NO_FIX_NEEDED: <short reason>\`
 7. If you apply an edit, send a short explanation using this exact structure AFTER the native edit succeeds:
@@ -143,10 +144,13 @@ ${previousMessage}
 
 Try once more, but follow this stricter contract:
 - You MUST use OpenCode's native edit capability to modify the target file on disk.
+- If you read the file first, you MUST continue in the same session and call \`edit_file\` or \`apply_patch\` before completing.
+- Preferred native edit tools are \`edit_file\` or \`apply_patch\`; a read-only tool call is not a fix.
 - The edit MUST be minimal and focused on line ${diagnostic.lineNumber}.
 - Your first assistant response MUST be the native edit action or a terminal marker; do not emit planning prose first.
 - Do NOT answer with a code block, diff block, or prose-only "fixed" message.
 - After a successful native edit, explain the result using \`Problem:\`, \`Fix:\`, and \`Why it works:\`.
+- If you omit that three-part explanation, msAgent will synthesize one from the applied patch and diagnostic.
 - Do NOT emit process narration like "I will verify the patch" or "Let me inspect the file first".
 - If a native edit is not available, return exactly \`CANNOT_FIX: native edit tool unavailable\`.
 - If the code is already correct, return exactly \`NO_FIX_NEEDED: <short reason>\`.`;
@@ -188,7 +192,6 @@ function buildTransportConfig(config: ReturnType<typeof getLLMConfig>, workspace
     return {
         cliPath: config.opencodeCliPath,
         servePort: config.opencodeServePort,
-        apiKey: config.opencodeApiKey,
         timeoutMs: config.timeoutMs,
         model: config.modelID,
         providerID: config.providerID,
@@ -267,6 +270,7 @@ export class OpenCodeFixBackend implements FixBackend {
             firstResult = await this.runWithTransport(
                 primaryTransportConfig,
                 prompt,
+                diagnostic,
                 workspaceRoot,
                 resolvedPath,
                 originalContent,
@@ -297,6 +301,7 @@ export class OpenCodeFixBackend implements FixBackend {
         return await this.runWithTransport(
             primaryTransportConfig,
             retryPrompt,
+            diagnostic,
             workspaceRoot,
             resolvedPath,
             originalContent,
@@ -308,6 +313,7 @@ export class OpenCodeFixBackend implements FixBackend {
     private async runWithTransport(
         transportConfig: OpenCodeTransportConfig,
         prompt: string,
+        diagnostic: SanitizerDiagnostic,
         workspaceRoot: string,
         resolvedPath: string,
         originalContent: string,
@@ -330,6 +336,7 @@ export class OpenCodeFixBackend implements FixBackend {
                 workspaceRoot,
                 resolvedPath,
                 originalContent,
+                diagnostic,
                 timeoutMs,
                 mode: 'server',
                 model: transportConfig.modelFullName,
