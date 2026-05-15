@@ -1,7 +1,8 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import { FixBackend, FixCallbacks, FixContext, FixResult } from './fixBackend';
-import { MemErrorType, SanitizerDiagnostic } from '../parser/types';
+import { MemErrorType } from '../parser/types';
+import type { RepairIssue } from '../vscode/repairIssue';
 import { buildFixPrompt, loadSkill } from '../skills/skillLoader';
 import { getLLMConfig } from '../llm/config';
 import { createTransport, OpenCodeTransport, OpenCodeTransportConfig, TransportLogger } from './opencodeTransport';
@@ -50,7 +51,7 @@ function getLine(fileContent: string, lineNumber: number): string {
     return lines[index] || '';
 }
 
-function buildTargetedRepairHint(diagnostic: SanitizerDiagnostic, fileContent: string): string {
+function buildTargetedRepairHint(diagnostic: RepairIssue, fileContent: string): string {
     const targetLine = getLine(fileContent, diagnostic.lineNumber).trim();
     if (
         diagnostic.errorType === MemErrorType.OUT_OF_BOUNDS
@@ -64,7 +65,18 @@ function buildTargetedRepairHint(diagnostic: SanitizerDiagnostic, fileContent: s
     return '';
 }
 
-function buildOpenCodePrompt(diagnostic: SanitizerDiagnostic, fileContent: string): string {
+function formatTargetRange(diagnostic: RepairIssue): string {
+    if (!diagnostic.range) {
+        return `line ${diagnostic.lineNumber}`;
+    }
+    const { startLine, startCharacter, endLine, endCharacter } = diagnostic.range;
+    if (startLine === endLine) {
+        return `line ${startLine}, columns ${startCharacter + 1}-${endCharacter + 1}`;
+    }
+    return `lines ${startLine}:${startCharacter + 1}-${endLine}:${endCharacter + 1}`;
+}
+
+function buildOpenCodePrompt(diagnostic: RepairIssue, fileContent: string): string {
     const fixPrompt = buildFixPrompt(diagnostic);
     const skillContent = loadSkill('memcheck-skills') || '';
     const focusedSnippet = buildFocusedSnippet(fileContent, diagnostic.lineNumber);
@@ -80,7 +92,8 @@ function buildOpenCodePrompt(diagnostic: SanitizerDiagnostic, fileContent: strin
 ## Source File (for reference)
 
 File path: ${diagnostic.fileName}
-Error at line ${diagnostic.lineNumber}.
+Error target: ${formatTargetRange(diagnostic)}.
+Diagnostic message: ${diagnostic.message}
 
 \`\`\`cpp
 ${fileContent}
@@ -133,7 +146,7 @@ intent), respond with a single line of the exact form:
 and make no edits. Do not wrap either terminal marker line in a code block.`;
 }
 
-function buildRetryPrompt(prompt: string, diagnostic: SanitizerDiagnostic, previousMessage: string): string {
+function buildRetryPrompt(prompt: string, diagnostic: RepairIssue, previousMessage: string): string {
     return `${prompt}
 
 ## Retry Instruction
@@ -227,7 +240,7 @@ export class OpenCodeFixBackend implements FixBackend {
     }
 
     async executeFix(
-        diagnostic: SanitizerDiagnostic,
+        diagnostic: RepairIssue,
         context: FixContext,
         callbacks?: FixCallbacks,
     ): Promise<FixResult> {
@@ -313,7 +326,7 @@ export class OpenCodeFixBackend implements FixBackend {
     private async runWithTransport(
         transportConfig: OpenCodeTransportConfig,
         prompt: string,
-        diagnostic: SanitizerDiagnostic,
+        diagnostic: RepairIssue,
         workspaceRoot: string,
         resolvedPath: string,
         originalContent: string,

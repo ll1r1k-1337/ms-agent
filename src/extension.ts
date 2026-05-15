@@ -4,6 +4,7 @@ import * as vscode from 'vscode';
 import { DiagnosticsManager } from './vscode/diagnosticsManager';
 import {
     fixProblem,
+    fixIssue,
     fixAllDiagnostics,
     showFixDetailsPanel,
     getAiFixQueueSnapshot,
@@ -122,6 +123,15 @@ export async function activate(context: vscode.ExtensionContext) {
             return result;
         },
     );
+    /** Fix one caller-owned issue payload. executeCommand('msagent.fixIssue', request) */
+    const fixIssueCmd = vscode.commands.registerCommand(
+        'msagent.fixIssue',
+        async (request?: unknown): Promise<FixProblemResult> => {
+            const result = await fixIssue(request);
+            outputChannel.appendLine(`[CMD] msagent.fixIssue status=${result.status}`);
+            return result;
+        },
+    );
     const showFixDetailsCmd = vscode.commands.registerCommand('msagent.showFixDetails', () => {
         showFixDetailsPanel();
     });
@@ -163,6 +173,7 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         parseLogCmd,
         fixProblemCmd,
+        fixIssueCmd,
         showFixDetailsCmd,
         getAiFixQueueStatesCmd,
         getAiFixQueueSnapshotCmd,

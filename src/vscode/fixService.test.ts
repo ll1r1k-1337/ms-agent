@@ -1,4 +1,5 @@
 import { expect } from 'chai';
+import * as path from 'path';
 import * as sinon from 'sinon';
 import { DiagnosticsManager } from './diagnosticsManager';
 import {
@@ -9,6 +10,7 @@ import {
     getDiagnosticFixKey,
     getDiagnosticTitle,
     fixProblem,
+    fixIssue,
     _resetFixState,
     _enqueueFixTask,
     _setActiveFix,
@@ -24,6 +26,7 @@ import * as configModule from '../llm/config';
 import { FixCallbacks, FixContext } from '../backends/fixBackend';
 import { WebviewPanelProvider } from '../webview/webviewPanelProvider';
 import { SanitizerDiagnostic, MemErrorType, Severity, AddressSpace, BlockType } from '../parser/types';
+import { repairIssueFromSanitizerDiagnostic, RepairIssue } from './repairIssue';
 const vscode = require('vscode');
 
 describe('fixService', () => {
@@ -135,7 +138,7 @@ describe('fixService', () => {
                 key: 'k',
                 sanitizerIndex: 4,
                 title: 'Paused Task',
-                diagnostic: diag,
+                issue: repairIssueFromSanitizerDiagnostic(diag),
                 resolve: () => {},
             });
             const snapshot = getAiFixQueueSnapshot();
@@ -172,25 +175,25 @@ describe('fixService', () => {
         });
 
         it('searches workspace root for relative path', () => {
-            existsSyncStub.withArgs('/workspace/src/test.cpp').returns(true);
+            existsSyncStub.withArgs(path.normalize('/workspace/src/test.cpp')).returns(true);
             getLastLogDirStub.returns(undefined);
             const result = resolveFilePath('src/test.cpp', '/workspace');
-            expect(result).to.equal('/workspace/src/test.cpp');
+            expect(result).to.equal(path.normalize('/workspace/src/test.cpp'));
         });
 
         it('searches lastLogDir when not found in workspace', () => {
-            existsSyncStub.withArgs('/workspace/test.cpp').returns(false);
-            existsSyncStub.withArgs('/logs/test.cpp').returns(true);
+            existsSyncStub.withArgs(path.normalize('/workspace/test.cpp')).returns(false);
+            existsSyncStub.withArgs(path.normalize('/logs/test.cpp')).returns(true);
             getLastLogDirStub.returns('/logs');
             const result = resolveFilePath('test.cpp', '/workspace');
-            expect(result).to.equal('/logs/test.cpp');
+            expect(result).to.equal(path.normalize('/logs/test.cpp'));
         });
 
         it('falls back to workspace root when file not found anywhere', () => {
             existsSyncStub.returns(false);
             getLastLogDirStub.returns(undefined);
             const result = resolveFilePath('missing.cpp', '/workspace');
-            expect(result).to.equal('/workspace/missing.cpp');
+            expect(result).to.equal(path.normalize('/workspace/missing.cpp'));
         });
     });
 
@@ -466,6 +469,124 @@ describe('fixService', () => {
 
             expect(result.status).to.equal('completed');
             expect(removeDiagnosticStub.calledOnceWithExactly(diagnostic1)).to.equal(true);
+        });
+    });
+
+    describe('fixIssue direct payload handling', () => {
+        function stubWebview() {
+            sinon.stub(WebviewPanelProvider.prototype, 'postMessage');
+            sinon.stub(WebviewPanelProvider.prototype, 'createOrShow').returns({
+                webview: { postMessage: () => Promise.resolve(true) },
+                reveal: () => {},
+                dispose: () => {},
+                onDidDispose: () => {},
+            } as any);
+            sinon.stub(WebviewPanelProvider.prototype, 'clear');
+            sinon.stub(WebviewPanelProvider.prototype, 'onAction');
+            sinon.stub(WebviewPanelProvider.prototype, 'nextMessageId').callsFake(() => `msg_${Date.now()}`);
+            (global as any).msAgentContext = {
+                extensionUri: { fsPath: '/workspace' },
+                subscriptions: [],
+            };
+        }
+
+        function stubConfig() {
+            sinon.stub(configModule, 'getLLMConfig').returns({
+                modelName: 'opencode/minimax-m2.5-free',
+                providerID: 'opencode',
+                modelID: 'minimax-m2.5-free',
+                modelFullName: 'opencode/minimax-m2.5-free',
+                timeoutMs: 300000,
+                opencodeServePort: 7325,
+                opencodeCliPath: 'opencode',
+            });
+        }
+
+        it('rejects malformed payloads without starting a backend run', async () => {
+            const warningStub = sinon.stub(vscode.window, 'showWarningMessage');
+            const createBackendStub = sinon.stub(backendFactory, 'createFixBackend');
+
+            const result = await fixIssue({ message: 'missing uri and range' });
+
+            expect(result.status).to.equal('invalid_payload');
+            expect(warningStub.calledOnce).to.equal(true);
+            expect(String(warningStub.firstCall.args[0])).to.include('invalid fixIssue payload');
+            expect(createBackendStub.called).to.equal(false);
+        });
+
+        it('normalizes a caller-owned issue payload and runs a one-off fix', async () => {
+            stubWebview();
+            stubConfig();
+            let receivedIssue: RepairIssue | undefined;
+            sinon.stub(backendFactory, 'createFixBackend').returns({
+                name: 'opencode',
+                supportsStreaming: () => true,
+                cancel: () => {},
+                executeFix: async (
+                    issue: RepairIssue,
+                    _context: FixContext,
+                    callbacks?: FixCallbacks,
+                ) => {
+                    receivedIssue = issue;
+                    callbacks?.onEvent?.('session_start', { backend: 'opencode', mode: 'server' });
+                    callbacks?.onEvent?.('session_end', {
+                        success: true,
+                        outcome: 'applied',
+                        finalMessage: 'Problem: external issue\nFix: changed code\nWhy it works: safe.',
+                    });
+                    return {
+                        success: true,
+                        outcome: 'applied',
+                        finalMessage: 'Problem: external issue\nFix: changed code\nWhy it works: safe.',
+                        toolCallCount: 0,
+                        fileChanged: true,
+                        originalContent: 'before',
+                        newContent: 'after',
+                    };
+                },
+            } as any);
+            const removeDiagnosticStub = sinon.stub(DiagnosticsManager, 'removeDiagnostic');
+
+            const result = await fixIssue({
+                uri: vscode.Uri.file('/workspace/test.cpp'),
+                range: new vscode.Range(4, 2, 4, 12),
+                issueType: 'OUT_OF_BOUNDS',
+                message: 'copy writes past the local buffer',
+                severity: vscode.DiagnosticSeverity.Error,
+                details: {
+                    address: '0x1000',
+                    addressSpace: 'GM',
+                    byteSize: 4,
+                    kernelName: 'ExternalKernel',
+                    stack: [{ file: '/workspace/test.cpp', line: 5, column: 3 }],
+                },
+            });
+
+            expect(result.status).to.equal('completed');
+            expect(result.removedDiagnostic).to.equal(false);
+            expect(removeDiagnosticStub.called).to.equal(false);
+            expect(receivedIssue).to.include({
+                fileName: path.normalize('/workspace/test.cpp'),
+                lineNumber: 5,
+                issueType: 'OUT_OF_BOUNDS',
+                errorType: 'OUT_OF_BOUNDS',
+                message: 'copy writes past the local buffer',
+                address: '0x1000',
+                addressSpace: 'GM',
+                byteSize: 4,
+                kernelName: 'ExternalKernel',
+            });
+            expect(receivedIssue?.range).to.deep.equal({
+                startLine: 5,
+                startCharacter: 2,
+                endLine: 5,
+                endCharacter: 12,
+            });
+            expect(receivedIssue?.callStack?.[0]).to.deep.equal({
+                file: '/workspace/test.cpp',
+                line: 5,
+                column: 3,
+            });
         });
     });
 });

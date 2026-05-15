@@ -1,4 +1,5 @@
 import { expect } from 'chai';
+import * as path from 'path';
 import * as sinon from 'sinon';
 import * as vscode from 'vscode';
 import {
@@ -92,6 +93,7 @@ describe('extension', () => {
             const commands = registerCommandStub.getCalls().map((call) => call.args[0]);
             expect(commands).to.include('msagent.parseLog');
             expect(commands).to.include('msagent.fixProblem');
+            expect(commands).to.include('msagent.fixIssue');
             expect(commands).to.include('msagent.fixAll');
             expect(commands).to.include('msagent.selectModel');
             expect(commands).to.include('msagent.openSettings');
@@ -267,7 +269,7 @@ describe('extension', () => {
         it('resolves relative paths against the first workspace folder', () => {
             const ws = vscode.workspace as unknown as Record<string, unknown>;
             ws.workspaceFolders = [{ uri: vscode.Uri.file('/workspace') }];
-            expect(resolveLogInputToFsPath('relative/path.log')).to.equal('/workspace/relative/path.log');
+            expect(resolveLogInputToFsPath('relative/path.log')).to.equal(path.normalize('/workspace/relative/path.log'));
             delete ws.workspaceFolders;
         });
     });

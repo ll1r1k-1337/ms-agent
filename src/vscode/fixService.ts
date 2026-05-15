@@ -4,6 +4,11 @@ import * as vscode from 'vscode';
 import { DiagnosticsManager } from './diagnosticsManager';
 import { getLLMConfig } from '../llm/config';
 import { SanitizerDiagnostic, Severity } from '../parser/types';
+import {
+    normalizeFixIssueRequest,
+    repairIssueFromSanitizerDiagnostic,
+} from './repairIssue';
+import type { RepairIssue } from './repairIssue';
 import { WebviewPanelProvider } from '../webview/webviewPanelProvider';
 import { StreamChunk } from '../llm/types';
 import { createFixBackend, FixCallbacks, FixResult } from '../backends/backendFactory';
@@ -21,6 +26,7 @@ type FixProblemStatus =
     | 'cancelled'
     | 'failed'
     | 'already_running'
+    | 'invalid_payload'
     | 'invalid_index'
     | 'out_of_range';
 export interface FixProblemResult {
@@ -34,9 +40,10 @@ export interface FixProblemOptions {
 type QueuedFixTask = {
     id: string;
     key: string;
-    sanitizerIndex: number;
+    sanitizerIndex?: number;
     title: string;
-    diagnostic: SanitizerDiagnostic;
+    issue: RepairIssue;
+    sourceDiagnostic?: SanitizerDiagnostic;
     options?: FixProblemOptions;
     resolve: (result: FixProblemResult) => void;
 };
@@ -107,11 +114,11 @@ export function resolveFilePath(fileName: string, workspaceRoot: string): string
     return path.join(workspaceRoot, fileName);
 }
 
-export function getDiagnosticFixKey(diagnostic: SanitizerDiagnostic): string {
+export function getDiagnosticFixKey(diagnostic: SanitizerDiagnostic | RepairIssue): string {
     return `${diagnostic.fileName}:${diagnostic.lineNumber}:${diagnostic.errorType}`;
 }
 
-export function getDiagnosticTitle(diagnostic: SanitizerDiagnostic): string {
+export function getDiagnosticTitle(diagnostic: SanitizerDiagnostic | RepairIssue): string {
     const file = path.basename(diagnostic.fileName);
     return `${diagnostic.errorType} - ${file}:${diagnostic.lineNumber}`;
 }
@@ -173,9 +180,11 @@ function hasPendingFixTasks(): boolean {
 export function getAiFixQueueSnapshot(): AiFixQueueSnapshot {
     const states: Record<string, SanitizerAiFixState> = {};
     for (const task of fixQueue) {
-        states[String(task.sanitizerIndex)] = 'queued';
+        if (task.sanitizerIndex !== undefined) {
+            states[String(task.sanitizerIndex)] = 'queued';
+        }
     }
-    if (pausedActiveFixTask) {
+    if (pausedActiveFixTask?.sanitizerIndex !== undefined) {
         states[String(pausedActiveFixTask.sanitizerIndex)] = 'queued';
     }
     if (activeSanitizerIndex !== undefined) {
@@ -238,16 +247,17 @@ async function processFixQueue(): Promise<void> {
             activeSanitizerIndex = next.sanitizerIndex;
             activeFixTitle = next.title;
             currentCancellationTokenSource = new vscode.CancellationTokenSource();
-            logFixQueue(`start task id=${next.id} index=${next.sanitizerIndex} key=${next.key}`);
+            logFixQueue(`start task id=${next.id} index=${next.sanitizerIndex ?? 'direct'} key=${next.key}`);
             notifyQueueState();
 
             const result = await fixSingleDiagnostic(
-                next.diagnostic,
+                next.issue,
                 undefined,
                 undefined,
                 next.options,
                 currentCancellationTokenSource,
                 next.options?.clearWebview,
+                next.sourceDiagnostic,
             );
 
             const wasCancelled = cancelCurrentRequested;
@@ -255,7 +265,7 @@ async function processFixQueue(): Promise<void> {
 
             if (result.status === 'stopped' && pauseRequested && !wasCancelled) {
                 pausedActiveFixTask = next;
-                logFixQueue(`pause task id=${next.id} index=${next.sanitizerIndex}`);
+                logFixQueue(`pause task id=${next.id} index=${next.sanitizerIndex ?? 'direct'}`);
                 currentCancellationTokenSource = undefined;
                 activeFixKey = undefined;
                 activeSanitizerIndex = undefined;
@@ -265,11 +275,11 @@ async function processFixQueue(): Promise<void> {
             }
 
             const finalStatus = wasCancelled ? 'cancelled' : result.status;
-            if (finalStatus === 'completed' && !result.removedDiagnostic) {
+            if (finalStatus === 'completed' && !result.removedDiagnostic && next.sanitizerIndex !== undefined) {
                 fixedSanitizerIndices.add(next.sanitizerIndex);
             }
             next.resolve(wasCancelled ? { status: 'cancelled' } : result);
-            logFixQueue(`finish task id=${next.id} index=${next.sanitizerIndex} status=${finalStatus}`);
+            logFixQueue(`finish task id=${next.id} index=${next.sanitizerIndex ?? 'direct'} status=${finalStatus}`);
             currentCancellationTokenSource = undefined;
             activeFixKey = undefined;
             activeSanitizerIndex = undefined;
@@ -359,6 +369,66 @@ function ensureFixDetailsPanel(): void {
     notifyQueueState();
 }
 
+function enqueueRepairIssue(
+    issue: RepairIssue,
+    options?: FixProblemOptions,
+    sanitizerIndex?: number,
+    sourceDiagnostic?: SanitizerDiagnostic,
+): Promise<FixProblemResult> {
+    const key = getDiagnosticFixKey(issue);
+    if (activeFixKey === key) {
+        logFixQueue(`skip enqueue key=${key} reason=already_active_key`);
+        webviewProvider.revealLatestSession();
+        return Promise.resolve({ status: 'already_running' });
+    }
+    if (pausedActiveFixTask?.key === key) {
+        logFixQueue(`skip enqueue key=${key} reason=already_paused_key`);
+        webviewProvider.revealLatestSession();
+        return Promise.resolve({ status: 'already_running' });
+    }
+    if (fixQueue.some((task) => task.key === key)) {
+        logFixQueue(`skip enqueue key=${key} reason=already_queued_key`);
+        webviewProvider.revealLatestSession();
+        return Promise.resolve({ status: 'already_running' });
+    }
+
+    return new Promise<FixProblemResult>((resolve) => {
+        const taskId = createQueueTaskId();
+        logFixQueue(`enqueue task id=${taskId} index=${sanitizerIndex ?? 'direct'} key=${key}`);
+        if (sanitizerIndex !== undefined) {
+            fixedSanitizerIndices.delete(sanitizerIndex);
+        }
+        fixQueue.push({
+            id: taskId,
+            key,
+            sanitizerIndex,
+            title: getDiagnosticTitle(issue),
+            issue,
+            sourceDiagnostic,
+            options,
+            resolve,
+        });
+        notifyQueueState();
+        void processFixQueue();
+    });
+}
+
+export async function fixIssue(
+    request: unknown,
+    options?: FixProblemOptions,
+): Promise<FixProblemResult> {
+    ensureFixDetailsPanel();
+    const normalized = normalizeFixIssueRequest(request);
+    if (!normalized.ok) {
+        vscode.window.showWarningMessage(`msAgent: invalid fixIssue payload: ${normalized.error}`);
+        return { status: 'invalid_payload' };
+    }
+    return enqueueRepairIssue(
+        normalized.issue,
+        { clearWebview: true, ...(options ?? {}) },
+    );
+}
+
 export async function fixProblem(
     index: number,
     options?: FixProblemOptions,
@@ -382,7 +452,6 @@ export async function fixProblem(
         return { status: 'out_of_range' };
     }
     const diagnostic = all[index];
-    const key = getDiagnosticFixKey(diagnostic);
     if (activeSanitizerIndex === index) {
         logFixQueue(`skip enqueue index=${index} reason=already_active_index`);
         webviewProvider.revealLatestSession();
@@ -398,28 +467,12 @@ export async function fixProblem(
         webviewProvider.revealLatestSession();
         return { status: 'already_running' };
     }
-    if (activeFixKey === key) {
-        logFixQueue(
-            `enqueue index=${index} while active key matches (activeIndex=${activeSanitizerIndex ?? 'none'})`,
-        );
-    }
-
-    return new Promise<FixProblemResult>((resolve) => {
-        const taskId = createQueueTaskId();
-        logFixQueue(`enqueue task id=${taskId} index=${index} key=${key}`);
-        fixedSanitizerIndices.delete(index);
-        fixQueue.push({
-            id: taskId,
-            key,
-            sanitizerIndex: index,
-            title: getDiagnosticTitle(diagnostic),
-            diagnostic,
-            options,
-            resolve,
-        });
-        notifyQueueState();
-        void processFixQueue();
-    });
+    return enqueueRepairIssue(
+        repairIssueFromSanitizerDiagnostic(diagnostic),
+        options,
+        index,
+        diagnostic,
+    );
 }
 
 export async function fixAllDiagnostics(
@@ -457,12 +510,13 @@ export async function fixAllDiagnostics(
 }
 
 async function fixSingleDiagnostic(
-    diagnostic: SanitizerDiagnostic,
+    diagnostic: RepairIssue,
     current?: number,
     total?: number,
     options?: FixProblemOptions,
     externalCancellationTokenSource?: vscode.CancellationTokenSource,
     clearWebview: boolean = true,
+    sourceDiagnostic?: SanitizerDiagnostic,
 ): Promise<FixProblemResult> {
     const config = getLLMConfig();
     const backend = createFixBackend(config);
@@ -706,9 +760,13 @@ async function fixSingleDiagnostic(
         );
         // Only clear the diagnostic that was actually fixed so unrelated
         // issues in the same file keep their highlights and remain actionable.
-        const removedDiagnostic = fixSucceeded
-            ? DiagnosticsManager.removeDiagnostic(diagnostic)
+        const removedDiagnostic = fixSucceeded && sourceDiagnostic
+            ? DiagnosticsManager.removeDiagnostic(sourceDiagnostic)
             : false;
+
+        if (fixSucceeded && !sourceDiagnostic) {
+            logFixQueue(`direct issue fixed key=${getDiagnosticFixKey(diagnostic)}`);
+        }
 
         if (cancellationTokenSource.token.isCancellationRequested) {
             return { status: 'stopped' };
@@ -792,8 +850,20 @@ export function _resetFixOutputChannelForTests() {
     outputChannel = undefined;
 }
 
-export function _enqueueFixTask(task: Omit<QueuedFixTask, 'id'> & { id?: string }) {
-    fixQueue.push({ ...task, id: task.id || `test_${Math.random()}` });
+export function _enqueueFixTask(
+    task: (Omit<QueuedFixTask, 'id' | 'issue'> & {
+        id?: string;
+        issue?: RepairIssue;
+        diagnostic?: SanitizerDiagnostic;
+    }),
+) {
+    const issue = task.issue
+        ?? (task.diagnostic ? repairIssueFromSanitizerDiagnostic(task.diagnostic) : undefined);
+    if (!issue) {
+        throw new Error('_enqueueFixTask requires issue or diagnostic');
+    }
+    const { diagnostic: _diagnostic, ...rest } = task;
+    fixQueue.push({ ...rest, issue, id: task.id || `test_${Math.random()}` });
 }
 
 export function _setActiveFix(index: number, title?: string) {

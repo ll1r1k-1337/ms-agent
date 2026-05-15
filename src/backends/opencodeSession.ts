@@ -2,7 +2,8 @@ import * as fs from 'fs';
 import { ExplanationKind, FixOutcome, FixResult } from './fixBackend';
 import { OpenCodeTransport } from './opencodeTransport';
 import { StreamChunk } from '../llm/types';
-import { MemErrorType, SanitizerDiagnostic } from '../parser/types';
+import { MemErrorType } from '../parser/types';
+import type { RepairIssue } from '../vscode/repairIssue';
 import {
     extractToolCall,
     extractToolResult,
@@ -137,11 +138,11 @@ interface AssistantExplanation {
 }
 
 interface RunDiagnosticContext {
-    errorType: MemErrorType;
+    errorType: string;
     fileName: string;
     lineNumber: number;
-    addressSpace: string;
-    byteSize: number;
+    addressSpace?: string;
+    byteSize?: number;
 }
 
 function hasStructuredExplanation(text: string): boolean {
@@ -366,7 +367,7 @@ function getChangedLines(originalContent: string, newContent: string): Array<{ l
     return changed;
 }
 
-function describeProblem(diagnostic?: RunDiagnosticContext | SanitizerDiagnostic, changedLine?: string): string {
+function describeProblem(diagnostic?: RunDiagnosticContext | RepairIssue, changedLine?: string): string {
     if (!diagnostic) {
         return 'the reported memory-safety issue required a code change at the flagged location.';
     }
@@ -395,7 +396,7 @@ function describeProblem(diagnostic?: RunDiagnosticContext | SanitizerDiagnostic
     }
 }
 
-function describeWhyItWorks(diagnostic?: RunDiagnosticContext | SanitizerDiagnostic, beforeLine?: string, afterLine?: string): string {
+function describeWhyItWorks(diagnostic?: RunDiagnosticContext | RepairIssue, beforeLine?: string, afterLine?: string): string {
     if (diagnostic?.errorType === MemErrorType.OUT_OF_BOUNDS && /\bDataCopy\s*\(/.test(beforeLine || '') && /\bDataCopy\s*\(/.test(afterLine || '')) {
         return 'the updated copy length now matches the destination buffer capacity, so the write stays within bounds.';
     }
@@ -414,7 +415,7 @@ function describeWhyItWorks(diagnostic?: RunDiagnosticContext | SanitizerDiagnos
 function buildSyntheticExplanation(
     originalContent: string,
     newContent: string,
-    diagnostic?: RunDiagnosticContext | SanitizerDiagnostic,
+    diagnostic?: RunDiagnosticContext | RepairIssue,
 ): AssistantExplanation {
     const changedLines = getChangedLines(originalContent, newContent);
     const targetLineNumber = diagnostic?.lineNumber;
@@ -477,7 +478,7 @@ export class OpenCodeSession {
         workspaceRoot: string;
         resolvedPath: string;
         originalContent: string;
-        diagnostic?: RunDiagnosticContext | SanitizerDiagnostic;
+        diagnostic?: RunDiagnosticContext | RepairIssue;
         timeoutMs: number;
         messageId?: string;
         mode?: string;
