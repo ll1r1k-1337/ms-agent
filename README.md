@@ -70,6 +70,7 @@ npm run compile
 | 命令 | 说明 |
 |---|---|
 | `msAgent: Parse Log File` | 解析日志并发布诊断 |
+| `msAgent: Fix Issue Payload` | 修复外部插件传入的问题 payload，不发布 msAgent 诊断 |
 | `msAgent: Fix All Issues` | 修复当前文件中的全部 msAgent 诊断 |
 | `msAgent: Clear Diagnostics` | 清空当前 msAgent 诊断 |
 | `msAgent: Select OpenCode Model` | 从本地 OpenCode 配置中选择模型并写回 `msagent.modelName` |
@@ -82,7 +83,7 @@ npm run compile
 - 首次启动时，msAgent 会优先尝试从 OpenCode 配置文件同步模型
 - 后续动态选择统一通过 `msAgent: Select OpenCode Model`
 
-内部命令 `msagent.fixProblem` 由 Quick Fix 和测试链路调用。
+内部命令 `msagent.fixProblem` 由 Quick Fix 和测试链路调用。已经自己完成诊断和 Problems 发布的外部插件可以调用 `msagent.fixIssue`，payload 形如 `{ uri, range, issueType, message, severity?, details? }`。
 
 ## 使用流程
 

@@ -26,6 +26,7 @@ src/
 - Transport mode is only `server`
 - VS Code settings are the only configuration UI
 - Quick Fix targets diagnostics by `msAgentIndex`, not fuzzy line matching
+- External integrations should use `msagent.fixIssue(payload)` when they own diagnosis and Problems publication
 
 ## Design Patterns
 
@@ -42,6 +43,10 @@ src/
 ### 3. Diagnostic identity by index
 
 `diagnosticsManager.ts` attaches `msAgentIndex` to each published diagnostic. `codeActionProvider.ts` uses that index to route directly into `fixProblem(index)`.
+
+### 3b. Direct payload repair
+
+`repairIssue.ts` validates and normalizes caller-owned issue payloads. `fixService.fixIssue()` queues the normalized `RepairIssue` directly without storing it in `DiagnosticsManager` or publishing msAgent Problems.
 
 ### 4. Conservative finalization
 
