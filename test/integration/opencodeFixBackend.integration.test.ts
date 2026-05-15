@@ -13,6 +13,7 @@ import {
     Severity,
 } from '../../src/parser/types';
 import { FixCallbacks } from '../../src/backends/fixBackend';
+import { repairIssueFromSanitizerDiagnostic } from '../../src/vscode/repairIssue';
 
 interface IntegrationSetup {
     tempDir: string;
@@ -126,7 +127,7 @@ async function runFixtureSequence(
     const diagnostic = makeDiagnostic(workspace.filePath, options?.line || 2);
 
     const result = await backend.executeFix(
-        diagnostic,
+        repairIssueFromSanitizerDiagnostic(diagnostic),
         { workspaceRoot: workspace.tempDir },
         callbacks,
     );
@@ -403,8 +404,8 @@ describe('OpenCodeFixBackend (integration via FixtureTransport)', () => {
                 expect(run.diskContent).to.include('DataCopy(zGlobal[progress * 3], zLocal, TILE_LENGTH);');
                 expect(run.diskContent).to.include('// Line 50: BUG - reading uninitialized yLocal');
 
-                const originalLines = original.split('\n');
-                const newLines = run.diskContent.split('\n');
+                const originalLines = original.replace(/\r\n/g, '\n').split('\n');
+                const newLines = run.diskContent.replace(/\r\n/g, '\n').split('\n');
                 const changedLines = originalLines
                     .map((line, index) => ({ index, oldLine: line, newLine: newLines[index] }))
                     .filter((entry) => entry.oldLine !== entry.newLine);
