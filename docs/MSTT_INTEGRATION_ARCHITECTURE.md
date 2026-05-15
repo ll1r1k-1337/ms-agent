@@ -27,7 +27,7 @@ This document defines **separation of responsibilities**, the **integration API*
 | 9 | **AI fix** entry point **v1**: **sanitizer sidebar only** (no Operate-only flow, no editor Quick Fix in v1). |
 | 10 | **Failure / LLM / timeout UX** stays **msAgent’s** current behavior; mstt does **not** change msAgent for this. |
 | 11 | mstt owns problem diagnosis and parser semantics for its UI. msAgent keeps its parser only for standalone use. |
-| 12 | Integration is gated by **`op-devtools.sanitizer.enableMsAgentAiFix`** (default off). Only users who **manually install** msAgent and enable this setting see AI actions. |
+| 12 | Integration is gated by **`op-devtools.sanitizer.enableMsAgentAiFix`** (default on; AI actions stay hidden when msAgent is absent). Only users who **manually install** msAgent see the AI actions while this setting is enabled. |
 | 13 | **Telemetry / privacy**: out of scope for mstt integration spec; **msAgent team** owns. |
 
 ---
@@ -101,7 +101,7 @@ Contract details:
 - `range` uses VS Code coordinates: `line` and `character` are zero-based; msAgent converts the start line to the one-based repair line used by prompts.
 - `severity` defaults to `Error`; invalid severity values return `invalid_payload`.
 - `details` is optional enrichment for repair prompts. `stack` frames with missing `file` or one-based `line` are ignored.
-- `executeCommand('msagent.fixIssue', payload)` resolves to a status such as `completed`, `no_change`, `failed`, `cancelled`, `already_running`, or `invalid_payload`.
+- `executeCommand('msagent.fixIssue', payload)` resolves to a status such as `completed`, `no_change`, `failed`, `cancelled`, `stopped`, `already_running`, or `invalid_payload`. (`stopped` is returned when the user pauses the active session.) `invalid_index` and `out_of_range` belong to the legacy `fixProblem(index)` path and are not produced by `fixIssue`.
 
 **Detecting msAgent without extension id:** e.g. test whether `msagent.fixIssue` appears in `vscode.commands.getCommands(true)` after activation, or use a small **try/catch** around `executeCommand` — exact approach is an mstt implementation detail.
 

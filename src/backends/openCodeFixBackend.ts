@@ -7,6 +7,14 @@ import { buildFixPrompt, loadSkill } from '../skills/skillLoader';
 import { getLLMConfig } from '../llm/config';
 import { createTransport, OpenCodeTransport, OpenCodeTransportConfig, TransportLogger } from './opencodeTransport';
 import { OpenCodeSession, OpenCodeSessionCallbacks } from './opencodeSession';
+import {
+    getActivityChannel,
+    logRunStart,
+    logRunEnd,
+    logRetry,
+    logServerStarting,
+    logServerNotice,
+} from '../vscode/activityChannel';
 
 export type OpenCodeTransportFactory = (
     config: OpenCodeTransportConfig,
@@ -262,7 +270,30 @@ export class OpenCodeFixBackend implements FixBackend {
         const prompt = buildOpenCodePrompt(diagnostic, originalContent);
         const primaryTransportConfig = buildTransportConfig(config, workspaceRoot);
         this.lastTransportConfig = primaryTransportConfig;
+        const originalLineCount = originalContent.split(/\r?\n/).length;
+        const executeFixStartedAt = Date.now();
+        const activity = getActivityChannel();
+        // Reveal the activity channel on every run so users who hit a freeze
+        // can see what happened without hunting for it in the Output dropdown.
+        activity.show(true);
+        logRunStart({
+            file: diagnostic.fileName,
+            line: diagnostic.lineNumber,
+            errorType: diagnostic.errorType,
+            model: primaryTransportConfig.modelFullName || primaryTransportConfig.model || 'default',
+            timeoutMs: config.timeoutMs,
+        });
         log(`executeFix mode=server model=${primaryTransportConfig.modelFullName || primaryTransportConfig.model || 'default'} file=${resolvedPath}`);
+        log(
+            `executeFix config providerID=${primaryTransportConfig.providerID || 'default'}`
+            + ` servePort=${primaryTransportConfig.servePort} cliPath=${primaryTransportConfig.cliPath || 'default'}`
+            + ` timeoutMs=${primaryTransportConfig.timeoutMs}`,
+        );
+        log(
+            `executeFix prompt chars=${prompt.length} sourceChars=${originalContent.length}`
+            + ` sourceLines=${originalLineCount} errorType=${diagnostic.errorType}`
+            + ` targetLine=${diagnostic.lineNumber}`,
+        );
 
         let bufferedFirstSessionEnd: unknown;
         const firstAttemptCallbacks: FixCallbacks | undefined = callbacks
@@ -301,6 +332,19 @@ export class OpenCodeFixBackend implements FixBackend {
             if (bufferedFirstSessionEnd !== undefined) {
                 callbacks?.onEvent?.('session_end', bufferedFirstSessionEnd);
             }
+            log(
+                `executeFix first-attempt-final outcome=${firstResult.outcome}`
+                + ` success=${firstResult.success} fileChanged=${firstResult.fileChanged}`
+                + ` toolCalls=${firstResult.toolCallCount}`
+                + ` finalMessage=${(firstResult.finalMessage || '').replace(/\s+/g, ' ').slice(0, 200)}`,
+            );
+            logRunEnd({
+                outcome: firstResult.outcome,
+                finalMessage: firstResult.finalMessage,
+                fileChanged: firstResult.fileChanged,
+                toolCallCount: firstResult.toolCallCount,
+                elapsedMs: Date.now() - executeFixStartedAt,
+            });
             return firstResult;
         }
 
@@ -309,9 +353,11 @@ export class OpenCodeFixBackend implements FixBackend {
             message: 'OpenCode produced no native edit; retrying once with stricter edit-tool instructions...',
         });
         log(`retrying no-edit OpenCode result file=${resolvedPath} reason=${firstResult.finalMessage}`);
+        logRetry(firstResult.finalMessage);
         const retryPrompt = buildRetryPrompt(prompt, diagnostic, firstResult.finalMessage);
+        log(`executeFix retry prompt chars=${retryPrompt.length}`);
 
-        return await this.runWithTransport(
+        const retryResult = await this.runWithTransport(
             primaryTransportConfig,
             retryPrompt,
             diagnostic,
@@ -321,6 +367,14 @@ export class OpenCodeFixBackend implements FixBackend {
             config.timeoutMs,
             callbacks,
         );
+        logRunEnd({
+            outcome: retryResult.outcome,
+            finalMessage: retryResult.finalMessage,
+            fileChanged: retryResult.fileChanged,
+            toolCallCount: retryResult.toolCallCount,
+            elapsedMs: Date.now() - executeFixStartedAt,
+        });
+        return retryResult;
     }
 
     private async runWithTransport(
@@ -333,18 +387,32 @@ export class OpenCodeFixBackend implements FixBackend {
         timeoutMs: number,
         callbacks?: FixCallbacks,
     ): Promise<FixResult> {
-        log('starting transport mode=server');
+        log(`starting transport mode=server timeoutMs=${timeoutMs} promptChars=${prompt.length}`);
         callbacks?.onEvent?.('status', {
             phase: 'connecting',
             message: `Starting OpenCode server on port ${transportConfig.servePort}...`,
-        });
+        });        if (transportConfig.servePort) {
+            logServerStarting(transportConfig.servePort);
+        }
 
         const factory = this.createTransportOverride ?? createTransport;
-        const transport = factory(transportConfig, log);
+        // Wrap the transport logger so the few high-signal server-readiness
+        // lines also reach the activity channel; everything still flows to
+        // the verbose msAgent channel via `log`.
+        const transportLogger: TransportLogger = (msg: string) => {
+            log(msg);
+            if (msg.includes('OpenCode server is ready') || msg.includes('listening on')) {
+                logServerNotice(msg);
+            } else if (msg.includes('readiness probe timed out') || msg.includes('process exited')) {
+                logServerNotice(msg);
+            }
+        };
+        const transport = factory(transportConfig, transportLogger);
         this.session = new OpenCodeSession(transport, callbacks as OpenCodeSessionCallbacks);
 
+        const transportStartedAt = Date.now();
         try {
-            return await this.session.run({
+            const result = await this.session.run({
                 prompt,
                 workspaceRoot,
                 resolvedPath,
@@ -354,8 +422,21 @@ export class OpenCodeFixBackend implements FixBackend {
                 mode: 'server',
                 model: transportConfig.modelFullName,
             });
+            log(
+                `transport.run settled mode=server elapsedMs=${Date.now() - transportStartedAt}`
+                + ` outcome=${result.outcome} success=${result.success}`
+                + ` fileChanged=${result.fileChanged} toolCalls=${result.toolCallCount}`,
+            );
+            return result;
+        } catch (error) {
+            const msg = error instanceof Error ? error.message : String(error);
+            log(
+                `transport.run threw mode=server elapsedMs=${Date.now() - transportStartedAt}`
+                + ` error=${msg.replace(/\s+/g, ' ').slice(0, 200)}`,
+            );
+            throw error;
         } finally {
-            log('disposing transport mode=server');
+            log(`disposing transport mode=server elapsedMs=${Date.now() - transportStartedAt}`);
             transport.dispose();
         }
     }

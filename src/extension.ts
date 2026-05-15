@@ -26,8 +26,10 @@ import {
     DEFAULT_OPENCODE_MODEL,
     LEGACY_DEFAULT_OPENCODE_MODELS,
 } from './llm/configResolver';
+import { createActivityChannel, type ActivityChannel } from './vscode/activityChannel';
 
 let outputChannel: vscode.OutputChannel;
+let activityChannel: ActivityChannel | undefined;
 
 export const _deps = {
     existsSync: fs.existsSync,
@@ -58,6 +60,14 @@ export async function activate(context: vscode.ExtensionContext) {
     outputChannel.appendLine('Timestamp: ' + new Date().toISOString());
     outputChannel.appendLine('========================================');
     outputChannel.appendLine('');
+
+    // Separate, low-noise channel that surfaces what OpenCode is actively
+    // doing (tool calls, stalls, outcomes). The main `msAgent` channel above
+    // is the verbose one used for post-mortem debugging; this one answers
+    // "what is OpenCode doing right now?" while a fix is in flight.
+    activityChannel = createActivityChannel();
+    context.subscriptions.push({ dispose: () => activityChannel?.dispose() });
+    activityChannel.appendLine(`msAgent activity channel ready — ${new Date().toISOString()}`);
 
     (global as any).msAgentContext = context;
     (global as any).msAgentOutputChannel = outputChannel;

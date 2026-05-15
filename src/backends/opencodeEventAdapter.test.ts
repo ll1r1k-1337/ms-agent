@@ -14,6 +14,7 @@ import {
     isToolUsePart,
     extractToolCall,
     extractToolResult,
+    extractToolPartParamsUpdate,
     parseEventLine,
     extractTextDelta,
     extractErrorMessage,
@@ -152,6 +153,102 @@ describe('opencodeEventAdapter', () => {
         it('should return null for non-tool event', () => {
             const event: OpenCodeEvent = { type: 'text', text: 'hello' };
             expect(extractToolCall(event)).to.be.null;
+        });
+    });
+
+    describe('extractToolPartParamsUpdate', () => {
+        it('returns the parsed input for a pending tool part with populated input', () => {
+            const event: OpenCodeEvent = {
+                type: 'message.part.updated',
+                properties: {
+                    part: {
+                        type: 'tool',
+                        tool: 'grep',
+                        callID: 'tc_grep_1',
+                        state: { type: 'pending', input: '{"pattern":"foo"}' },
+                    },
+                },
+            };
+            expect(extractToolPartParamsUpdate(event)).to.deep.equal({
+                toolCallId: 'tc_grep_1',
+                params: { pattern: 'foo' },
+            });
+        });
+
+        it('returns the parsed input for a running tool part — the typical late-arrival shape', () => {
+            const event: OpenCodeEvent = {
+                type: 'message.part.updated',
+                properties: {
+                    part: {
+                        type: 'tool',
+                        tool: 'grep',
+                        callID: 'tc_grep_2',
+                        state: { type: 'running', input: '{"pattern":"bar","path":"src"}' },
+                    },
+                },
+            };
+            expect(extractToolPartParamsUpdate(event)).to.deep.equal({
+                toolCallId: 'tc_grep_2',
+                params: { pattern: 'bar', path: 'src' },
+            });
+        });
+
+        it('returns the parsed input for a completed tool part', () => {
+            const event: OpenCodeEvent = {
+                type: 'message.part.updated',
+                properties: {
+                    part: {
+                        type: 'tool',
+                        tool: 'edit',
+                        callID: 'tc_edit_1',
+                        state: { type: 'completed', input: '{"path":"a.cpp"}' },
+                    },
+                },
+            };
+            expect(extractToolPartParamsUpdate(event)).to.deep.equal({
+                toolCallId: 'tc_edit_1',
+                params: { path: 'a.cpp' },
+            });
+        });
+
+        it('returns empty params (not null) when input is missing or empty', () => {
+            const event: OpenCodeEvent = {
+                type: 'message.part.updated',
+                properties: {
+                    part: {
+                        type: 'tool',
+                        tool: 'grep',
+                        callID: 'tc_grep_3',
+                        state: { type: 'pending' },
+                    },
+                },
+            };
+            const result = extractToolPartParamsUpdate(event);
+            expect(result).to.not.be.null;
+            expect(result?.toolCallId).to.equal('tc_grep_3');
+            expect(result?.params).to.deep.equal({});
+        });
+
+        it('returns null when the event has no callID', () => {
+            const event: OpenCodeEvent = {
+                type: 'message.part.updated',
+                properties: {
+                    part: {
+                        type: 'tool',
+                        tool: 'grep',
+                        state: { type: 'running', input: '{"pattern":"foo"}' },
+                    },
+                },
+            };
+            expect(extractToolPartParamsUpdate(event)).to.be.null;
+        });
+
+        it('returns null for non-tool parts', () => {
+            const event: OpenCodeEvent = {
+                type: 'message.part.updated',
+                properties: { part: { type: 'text', text: 'hello' } },
+            };
+            expect(extractToolPartParamsUpdate(event)).to.be.null;
         });
     });
 

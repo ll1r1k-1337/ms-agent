@@ -205,6 +205,48 @@ export function isToolUsePart(part: unknown): part is Record<string, unknown> {
     return part.type === 'tool';
 }
 
+/**
+ * Inspect any event for a tool-part update and return the latest known
+ * `(callID, params)` pair, regardless of the part's `state.type`.
+ *
+ * Why this exists: `extractToolCall` only fires once per tool, on the
+ * `pending` boundary. But OpenCode streams tool input incrementally — the
+ * `pending` event often carries an empty `state.input`, and the actual
+ * arguments arrive in subsequent `message.part.updated` events that flip
+ * `state.type` to `running` and then `completed`. Anything that wants to
+ * display the *resolved* arguments (e.g. an activity log line that says
+ * "grep returned" with the pattern shown) needs to peek at every update,
+ * not just the start. Returns null when the event is not a tool part update
+ * or no callID can be extracted.
+ *
+ * Crucially this does NOT advance protocol state — it's pure observation.
+ * Returning a value here never implies "tool started" or "tool completed";
+ * those signals still come from `extractToolCall` and `extractToolResult`.
+ */
+export function extractToolPartParamsUpdate(
+    event: unknown,
+): { toolCallId: string; params: Record<string, unknown> } | null {
+    const part = resolvePart(event);
+    if (!isToolUsePart(part)) {
+        return null;
+    }
+    const toolCallId = resolveToolCallId(part) || (typeof part.callID === 'string' ? part.callID : undefined);
+    if (!toolCallId) {
+        return null;
+    }
+    let params: Record<string, unknown>;
+    if (isRecordLike(part.state)) {
+        params = safeParseParams(part.state.input);
+        if (Object.keys(params).length === 0) {
+            // Some servers attach the parsed input alongside the state.
+            params = safeParseParams(part.input || part.args || part.arguments);
+        }
+    } else {
+        params = safeParseParams(part.input || part.args || part.arguments);
+    }
+    return { toolCallId, params };
+}
+
 export function extractToolCall(event: unknown): ToolCallInfo | null {
     if (!isRecordLike(event)) { return null; }
 

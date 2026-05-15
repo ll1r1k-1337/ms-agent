@@ -7,6 +7,7 @@ import type { RepairIssue } from '../vscode/repairIssue';
 import {
     extractToolCall,
     extractToolResult,
+    extractToolPartParamsUpdate,
     extractTextDelta,
     extractErrorMessage,
     extractSessionId,
@@ -22,6 +23,14 @@ import {
 } from './opencodeEventAdapter';
 import { SessionStateMachine } from '../agent/sessionStateMachine';
 import { DisposableStore } from '../agent/disposableStore';
+import {
+    logSessionOpened,
+    logToolCall,
+    logToolResult,
+    logStall,
+    logRunTimeout,
+    logCancelled,
+} from '../vscode/activityChannel';
 
 type ToolKind = 'read' | 'edit' | 'other';
 
@@ -52,6 +61,19 @@ function getOutputChannel(): { appendLine: (msg: string) => void } {
 
 function logSession(message: string): void {
     getOutputChannel().appendLine(`[OpenCodeSession] ${message}`);
+}
+
+const SESSION_HEARTBEAT_INTERVAL_MS = 15000;
+
+function summarizeEventType(event: unknown): string {
+    if (!event || typeof event !== 'object') {
+        return 'non-object';
+    }
+    const record = event as Record<string, unknown>;
+    if (typeof record.type === 'string' && record.type) {
+        return record.type;
+    }
+    return 'unknown';
 }
 
 function classifyToolKind(name: string): ToolKind {
@@ -496,6 +518,12 @@ export class OpenCodeSession {
 
         const messageId = options.messageId || `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
+        logSession(
+            `run starting mode=${options.mode || 'server'} model=${options.model || 'default'}`
+            + ` timeoutMs=${options.timeoutMs} promptChars=${options.prompt.length}`
+            + ` originalChars=${options.originalContent.length} file=${options.resolvedPath}`,
+        );
+
         this.callbacks?.onEvent?.('session_start', {
             backend: 'opencode',
             mode: options.mode || 'server',
@@ -522,6 +550,28 @@ export class OpenCodeSession {
             let waitingForToolContinuation = false;
             const toolKindsById = new Map<string, ToolKind>();
             const normalizedOriginalContent = options.originalContent.replace(/\r\n/g, '\n').trim();
+
+            // Observability trackers — these are read by the heartbeat and the
+            // timeout handler to describe what state the run was in when a
+            // long silence or timeout occurred. None of them feed back into
+            // protocol decisions (R2 terminal predicate is unchanged).
+            const runStartedAt = Date.now();
+            let lastEventAt = runStartedAt;
+            let lastEventType = 'none';
+            let totalEventCount = 0;
+            const eventTypeCounts = new Map<string, number>();
+            let totalTextDeltaChars = 0;
+            let lastTextLogAt = 0;
+            let toolCallsInFlight = 0;
+            let toolResultsReceived = 0;
+            const toolNameById = new Map<string, string>();
+            const toolStartedAtById = new Map<string, number>();
+            // Latest known params per callID. The first `pending` event
+            // typically arrives with empty `state.input` and the actual
+            // arguments stream in across subsequent updates; we accumulate
+            // them here so the activity channel can show the resolved
+            // arguments on the result line.
+            const paramsByToolCallId = new Map<string, Record<string, unknown>>();
 
             // Single source of truth: SessionStateMachine. All lifecycle
             // signals (events, transport close, abort, timeout, errors) are
@@ -569,6 +619,12 @@ export class OpenCodeSession {
                 if (snap.state === 'applying_patch') {
                     observedHardTerminal = true;
                 }
+                if (snap.state !== snap.previous) {
+                    logSession(
+                        `sm.transition ${snap.previous || 'init'} -> ${snap.state}`
+                        + ` elapsedMs=${Date.now() - runStartedAt}`,
+                    );
+                }
                 this.callbacks?.onEvent?.('lifecycle_state', {
                     state: snap.state,
                     previous: snap.previous,
@@ -611,6 +667,16 @@ export class OpenCodeSession {
                 if (finalized) {
                     return;
                 }
+                logSession(
+                    `finalize entered elapsedMs=${Date.now() - runStartedAt}`
+                    + ` sm.state=${sm.state()} sawHardTerminal=${sawHardTerminal()}`
+                    + ` transportError=${transportError ? transportError.message.slice(0, 80) : 'none'}`
+                    + ` cancelled=${this.cancelled || this.abortController.signal.aborted}`
+                    + ` errors=${errorMessages.length} toolCalls=${toolCallCount}`
+                    + ` editToolCall=${seenEditToolCall} editToolResult=${seenEditToolResult}`
+                    + ` finish=${lastAssistantFinishReason || 'none'}`
+                    + ` parsedTextChars=${parsedText.length}`,
+                );
                 const emitSessionEnd = (
                     outcome: FixOutcome,
                     finalMessage: string,
@@ -867,6 +933,35 @@ export class OpenCodeSession {
             };
 
             const timeoutId = setTimeout(() => {
+                const elapsed = Date.now() - runStartedAt;
+                const sinceLastEvent = Date.now() - lastEventAt;
+                logSession(
+                    `timeout firing afterMs=${options.timeoutMs} elapsedMs=${elapsed}`
+                    + ` sinceLastEventMs=${sinceLastEvent} lastEventType=${lastEventType}`
+                    + ` sm.state=${sm.state()} finish=${lastAssistantFinishReason || 'none'}`
+                    + ` toolCalls=${toolCallCount} inFlight=${toolCallsInFlight}`
+                    + ` toolResults=${toolResultsReceived}`
+                    + ` waitingForContinuation=${waitingForToolContinuation}`
+                    + ` totalEvents=${totalEventCount} textChars=${totalTextDeltaChars}`,
+                );
+                // Pinpoint the in-flight tool (if any) so the activity channel
+                // shows "tool 'grep' was awaiting result for 9m12s" rather than
+                // just "timed out".
+                let stuckName: string | undefined;
+                if (toolCallsInFlight > 0) {
+                    let oldestStart = Number.POSITIVE_INFINITY;
+                    let oldestId: string | undefined;
+                    for (const [id, startedAt] of toolStartedAtById.entries()) {
+                        if (startedAt < oldestStart) {
+                            oldestStart = startedAt;
+                            oldestId = id;
+                        }
+                    }
+                    if (oldestId !== undefined) {
+                        stuckName = toolNameById.get(oldestId);
+                    }
+                }
+                logRunTimeout(options.timeoutMs, sinceLastEvent, stuckName);
                 transportError = new Error(`Fix timed out after ${options.timeoutMs}ms`);
                 sm.dispatch({ kind: 'TIMEOUT_INACTIVE', afterMs: options.timeoutMs });
                 this.transport.cancel();
@@ -874,11 +969,89 @@ export class OpenCodeSession {
             }, options.timeoutMs);
             store.addTimer(timeoutId);
 
+            // Heartbeat — log a state summary every SESSION_HEARTBEAT_INTERVAL_MS
+            // so silent stalls (no SSE events for tens of seconds) are visible
+            // before the hard timeout fires. Pure observability; never touches
+            // protocol state, never advances finalize.
+            //
+            // For the activity channel we additionally emit a single
+            // human-readable stall line whenever silence crosses the heartbeat
+            // boundary AND something is actually waiting (tool in-flight or no
+            // events for a while). Healthy streaming runs stay quiet.
+            let lastStallLogAt = 0;
+            const heartbeatId = setInterval(() => {
+                if (finalized) {
+                    return;
+                }
+                const now = Date.now();
+                const elapsed = now - runStartedAt;
+                const sinceLastEvent = now - lastEventAt;
+                const topEventTypes = Array.from(eventTypeCounts.entries())
+                    .sort((a, b) => b[1] - a[1])
+                    .slice(0, 4)
+                    .map(([type, count]) => `${type}=${count}`)
+                    .join(',') || 'none';
+                logSession(
+                    `heartbeat elapsedMs=${elapsed} sinceLastEventMs=${sinceLastEvent}`
+                    + ` sm.state=${sm.state()} lastEventType=${lastEventType}`
+                    + ` totalEvents=${totalEventCount} topEvents=[${topEventTypes}]`
+                    + ` toolCalls=${toolCallCount} inFlight=${toolCallsInFlight}`
+                    + ` toolResults=${toolResultsReceived}`
+                    + ` textChars=${totalTextDeltaChars}`
+                    + ` waitingForContinuation=${waitingForToolContinuation}`
+                    + ` finish=${lastAssistantFinishReason || 'none'}`,
+                );
+                // Only nag the activity channel if we're actually stalled —
+                // a tool is in-flight, OR no SSE event for a full heartbeat.
+                const stalled = toolCallsInFlight > 0
+                    || sinceLastEvent >= SESSION_HEARTBEAT_INTERVAL_MS;
+                if (!stalled) {
+                    return;
+                }
+                // De-dupe rapid heartbeats: only emit if it's been at least a
+                // heartbeat interval since the last activity-channel stall line.
+                if (now - lastStallLogAt < SESSION_HEARTBEAT_INTERVAL_MS) {
+                    return;
+                }
+                lastStallLogAt = now;
+                let inFlightName: string | undefined;
+                let inFlightElapsedMs: number | undefined;
+                if (toolCallsInFlight > 0) {
+                    // Pick the oldest in-flight tool (most likely the culprit).
+                    let oldestStart = Number.POSITIVE_INFINITY;
+                    let oldestId: string | undefined;
+                    for (const [id, startedAt] of toolStartedAtById.entries()) {
+                        if (startedAt < oldestStart) {
+                            oldestStart = startedAt;
+                            oldestId = id;
+                        }
+                    }
+                    if (oldestId !== undefined) {
+                        inFlightName = toolNameById.get(oldestId);
+                        inFlightElapsedMs = now - oldestStart;
+                    }
+                }
+                logStall({
+                    sinceLastEventMs: sinceLastEvent,
+                    inFlightToolName: inFlightName,
+                    inFlightToolElapsedMs: inFlightElapsedMs,
+                    smState: sm.state(),
+                });
+            }, SESSION_HEARTBEAT_INTERVAL_MS);
+            // Unref the interval so it never blocks Node.js shutdown if a
+            // pathological cleanup path leaves it running; the DisposableStore
+            // still clears it on normal disposal.
+            if (typeof (heartbeatId as any).unref === 'function') {
+                (heartbeatId as any).unref();
+            }
+            store.addTimer(heartbeatId);
+
             // Abort listener registers via DisposableStore so the listener is
             // explicitly removed during cleanup, preventing stale callback
             // delivery (e.g. when a later cancel fires after this run resolved).
             const onAbort = (): void => {
                 sm.dispatch({ kind: 'USER_CANCEL' });
+                logCancelled();
                 if (!finalized) {
                     void finalize();
                 }
@@ -893,6 +1066,15 @@ export class OpenCodeSession {
                     return;
                 }
 
+                // Per-event observability — track type, count, and time
+                // since the previous event so heartbeat/timeout logs can
+                // attribute silence to a specific phase.
+                const eventType = summarizeEventType(event);
+                lastEventAt = Date.now();
+                lastEventType = eventType;
+                totalEventCount += 1;
+                eventTypeCounts.set(eventType, (eventTypeCounts.get(eventType) || 0) + 1);
+
                 const e = event as OpenCodeEvent;
                 if (e.type === 'session_start') {
                     const sessionId = extractSessionId(e);
@@ -900,6 +1082,7 @@ export class OpenCodeSession {
                         opencodeSessionId = sessionId;
                         this.callbacks?.onEvent?.('session_metadata', { opencodeSessionId: sessionId });
                         logSession(`session=${sessionId} model=${options.model || 'default'} started`);
+                        logSessionOpened(sessionId, options.model || 'default');
                     }
                 }
 
@@ -917,6 +1100,10 @@ export class OpenCodeSession {
                 const textDelta = extractTextDelta(e);
                 if (textDelta && isAssistantScopedPart) {
                     if (waitingForToolContinuation) {
+                        logSession(
+                            `continuation_received via text_delta message=${assistantTextMessageId}`
+                            + ` afterMs=${Date.now() - lastEventAt}`,
+                        );
                         waitingForToolContinuation = false;
                     }
                     // Promote SM from sending -> streaming on first meaningful chunk.
@@ -925,15 +1112,30 @@ export class OpenCodeSession {
                     if (e.type !== 'reasoning') {
                         const prev = messageTexts.get(assistantTextMessageId) || '';
                         ensureAssistantMessageOrder(assistantTextMessageId);
+                        let deltaSize = 0;
                         if (textDelta.startsWith(prev) && textDelta.length > prev.length) {
                             const delta = textDelta.substring(prev.length);
+                            deltaSize = delta.length;
                             messageTexts.set(assistantTextMessageId, textDelta);
                             parsedText += delta;
                             this.callbacks?.onMessageChunk?.({ type: 'text_delta', delta }, assistantTextMessageId);
                         } else if (textDelta !== prev) {
+                            deltaSize = textDelta.length;
                             messageTexts.set(assistantTextMessageId, prev + textDelta);
                             parsedText += textDelta;
                             this.callbacks?.onMessageChunk?.({ type: 'text_delta', delta: textDelta }, assistantTextMessageId);
+                        }
+                        if (deltaSize > 0) {
+                            totalTextDeltaChars += deltaSize;
+                            // Emit a milestone log every ~2000 chars so we can
+                            // see streaming progress without spamming each chunk.
+                            if (totalTextDeltaChars - lastTextLogAt >= 2000) {
+                                lastTextLogAt = totalTextDeltaChars;
+                                logSession(
+                                    `text_progress message=${assistantTextMessageId} totalChars=${totalTextDeltaChars}`
+                                    + ` elapsedMs=${Date.now() - runStartedAt}`,
+                                );
+                            }
                         }
                     } else {
                         this.callbacks?.onMessageChunk?.({ type: 'text_delta', delta: textDelta }, assistantTextMessageId + '_reasoning');
@@ -951,6 +1153,15 @@ export class OpenCodeSession {
                     }
                 }
 
+                // Pure observability: snapshot the latest known input for
+                // any tool part, so the activity channel can surface the
+                // resolved arguments on the result line. Never advances
+                // protocol state.
+                const paramsUpdate = extractToolPartParamsUpdate(e);
+                if (paramsUpdate && Object.keys(paramsUpdate.params).length > 0) {
+                    paramsByToolCallId.set(paramsUpdate.toolCallId, paramsUpdate.params);
+                }
+
                 const toolCallInfo: ToolCallInfo | null = extractToolCall(e);
                 if (toolCallInfo && isAssistantScopedPart) {
                     const toolCallId = toolCallInfo.toolCallId || `tc_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
@@ -965,8 +1176,43 @@ export class OpenCodeSession {
                         if (waitingForToolContinuation) {
                             waitingForToolContinuation = false;
                         }
-                        logSession(`tool_call name=${toolCallInfo.name} id=${toolCallId} kind=${toolKind}`);
+                        const paramsPreview = (() => {
+                            try {
+                                const json = JSON.stringify(toolCallInfo.params || {});
+                                return json.length > 160 ? `${json.slice(0, 157)}...` : json;
+                            } catch {
+                                return '[unserializable]';
+                            }
+                        })();
+                        logSession(
+                            `tool_call name=${toolCallInfo.name} id=${toolCallId} kind=${toolKind}`
+                            + ` paramsChars=${paramsPreview.length === 160 ? '>=160' : paramsPreview.length}`
+                            + ` paramsPreview=${paramsPreview}`,
+                        );
+                        // Prefer params we've already accumulated from
+                        // earlier streamed updates (the pending boundary
+                        // often carries an empty input that gets filled in
+                        // moments later by message.part.updated events).
+                        const startParams = (() => {
+                            const seedHasContent =
+                                toolCallInfo.params && Object.keys(toolCallInfo.params).length > 0;
+                            if (seedHasContent) {
+                                return toolCallInfo.params;
+                            }
+                            return paramsByToolCallId.get(toolCallId) || toolCallInfo.params;
+                        })();
+                        if (startParams && Object.keys(startParams).length > 0) {
+                            paramsByToolCallId.set(toolCallId, startParams);
+                        }
+                        logToolCall({
+                            name: toolCallInfo.name,
+                            params: startParams,
+                            toolCallId,
+                        });
                         seenToolCallIds.add(toolCallId);
+                        toolNameById.set(toolCallId, toolCallInfo.name);
+                        toolStartedAtById.set(toolCallId, Date.now());
+                        toolCallsInFlight += 1;
                         toolCallCount++;
                         sm.dispatch({ kind: 'TOOL_CALL', name: toolCallInfo.name, toolCallId });
                         this.callbacks?.onToolCall?.(toolCallInfo.name, toolCallInfo.params, toolCallId);
@@ -992,9 +1238,36 @@ export class OpenCodeSession {
                     if (toolKind === 'edit' && !toolResultInfo.isError) {
                         seenEditToolResult = true;
                     }
+                    const toolName = toolNameById.get(toolResultInfo.toolCallId) || 'unknown';
+                    const startedAt = toolStartedAtById.get(toolResultInfo.toolCallId);
+                    const toolElapsedMs = startedAt ? Date.now() - startedAt : -1;
+                    const resultSize = typeof toolResultInfo.result === 'string'
+                        ? toolResultInfo.result.length
+                        : -1;
+                    toolResultsReceived += 1;
+                    if (toolCallsInFlight > 0) {
+                        toolCallsInFlight -= 1;
+                    }
                     logSession(
-                        `tool_result id=${toolResultInfo.toolCallId} isError=${toolResultInfo.isError} kind=${toolKind}`,
+                        `tool_result id=${toolResultInfo.toolCallId} name=${toolName}`
+                        + ` isError=${toolResultInfo.isError} kind=${toolKind}`
+                        + ` elapsedMs=${toolElapsedMs} resultChars=${resultSize}`,
                     );
+                    logToolResult({
+                        name: toolName,
+                        toolCallId: toolResultInfo.toolCallId,
+                        isError: toolResultInfo.isError,
+                        elapsedMs: toolElapsedMs >= 0 ? toolElapsedMs : 0,
+                        resultChars: resultSize,
+                        params: paramsByToolCallId.get(toolResultInfo.toolCallId),
+                        errorPreview: toolResultInfo.isError && typeof toolResultInfo.result === 'string'
+                            ? toolResultInfo.result.replace(/\s+/g, ' ').trim()
+                            : undefined,
+                    });
+                    // Stop tracking this tool as in-flight so the stall picker
+                    // only sees tools that haven't returned yet.
+                    toolStartedAtById.delete(toolResultInfo.toolCallId);
+                    paramsByToolCallId.delete(toolResultInfo.toolCallId);
                     sm.dispatch({ kind: 'TOOL_RESULT_SENT', toolCallId: toolResultInfo.toolCallId });
                     this.callbacks?.onToolResult?.(
                         toolResultInfo.toolCallId,
@@ -1054,7 +1327,14 @@ export class OpenCodeSession {
                 }
             });
 
-            this.transport.onClose((_exitCode: number | null) => {
+            this.transport.onClose((exitCode: number | null) => {
+                logSession(
+                    `transport_closed exitCode=${exitCode === null ? 'null' : exitCode}`
+                    + ` elapsedMs=${Date.now() - runStartedAt}`
+                    + ` sinceLastEventMs=${Date.now() - lastEventAt}`
+                    + ` sawHardTerminal=${sawHardTerminal()} totalEvents=${totalEventCount}`
+                    + ` toolCalls=${toolCallCount} inFlight=${toolCallsInFlight}`,
+                );
                 // Tell the SM the wire closed, with the truth about whether a
                 // hard terminal was previously seen. SM uses this to decide
                 // streaming -> error (no terminal) vs streaming -> streaming
@@ -1064,6 +1344,12 @@ export class OpenCodeSession {
             });
 
             this.transport.onError((error: Error) => {
+                logSession(
+                    `transport_error message=${error.message.replace(/\s+/g, ' ').slice(0, 200)}`
+                    + ` elapsedMs=${Date.now() - runStartedAt}`
+                    + ` sinceLastEventMs=${Date.now() - lastEventAt}`
+                    + ` sm.state=${sm.state()} sawHardTerminal=${sawHardTerminal()}`,
+                );
                 transportError = error;
                 sm.dispatch({ kind: 'TRANSPORT_ERROR', reason: error.message });
                 if (!finalized) {

@@ -80,6 +80,20 @@ function logFixResult(
     );
 }
 
+function logFix(message: string): void {
+    getOutputChannel().appendLine(`[FIX] ${message}`);
+}
+
+function formatElapsed(ms: number): string {
+    if (ms < 1000) return `${ms}ms`;
+    const seconds = Math.floor(ms / 1000);
+    const remMs = ms % 1000;
+    if (seconds < 60) return `${seconds}.${String(remMs).padStart(3, '0')}s`;
+    const minutes = Math.floor(seconds / 60);
+    const remSec = seconds % 60;
+    return `${minutes}m${String(remSec).padStart(2, '0')}s`;
+}
+
 function getOutputChannel(): vscode.OutputChannel {
     if (!outputChannel) {
         const globalChannel = (global as any).msAgentOutputChannel;
@@ -521,11 +535,19 @@ async function fixSingleDiagnostic(
     const config = getLLMConfig();
     const backend = createFixBackend(config);
     const workspaceRoot = vscode.workspace.rootPath || '.';
+    const fixStartedAt = Date.now();
 
     const progressTitle = total && current
         ? `msAgent: Fixing ${diagnostic.errorType} (${current}/${total})`
         : `msAgent: Fixing ${diagnostic.errorType}`;
     const repairRunId = createFixRunId();
+
+    logFix(
+        `start runId=${repairRunId} backend=${backend.name} model=${config.modelFullName || config.modelID || 'default'}`
+        + ` timeoutMs=${config.timeoutMs}`
+        + ` errorType=${diagnostic.errorType} file=${path.basename(diagnostic.fileName)}:${diagnostic.lineNumber}`
+        + ` workspaceRoot=${workspaceRoot}`,
+    );
 
     const cancellationTokenSource = externalCancellationTokenSource ?? new vscode.CancellationTokenSource();
 
@@ -769,18 +791,34 @@ async function fixSingleDiagnostic(
         }
 
         if (cancellationTokenSource.token.isCancellationRequested) {
+            logFix(`exit runId=${repairRunId} status=stopped elapsed=${formatElapsed(Date.now() - fixStartedAt)}`);
             return { status: 'stopped' };
         }
         if (result.outcome === 'no_change') {
+            logFix(`exit runId=${repairRunId} status=no_change elapsed=${formatElapsed(Date.now() - fixStartedAt)}`);
             return { status: 'no_change' };
         }
         if (!result.success) {
+            logFix(
+                `exit runId=${repairRunId} status=failed elapsed=${formatElapsed(Date.now() - fixStartedAt)}`
+                + ` toolCalls=${result.toolCallCount} fileChanged=${result.fileChanged}`,
+            );
             return { status: 'failed' };
         }
+        logFix(
+            `exit runId=${repairRunId} status=completed elapsed=${formatElapsed(Date.now() - fixStartedAt)}`
+            + ` toolCalls=${result.toolCallCount} fileChanged=${result.fileChanged}`
+            + ` removedDiagnostic=${removedDiagnostic}`,
+        );
         return { status: 'completed', removedDiagnostic };
     } catch (e) {
         // Session already sends session_end via onEvent callback on error.
         // Just show the VSCode error notification here.
+        const errMsg = e instanceof Error ? e.message : String(e);
+        logFix(
+            `exit runId=${repairRunId} status=exception elapsed=${formatElapsed(Date.now() - fixStartedAt)}`
+            + ` error=${errMsg.replace(/\s+/g, ' ').slice(0, 200)}`,
+        );
         handleFixError(e, config);
         return { status: 'failed' };
     } finally {
