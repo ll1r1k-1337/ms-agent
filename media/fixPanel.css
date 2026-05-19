@@ -562,4 +562,104 @@ body { overflow: hidden; }
     color: var(--panel-muted);
 }
 
+.tasks-body {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding-top: 4px;
+}
+
+.tasks-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.tasks-group-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 2px 4px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--panel-muted);
+}
+
+.tasks-group-title { font-weight: 600; }
+
+.tasks-group-count {
+    color: var(--panel-strong);
+    font-weight: 600;
+    font-size: 11px;
+    padding: 0 6px;
+    border-radius: 8px;
+    background: var(--panel-overlay, rgba(255, 255, 255, 0.08));
+}
+
+.tasks-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.tasks-list-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    color: var(--panel-strong);
+    background: var(--panel-overlay, rgba(255, 255, 255, 0.04));
+}
+
+.tasks-list-item .task-icon {
+    flex: 0 0 14px;
+    width: 14px;
+    height: 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.tasks-list-item .task-title {
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tasks-list-item .task-badge {
+    flex: 0 0 auto;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--panel-strong);
+    background: var(--panel-overlay, rgba(255, 255, 255, 0.06));
+}
+
+.tasks-list-item.is-running { color: var(--oc-yellow); }
+.tasks-list-item.is-running .task-icon { animation: tasks-spin 1.6s linear infinite; }
+.tasks-list-item.is-completed { color: var(--oc-green); }
+.tasks-list-item.is-completed .task-badge { color: var(--oc-green); }
+.tasks-list-item.is-no_change { color: var(--panel-muted); }
+.tasks-list-item.is-failed { color: var(--oc-red); }
+.tasks-list-item.is-failed .task-badge { color: var(--oc-red); }
+.tasks-list-item.is-cancelled { color: var(--panel-muted); }
+.tasks-list-item.is-stopped { color: var(--panel-muted); }
+.tasks-list-item.is-queued { color: var(--panel-muted); }
+
+@keyframes tasks-spin {
+    0%   { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
 .hidden { display: none !important; }

@@ -18,6 +18,7 @@
         completed: 'Completed',
         no_change: 'No code change needed',
         failed: 'Failed',
+        cancelled: 'Cancelled',
         idle: 'Ready',
     };
 
@@ -78,6 +79,17 @@
         els.filesCard = $('files-card');
         els.filesList = $('files-list');
         els.filesMeta = $('files-meta');
+        els.tasksCard = $('tasks-card');
+        els.tasksMeta = $('tasks-meta');
+        els.tasksRunningGroup = $('tasks-running-group');
+        els.tasksRunningCount = $('tasks-running-count');
+        els.tasksRunningList = $('tasks-running-list');
+        els.tasksQueuedGroup = $('tasks-queued-group');
+        els.tasksQueuedCount = $('tasks-queued-count');
+        els.tasksQueuedList = $('tasks-queued-list');
+        els.tasksCompletedGroup = $('tasks-completed-group');
+        els.tasksCompletedCount = $('tasks-completed-count');
+        els.tasksCompletedList = $('tasks-completed-list');
         els.explanationCard = $('explanation-card');
         els.explanationBody = $('explanation-body');
         els.explanationMeta = $('explanation-meta');
@@ -506,6 +518,7 @@
         if (state.currentOutcome === 'applied') return 'success';
         if (state.currentOutcome === 'failed' || state.phase === 'error') return 'error';
         if (state.currentOutcome === 'no_change') return 'warning';
+        if (state.currentOutcome === 'cancelled' || state.phase === 'cancelled') return 'warning';
         if (state.phase === 'running' || state.phase === 'connecting' || state.phase === 'finalizing') {
             return 'running';
         }
@@ -654,6 +667,7 @@
 
     function renderAll() {
         renderStatusCard();
+        renderTasksCard();
         renderFiles();
         renderExplanation();
         renderIdleHint();
@@ -759,6 +773,96 @@
     function updateQueueState(payload) {
         state.queueState = payload || state.queueState;
         renderStatusCard();
+        renderTasksCard();
+    }
+
+    function renderTasksCard() {
+        if (!els.tasksCard) return;
+        const queue = state.queueState || {};
+        const running = Array.isArray(queue.runningTasks) ? queue.runningTasks : [];
+        const queued = Array.isArray(queue.items) ? queue.items : [];
+        const completed = Array.isArray(queue.recentlyCompleted) ? queue.recentlyCompleted : [];
+
+        // Show the card whenever any of the three groups has at least one
+        // entry — otherwise keep it hidden so the panel doesn't get noisy for
+        // a one-off single-issue fix.
+        const hasAny = running.length > 0 || queued.length > 0 || completed.length > 0;
+        els.tasksCard.classList.toggle('hidden', !hasAny);
+
+        if (els.tasksMeta) {
+            els.tasksMeta.textContent =
+                running.length + ' in progress · ' + completed.length + ' completed';
+        }
+        renderTasksGroup(els.tasksRunningGroup, els.tasksRunningCount, els.tasksRunningList, running, 'running');
+        renderTasksGroup(els.tasksQueuedGroup, els.tasksQueuedCount, els.tasksQueuedList, queued, 'queued');
+        renderTasksGroup(els.tasksCompletedGroup, els.tasksCompletedCount, els.tasksCompletedList, completed, 'completed');
+    }
+
+    function renderTasksGroup(group, count, list, tasks, kind) {
+        if (!group || !list) return;
+        group.classList.toggle('hidden', tasks.length === 0);
+        if (count) count.textContent = String(tasks.length);
+        list.textContent = '';
+        for (const task of tasks) {
+            list.appendChild(buildTaskListItem(task, kind));
+        }
+    }
+
+    function buildTaskListItem(task, kind) {
+        const li = document.createElement('li');
+        const status = kind === 'completed' && task && task.status ? task.status : kind;
+        li.className = 'tasks-list-item is-' + status;
+
+        const icon = document.createElement('span');
+        icon.className = 'task-icon';
+        icon.setAttribute('aria-hidden', 'true');
+        icon.innerHTML = taskIconSvg(status);
+        li.appendChild(icon);
+
+        const title = document.createElement('span');
+        title.className = 'task-title';
+        title.title = (task && task.title) || '';
+        title.textContent = (task && task.title) || '(untitled)';
+        li.appendChild(title);
+
+        if (kind === 'completed') {
+            const badge = document.createElement('span');
+            badge.className = 'task-badge';
+            badge.textContent = badgeLabelForStatus(status);
+            li.appendChild(badge);
+        }
+        return li;
+    }
+
+    function badgeLabelForStatus(status) {
+        switch (status) {
+            case 'completed': return 'Applied';
+            case 'no_change': return 'No change';
+            case 'failed':    return 'Failed';
+            case 'cancelled': return 'Cancelled';
+            case 'stopped':   return 'Stopped';
+            default:          return status;
+        }
+    }
+
+    function taskIconSvg(status) {
+        switch (status) {
+            case 'running':
+                return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>';
+            case 'queued':
+                return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 16 14"/></svg>';
+            case 'completed':
+                return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="5 12 10 17 19 7"/></svg>';
+            case 'no_change':
+                return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="12" x2="18" y2="12"/></svg>';
+            case 'failed':
+                return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>';
+            case 'cancelled':
+            case 'stopped':
+                return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><line x1="8" y1="8" x2="16" y2="16"/></svg>';
+            default:
+                return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/></svg>';
+        }
     }
 
     function handleSessionStart(payload) {
@@ -794,6 +898,7 @@
         state.finalExplanationKind = explanationKind || state.finalExplanationKind || '';
         if (normalized === 'applied') state.phase = 'completed';
         else if (normalized === 'no_change') state.phase = 'no_change';
+        else if (normalized === 'cancelled') state.phase = 'cancelled';
         else state.phase = 'failed';
         state.terminalLocked = true;
         if (finalMessage && !getExplanationText()) state.explanation = finalMessage;
@@ -830,6 +935,7 @@
             explanation: false,
         };
         state.userPinnedToBottom = true;
+        state.queueState = { paused: false, hasPendingTasks: false, items: [], runningTasks: [], recentlyCompleted: [] };
         if (els.metaElapsed) els.metaElapsed.textContent = '00:00';
         if (els.jumpLatest) els.jumpLatest.classList.remove('is-visible');
         renderAll();

@@ -5,11 +5,17 @@ import { DiagnosticsManager } from './vscode/diagnosticsManager';
 import {
     fixProblem,
     fixIssue,
+    fixIssues,
     fixAllDiagnostics,
     showFixDetailsPanel,
+    registerFixDetailsSerializer,
     getAiFixQueueSnapshot,
     getAiFixQueueStates,
     resetAiFixHistory,
+    cancelBatch,
+    type CancelBatchResult,
+    type FixBatchResult,
+    type FixIssuesOptions,
     type FixProblemOptions,
     type FixProblemResult,
 } from './vscode/fixService';
@@ -76,6 +82,10 @@ export async function activate(context: vscode.ExtensionContext) {
     (globalThis as any).__msAgentGetAiFixQueueStates = () => getAiFixQueueStates();
 
     DiagnosticsManager.activate(context);
+    // Hand any "msAgent Fix Details" panels that VS Code restored from the
+    // previous session back to our singleton webview so reload doesn't pile up
+    // empty/orphaned tabs.
+    context.subscriptions.push(registerFixDetailsSerializer(context));
     await syncInitialOpenCodeModel();
 
     /**
@@ -142,9 +152,60 @@ export async function activate(context: vscode.ExtensionContext) {
             return result;
         },
     );
+    /**
+     * Fix a batch of caller-owned issue payloads as a single AI fix run.
+     * Each payload uses the same shape as `msagent.fixIssue`; the queue
+     * processes them one at a time and returns a per-issue + summary result.
+     *
+     * executeCommand('msagent.fixIssues', payloads[], options?)
+     */
+    const fixIssuesCmd = vscode.commands.registerCommand(
+        'msagent.fixIssues',
+        async (
+            requests?: unknown,
+            options?: FixIssuesOptions,
+        ): Promise<FixBatchResult> => {
+            const result = await fixIssues(requests, options);
+            outputChannel.appendLine(
+                `[CMD] msagent.fixIssues batchId=${result.batchId}`
+                + ` total=${result.total} accepted=${result.accepted}`
+                + ` completed=${result.summary.completed}`
+                + ` no_change=${result.summary.no_change}`
+                + ` failed=${result.summary.failed}`
+                + ` cancelled=${result.summary.cancelled}`
+                + ` stopped=${result.summary.stopped}`
+                + ` already_running=${result.summary.already_running}`
+                + ` invalid_payload=${result.summary.invalid_payload}`,
+            );
+            return result;
+        },
+    );
     const showFixDetailsCmd = vscode.commands.registerCommand('msagent.showFixDetails', () => {
         showFixDetailsPanel();
     });
+
+    /**
+     * Cancel every task belonging to a batch (queued, paused, or actively
+     * running). Used by callers that drive `msagent.fixIssues` and need a
+     * single button that aborts the whole batch.
+     *
+     * executeCommand('msagent.cancelBatch', batchId)
+     */
+    const cancelBatchCmd = vscode.commands.registerCommand(
+        'msagent.cancelBatch',
+        (batchId?: unknown): CancelBatchResult => {
+            if (typeof batchId !== 'string' || batchId.length === 0) {
+                outputChannel.appendLine('[CMD] msagent.cancelBatch missing batchId');
+                return { cancelled: 0, queued: 0, paused: 0, running: 0 };
+            }
+            const result = cancelBatch(batchId);
+            outputChannel.appendLine(
+                `[CMD] msagent.cancelBatch batchId=${batchId} cancelled=${result.cancelled}`
+                + ` queued=${result.queued} paused=${result.paused} running=${result.running}`,
+            );
+            return result;
+        },
+    );
 
     const getAiFixQueueStatesCmd = vscode.commands.registerCommand(
         'msagent.getAiFixQueueStates',
@@ -184,7 +245,9 @@ export async function activate(context: vscode.ExtensionContext) {
         parseLogCmd,
         fixProblemCmd,
         fixIssueCmd,
+        fixIssuesCmd,
         showFixDetailsCmd,
+        cancelBatchCmd,
         getAiFixQueueStatesCmd,
         getAiFixQueueSnapshotCmd,
         fixAllCmd,
@@ -343,7 +406,7 @@ export async function selectOpenCodeModel(): Promise<string | undefined> {
     const target = (vscode.workspace.workspaceFolders?.length ?? 0) > 0
         ? vscode.ConfigurationTarget.Workspace
         : vscode.ConfigurationTarget.Global;
-    await vscode.workspace.getConfiguration('msagent').update('modelName', selected.modelID, target);
+        await vscode.workspace.getConfiguration('msagent').update('modelName', selected.modelID, target);
     vscode.window.showInformationMessage(`msAgent OpenCode model set to ${selected.modelID}`);
     return selected.modelID;
 }

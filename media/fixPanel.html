@@ -84,7 +84,43 @@
                 </div>
             </section>
 
-            <section id="files-card" class="card files-card hidden is-collapsible" data-card-id="files">
+            <section id="tasks-card" class="card tasks-card hidden is-collapsible" data-card-id="tasks">
+                <div class="card-head" data-card-toggle="tasks" title="Double-click to collapse or expand">
+                    <div class="card-head-left">
+                        <span class="card-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+                        </span>
+                        <span class="card-title">Tasks</span>
+                    </div>
+                    <span class="card-chevron" aria-hidden="true"></span>
+                    <span id="tasks-meta" class="card-meta">0 in progress · 0 completed</span>
+                </div>
+                <div class="card-body tasks-body">
+                    <div id="tasks-running-group" class="tasks-group hidden">
+                        <div class="tasks-group-head">
+                            <span class="tasks-group-title">In progress</span>
+                            <span id="tasks-running-count" class="tasks-group-count">0</span>
+                        </div>
+                        <ul id="tasks-running-list" class="tasks-list"></ul>
+                    </div>
+                    <div id="tasks-queued-group" class="tasks-group hidden">
+                        <div class="tasks-group-head">
+                            <span class="tasks-group-title">Queued</span>
+                            <span id="tasks-queued-count" class="tasks-group-count">0</span>
+                        </div>
+                        <ul id="tasks-queued-list" class="tasks-list"></ul>
+                    </div>
+                    <div id="tasks-completed-group" class="tasks-group hidden">
+                        <div class="tasks-group-head">
+                            <span class="tasks-group-title">Completed</span>
+                            <span id="tasks-completed-count" class="tasks-group-count">0</span>
+                        </div>
+                        <ul id="tasks-completed-list" class="tasks-list"></ul>
+                    </div>
+                </div>
+            </section>
+
+<section id="files-card" class="card files-card hidden is-collapsible" data-card-id="files">
                 <div class="card-head" data-card-toggle="files" title="Double-click to collapse or expand">
                     <div class="card-head-left">
                         <span class="card-icon" aria-hidden="true">

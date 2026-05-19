@@ -102,7 +102,9 @@ describe('WebviewPanelProvider', () => {
                     onDidReceiveMessage: () => {},
                     postMessage: () => Promise.resolve(true),
                 },
+                viewColumn: 2,
                 onDidDispose: () => {},
+                onDidChangeViewState: () => {},
                 reveal: () => {},
                 dispose: () => {},
             };

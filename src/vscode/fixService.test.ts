@@ -11,9 +11,12 @@ import {
     getDiagnosticTitle,
     fixProblem,
     fixIssue,
+    fixIssues,
+    cancelBatch,
     _resetFixState,
     _enqueueFixTask,
     _setActiveFix,
+    _setActiveBatchMeta,
     _setPausedFix,
     _setPauseRequested,
     _addFixedIndex,
@@ -144,6 +147,50 @@ describe('fixService', () => {
             const snapshot = getAiFixQueueSnapshot();
             expect(snapshot.states['4']).to.equal('queued');
             expect(snapshot.hasPendingTasks).to.be.true;
+        });
+
+        it('surfaces batchId on queued items', () => {
+            const diag = makeDiag();
+            _enqueueFixTask({
+                key: 'k1',
+                title: 'Batch Task #1',
+                diagnostic: diag,
+                batchMeta: { batchId: 'batch_test', batchIndex: 0, batchTotal: 2 },
+                resolve: () => {},
+            });
+            _enqueueFixTask({
+                key: 'k2',
+                title: 'Batch Task #2',
+                diagnostic: diag,
+                batchMeta: { batchId: 'batch_test', batchIndex: 1, batchTotal: 2 },
+                resolve: () => {},
+            });
+            const snapshot = getAiFixQueueSnapshot();
+            expect(snapshot.items).to.have.length(2);
+            expect(snapshot.items[0].batchId).to.equal('batch_test');
+            expect(snapshot.items[0].batchIndex).to.equal(0);
+            expect(snapshot.items[0].batchTotal).to.equal(2);
+            expect(snapshot.items[1].batchIndex).to.equal(1);
+        });
+
+        it('reports activeBatchId when the running task is part of a batch', () => {
+            _setActiveBatchMeta({ batchId: 'batch_running', batchIndex: 0, batchTotal: 3 });
+            const snapshot = getAiFixQueueSnapshot();
+            expect(snapshot.activeBatchId).to.equal('batch_running');
+        });
+
+        it('exposes runningTasks for the currently active tasks', () => {
+            _setActiveFix(7, 'Active Fix #7');
+            _setActiveFix(8, 'Active Fix #8');
+            const snapshot = getAiFixQueueSnapshot();
+            expect(snapshot.runningTasks).to.have.length(2);
+            const titles = snapshot.runningTasks.map((t) => t.title).sort();
+            expect(titles).to.deep.equal(['Active Fix #7', 'Active Fix #8']);
+        });
+
+        it('starts with an empty recentlyCompleted list', () => {
+            const snapshot = getAiFixQueueSnapshot();
+            expect(snapshot.recentlyCompleted).to.deep.equal([]);
         });
     });
 
@@ -587,6 +634,283 @@ describe('fixService', () => {
                 line: 5,
                 column: 3,
             });
+        });
+    });
+
+    describe('cancelBatch', () => {
+        it('rejects empty or non-string batchIds without touching state', () => {
+            const result = cancelBatch('' as string);
+            expect(result).to.deep.equal({ cancelled: 0, queued: 0, paused: 0, running: 0 });
+        });
+
+        it('removes queued tasks that belong to the batch and resolves them as cancelled', () => {
+            const diag = makeDiag();
+            const resolved: Array<{ status: string }> = [];
+            _enqueueFixTask({
+                key: 'k1',
+                title: 'Batch Task A',
+                diagnostic: diag,
+                batchMeta: { batchId: 'batch_cancel', batchIndex: 0, batchTotal: 2 },
+                resolve: (r) => resolved.push(r),
+            });
+            _enqueueFixTask({
+                key: 'k2',
+                title: 'Batch Task B',
+                diagnostic: diag,
+                batchMeta: { batchId: 'batch_cancel', batchIndex: 1, batchTotal: 2 },
+                resolve: (r) => resolved.push(r),
+            });
+            _enqueueFixTask({
+                key: 'k3',
+                title: 'Unrelated',
+                diagnostic: diag,
+                resolve: () => {},
+            });
+
+            const result = cancelBatch('batch_cancel');
+
+            expect(result.cancelled).to.equal(2);
+            expect(result.queued).to.equal(2);
+            expect(resolved.map((r) => r.status)).to.deep.equal(['cancelled', 'cancelled']);
+            const snapshot = getAiFixQueueSnapshot();
+            expect(snapshot.items.map((i) => i.title)).to.deep.equal(['Unrelated']);
+        });
+
+        it('cancels paused tasks belonging to the batch', () => {
+            const diag = makeDiag();
+            const resolved: Array<{ status: string }> = [];
+            _setPausedFix({
+                id: 'paused_b1',
+                key: 'paused-key',
+                title: 'Paused In Batch',
+                issue: repairIssueFromSanitizerDiagnostic(diag),
+                batchMeta: { batchId: 'batch_paused', batchIndex: 0, batchTotal: 1 },
+                resolve: (r) => resolved.push(r),
+            });
+            const result = cancelBatch('batch_paused');
+            expect(result.cancelled).to.equal(1);
+            expect(result.paused).to.equal(1);
+            expect(resolved[0].status).to.equal('cancelled');
+        });
+
+        it('returns zero counts when the batchId has no matching tasks', () => {
+            const diag = makeDiag();
+            _enqueueFixTask({
+                key: 'k',
+                title: 'task',
+                diagnostic: diag,
+                batchMeta: { batchId: 'other', batchIndex: 0, batchTotal: 1 },
+                resolve: () => {},
+            });
+            const result = cancelBatch('does_not_exist');
+            expect(result).to.deep.equal({ cancelled: 0, queued: 0, paused: 0, running: 0 });
+            const snapshot = getAiFixQueueSnapshot();
+            expect(snapshot.items).to.have.length(1);
+        });
+    });
+
+    describe('fixIssues batch handling', () => {
+        function stubWebview() {
+            sinon.stub(WebviewPanelProvider.prototype, 'postMessage');
+            sinon.stub(WebviewPanelProvider.prototype, 'createOrShow').returns({
+                webview: { postMessage: () => Promise.resolve(true) },
+                reveal: () => {},
+                dispose: () => {},
+                onDidDispose: () => {},
+            } as any);
+            sinon.stub(WebviewPanelProvider.prototype, 'clear');
+            sinon.stub(WebviewPanelProvider.prototype, 'onAction');
+            sinon.stub(WebviewPanelProvider.prototype, 'nextMessageId').callsFake(() => `msg_${Date.now()}`);
+            (global as any).msAgentContext = {
+                extensionUri: { fsPath: '/workspace' },
+                subscriptions: [],
+            };
+        }
+
+        function stubConfig() {
+            sinon.stub(configModule, 'getLLMConfig').returns({
+                modelName: 'opencode/minimax-m2.5-free',
+                providerID: 'opencode',
+                modelID: 'minimax-m2.5-free',
+                modelFullName: 'opencode/minimax-m2.5-free',
+                timeoutMs: 300000,
+                opencodeServePort: 7325,
+                opencodeCliPath: 'opencode',
+            });
+        }
+
+        function makeValidPayload(
+            file: string,
+            line: number,
+            issueType = 'OUT_OF_BOUNDS',
+        ): Record<string, unknown> {
+            return {
+                uri: `file://${file}`,
+                range: {
+                    start: { line: line - 1, character: 0 },
+                    end: { line: line - 1, character: 10 },
+                },
+                issueType,
+                message: `${issueType} in ${file}:${line}`,
+                severity: 'Error',
+            };
+        }
+
+        function stubAppliedBackend(): sinon.SinonStub {
+            return sinon.stub(backendFactory, 'createFixBackend').returns({
+                name: 'opencode',
+                supportsStreaming: () => true,
+                cancel: () => {},
+                executeFix: async (
+                    _issue: RepairIssue,
+                    _context: FixContext,
+                    callbacks?: FixCallbacks,
+                ) => {
+                    callbacks?.onEvent?.('session_start', { backend: 'opencode', mode: 'server' });
+                    callbacks?.onEvent?.('session_end', {
+                        success: true,
+                        outcome: 'applied',
+                        finalMessage: 'ok',
+                    });
+                    return {
+                        success: true,
+                        outcome: 'applied',
+                        finalMessage: 'ok',
+                        toolCallCount: 0,
+                        fileChanged: true,
+                        originalContent: 'before',
+                        newContent: 'after',
+                    };
+                },
+            } as any);
+        }
+
+        it('returns an empty result for an empty array without warnings', async () => {
+            const warningStub = sinon.stub(vscode.window, 'showWarningMessage');
+            const createBackendStub = sinon.stub(backendFactory, 'createFixBackend');
+            const result = await fixIssues([]);
+            expect(result.total).to.equal(0);
+            expect(result.accepted).to.equal(0);
+            expect(result.results).to.deep.equal([]);
+            expect(result.batchId).to.match(/^batch_\d+_/);
+            expect(warningStub.called).to.equal(false);
+            expect(createBackendStub.called).to.equal(false);
+        });
+
+        it('returns a warning when the requests argument is not an array', async () => {
+            const warningStub = sinon.stub(vscode.window, 'showWarningMessage');
+            const result = await fixIssues('not-an-array' as unknown);
+            expect(result.total).to.equal(0);
+            expect(result.accepted).to.equal(0);
+            expect(result.results).to.deep.equal([]);
+            expect(warningStub.calledOnce).to.equal(true);
+        });
+
+        it('reports invalid_payload entries without stopping the rest of the batch', async () => {
+            stubWebview(); stubConfig(); stubAppliedBackend();
+            sinon.stub(DiagnosticsManager, 'removeDiagnostic');
+            const valid1 = makeValidPayload('/workspace/a.cpp', 10, 'OUT_OF_BOUNDS');
+            const invalid = { message: 'missing uri and range' };
+            const valid2 = makeValidPayload('/workspace/b.cpp', 20, 'MEM_LEAK');
+            const result = await fixIssues([valid1, invalid, valid2]);
+            expect(result.total).to.equal(3);
+            expect(result.accepted).to.equal(2);
+            expect(result.results[0].status).to.equal('completed');
+            expect(result.results[1].status).to.equal('invalid_payload');
+            expect(result.results[1].error).to.be.a('string');
+            expect(result.results[2].status).to.equal('completed');
+            expect(result.summary.completed).to.equal(2);
+            expect(result.summary.invalid_payload).to.equal(1);
+        });
+
+        it('uses the caller-supplied batchId when provided', async () => {
+            stubWebview(); stubConfig(); stubAppliedBackend();
+            sinon.stub(DiagnosticsManager, 'removeDiagnostic');
+            const valid = makeValidPayload('/workspace/c.cpp', 30);
+            const result = await fixIssues([valid], { batchId: 'caller_batch_42' });
+            expect(result.batchId).to.equal('caller_batch_42');
+            expect(result.accepted).to.equal(1);
+            expect(result.summary.completed).to.equal(1);
+        });
+
+        it('does not dedupe payloads that share a file:line:errorType — every selected row gets queued', async () => {
+            stubWebview(); stubConfig(); stubAppliedBackend();
+            sinon.stub(DiagnosticsManager, 'removeDiagnostic');
+            const a = makeValidPayload('/workspace/dup.cpp', 7, 'ILLEGAL_ADDR_READ');
+            const b = makeValidPayload('/workspace/dup.cpp', 7, 'ILLEGAL_ADDR_READ');
+            const result = await fixIssues([a, b]);
+            expect(result.total).to.equal(2);
+            expect(result.accepted).to.equal(2);
+            expect(result.results[0].status).to.equal('completed');
+            expect(result.results[1].status).to.equal('completed');
+            expect(result.summary.completed).to.equal(2);
+            expect(result.summary.already_running).to.equal(0);
+        });
+
+        it('honors msagent.fixesPerBatch by running up to N fixes concurrently', async () => {
+            stubWebview(); stubConfig();
+            sinon.stub(DiagnosticsManager, 'removeDiagnostic');
+            const getConfigStub = sinon.stub(vscode.workspace, 'getConfiguration');
+            getConfigStub.withArgs('msagent').returns({
+                get: (key: string, fallback: unknown) => (key === 'fixesPerBatch' ? 3 : fallback),
+            } as any);
+            let inFlight = 0;
+            let peakInFlight = 0;
+            const releases: Array<() => void> = [];
+            sinon.stub(backendFactory, 'createFixBackend').returns({
+                name: 'opencode',
+                supportsStreaming: () => true,
+                cancel: () => {},
+                executeFix: async (
+                    _issue: RepairIssue,
+                    _context: FixContext,
+                    callbacks?: FixCallbacks,
+                ) => {
+                    inFlight += 1;
+                    peakInFlight = Math.max(peakInFlight, inFlight);
+                    await new Promise<void>((resolve) => { releases.push(resolve); });
+                    inFlight -= 1;
+                    callbacks?.onEvent?.('session_start', { backend: 'opencode', mode: 'server' });
+                    callbacks?.onEvent?.('session_end', {
+                        success: true,
+                        outcome: 'applied',
+                        finalMessage: 'ok',
+                    });
+                    return {
+                        success: true,
+                        outcome: 'applied',
+                        finalMessage: 'ok',
+                        toolCallCount: 0,
+                        fileChanged: true,
+                        originalContent: 'before',
+                        newContent: 'after',
+                    };
+                },
+            } as any);
+            const payloads = [
+                makeValidPayload('/workspace/a.cpp', 1, 'OUT_OF_BOUNDS'),
+                makeValidPayload('/workspace/b.cpp', 2, 'MEM_LEAK'),
+                makeValidPayload('/workspace/c.cpp', 3, 'ILLEGAL_ADDR_READ'),
+                makeValidPayload('/workspace/d.cpp', 4, 'ILLEGAL_ADDR_WRITE'),
+                makeValidPayload('/workspace/e.cpp', 5, 'UNINITIALIZED_READ'),
+            ];
+            const resultPromise = fixIssues(payloads);
+            for (let attempt = 0; attempt < 20 && releases.length < 3; attempt += 1) {
+                await new Promise<void>((r) => setImmediate(r));
+            }
+            expect(releases.length).to.be.at.least(3, 'expected at least 3 concurrent executeFix calls');
+            for (const release of releases.slice()) {
+                release();
+            }
+            for (let attempt = 0; attempt < 50 && releases.length < payloads.length; attempt += 1) {
+                await new Promise<void>((r) => setImmediate(r));
+                for (const release of releases.slice()) {
+                    release();
+                }
+            }
+            const result = await resultPromise;
+            expect(peakInFlight).to.equal(3);
+            expect(result.summary.completed).to.equal(payloads.length);
         });
     });
 });

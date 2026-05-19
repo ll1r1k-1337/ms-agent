@@ -38,7 +38,7 @@ This document defines **separation of responsibilities**, the **integration API*
 |------|-----------|-------------|
 | Run sanitizer / collect logs | Yes | No |
 | Parse log for **Problems** + sidebar rows | Yes | No in integrated flow |
-| **`fixIssue` payload assembly** | Yes — on user repair request | Validates and normalizes payload into a direct repair issue |
+| **`fixIssue` / `fixIssues` payload assembly** | Yes — on user repair request (single row or whole group) | Validates and normalizes each payload into a direct repair issue |
 | **Diagnostics in editor** | Yes | Not required for integrated UX |
 | **AI fix** affordance (v1) | Yes — sidebar only | No duplicate buttons in msAgent for this flow |
 | **Repair queue state** | Optional result handling only | Owns queueing, duplicate suppression, cancellation, and fix-session state |
@@ -73,6 +73,7 @@ sequenceDiagram
 | Command | Arguments | Notes |
 |---------|-----------|--------|
 | `msagent.fixIssue` | `{ uri, range, issueType, message, severity?, details? }` | Invoked from sanitizer sidebar when feature flag + msAgent available. msAgent validates and enqueues the issue, but does not publish Problems for this payload. |
+| `msagent.fixIssues` | `payloads: Array<{ uri, range, issueType, message, severity?, details? }>, options?: { batchId?, perTaskOptions? }` | Additive batch variant. mstt sends a set of issues (e.g. every leaf under a sidebar group node) and msAgent enqueues them as a single batch. The fix-queue still processes one at a time; the result reports per-issue status plus a summary. mstt should feature-detect by checking `vscode.commands.getCommands(true)` for `msagent.fixIssues` and fall back to sequential `fixIssue` calls when only the single-issue command is registered. |
 
 Payload contract:
 
@@ -103,6 +104,39 @@ Contract details:
 - `details` is optional enrichment for repair prompts. `stack` frames with missing `file` or one-based `line` are ignored.
 - `executeCommand('msagent.fixIssue', payload)` resolves to a status such as `completed`, `no_change`, `failed`, `cancelled`, `stopped`, `already_running`, or `invalid_payload`. (`stopped` is returned when the user pauses the active session.) `invalid_index` and `out_of_range` belong to the legacy `fixProblem(index)` path and are not produced by `fixIssue`.
 
+Batch result contract (`msagent.fixIssues`):
+
+```ts
+{
+  batchId: string;            // auto-generated unless caller passes `options.batchId`
+  total: number;              // length of the input payloads array
+  accepted: number;           // payloads that passed validation and were enqueued
+  results: Array<{
+    index: number;            // position in the original payloads array
+    status: 'completed' | 'no_change' | 'failed' | 'cancelled'
+          | 'stopped' | 'already_running' | 'invalid_payload';
+    error?: string;           // populated when status === 'invalid_payload'
+    deduplicated?: true;      // marked when status === 'already_running' because the
+                              // same file:line:errorType was already queued or active
+  }>;
+  summary: {
+    completed: number;
+    no_change: number;
+    failed: number;
+    cancelled: number;
+    stopped: number;
+    already_running: number;
+    invalid_payload: number;
+  };
+}
+```
+
+Notes:
+
+- Queue items that belong to a batch are surfaced through the existing AI-fix queue snapshot (`AiFixQueueSnapshot.items[].batchId / batchIndex / batchTotal` and `activeBatchId`) so the WebView and any caller-side progress UI can group them.
+- The first task in a batch clears the WebView (matching `fixIssue`); subsequent tasks preserve session history so the user can review the batch end-to-end.
+- Atomic batch cancel is not in v1 — mstt can either rely on the WebView's pause/cancel controls or cancel queued items individually via the queue snapshot. Per-issue progress reporting is the v1 deliverable.
+
 **Detecting msAgent without extension id:** e.g. test whether `msagent.fixIssue` appears in `vscode.commands.getCommands(true)` after activation, or use a small **try/catch** around `executeCommand` — exact approach is an mstt implementation detail.
 
 ---
@@ -126,6 +160,7 @@ Contract details:
 - Do not publish Problems or store mstt-owned diagnostics for `fixIssue`.
 - Return `invalid_payload` and show a warning for malformed payloads; otherwise use the same WebView, queue, cancellation, backend, and LLM settings as normal repair sessions.
 - Keep `parseLog` + `fixProblem` for standalone msAgent use.
+- Expose `msagent.fixIssues` for batch repair. Each payload uses the same shape as `fixIssue`; the queue still processes one task at a time but every task in the batch carries a shared `batchId` so the snapshot and WebView can group them. The command returns a per-issue + summary result; invalid payloads short-circuit into the result without stopping the rest of the batch.
 
 ---
 

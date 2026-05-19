@@ -17,6 +17,8 @@
     "onCommand:msagent.parseLog",
     "onCommand:msagent.fixProblem",
     "onCommand:msagent.fixIssue",
+    "onCommand:msagent.fixIssues",
+    "onCommand:msagent.cancelBatch",
     "onCommand:msagent.fixAll",
     "onCommand:msagent.selectModel",
     "onCommand:msagent.openSettings",
@@ -37,6 +39,14 @@
       {
         "command": "msagent.fixIssue",
         "title": "msAgent: Fix Issue Payload"
+      },
+      {
+        "command": "msagent.fixIssues",
+        "title": "msAgent: Fix Issue Payload Batch"
+      },
+      {
+        "command": "msagent.cancelBatch",
+        "title": "msAgent: Cancel Fix Batch"
       },
       {
         "command": "msagent.getAiFixQueueStates",
@@ -87,6 +97,13 @@
           "type": "string",
           "default": "opencode",
           "description": "Path to the OpenCode executable used for `opencode serve`."
+        },
+        "msagent.fixesPerBatch": {
+          "type": "integer",
+          "default": 1,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "Number of AI fixes to run concurrently. When greater than 1, queued repair tasks (e.g. from msagent.fixIssues) are processed in parallel — up to this many at once. Set to 1 to keep the original one-at-a-time behavior."
         }
       }
     },

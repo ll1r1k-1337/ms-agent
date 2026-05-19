@@ -17,10 +17,13 @@ export const window = {
     createOutputChannel: () => ({ appendLine: () => {}, clear: () => {}, show: () => {} }),
     createWebviewPanel: () => ({
         webview: { html: '', onDidReceiveMessage: () => {}, postMessage: () => Promise.resolve(true), cspSource: 'vscode-resource:' },
+        viewColumn: 2,
         onDidDispose: () => {},
+        onDidChangeViewState: () => {},
         reveal: () => {},
         dispose: () => {},
     }),
+    registerWebviewPanelSerializer: () => ({ dispose: () => {} }),
     withProgress: async (_options: unknown, task: (p: unknown, token: unknown) => Promise<unknown>) =>
         task({ report: () => {} }, { onCancellationRequested: () => {} }),
 };

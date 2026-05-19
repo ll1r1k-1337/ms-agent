@@ -20,6 +20,8 @@ function getOutputChannel(): { appendLine: (msg: string) => void } {
     return { appendLine: () => {} };
 }
 
+export const MSAGENT_FIX_VIEW_TYPE = 'msAgentFix';
+
 export class WebviewPanelProvider {
     private panel: vscode.WebviewPanel | undefined;
     private webviewReady = false;
@@ -31,32 +33,81 @@ export class WebviewPanelProvider {
     private static readonly MAX_SESSION_MESSAGES = 2000;
     private autoReadyTimeout: NodeJS.Timeout | undefined;
     private extensionUri: vscode.Uri | undefined;
+    /** Last column the user had this panel in; we reveal back into it so we don't bounce to a new editor group. */
+    private lastViewColumn: vscode.ViewColumn | undefined;
+
+    /**
+     * True when this provider is currently driving an open VS Code webview panel.
+     * Useful for the serializer to decide whether to dispose a duplicate.
+     */
+    hasPanel(): boolean {
+        return this.panel !== undefined;
+    }
+
+    /**
+     * Adopt a webview panel created elsewhere (e.g. one deserialized by VS Code on
+     * extension reload) as this provider's singleton panel. The HTML is rehydrated
+     * so the panel becomes interactive again — the old session content is gone but
+     * future fix runs use this same tab instead of opening a new one.
+     */
+    adopt(panel: vscode.WebviewPanel, context: vscode.ExtensionContext): void {
+        if (this.panel === panel) {
+            return;
+        }
+        if (this.panel) {
+            // Caller should only adopt when we don't already own a panel — but be
+            // defensive: dispose the incoming panel rather than leave the user with
+            // two "msAgent Fix Details" tabs.
+            panel.dispose();
+            return;
+        }
+        this.panel = panel;
+        this.extensionUri = context.extensionUri;
+        this.lastViewColumn = panel.viewColumn ?? this.lastViewColumn;
+        this.webviewReady = false;
+        // Rehydrate HTML — the deserialized panel has no live script attached.
+        this.panel.webview.html = this.getHTML(this.panel.webview, context.extensionUri);
+        this.scheduleAutoReady();
+        this.wireUpPanelEvents();
+    }
 
     createOrShow(context: vscode.ExtensionContext): vscode.WebviewPanel {
         if (this.panel) {
-            // Panel already exists — just reveal it.
+            // Panel already exists — reveal it in the column where the user has it
+            // (or where it last lived) so we never split into a new editor group.
             // DO NOT reload HTML or reset ready state; that discards the running script
             // and cancels pending auto-ready, causing messages to be lost forever.
-            this.panel.reveal(vscode.ViewColumn.Beside);
+            const targetColumn = this.panel.viewColumn ?? this.lastViewColumn ?? vscode.ViewColumn.Beside;
+            this.panel.reveal(targetColumn, true);
             return this.panel;
         }
 
         this.extensionUri = context.extensionUri;
         this.panel = vscode.window.createWebviewPanel(
-            'msAgentFix',
+            MSAGENT_FIX_VIEW_TYPE,
             'msAgent Fix Details',
-            vscode.ViewColumn.Beside,
+            this.lastViewColumn ?? vscode.ViewColumn.Beside,
             {
                 enableScripts: true,
                 retainContextWhenHidden: true,
                 localResourceRoots: [context.extensionUri],
             },
         );
+        this.lastViewColumn = this.panel.viewColumn ?? this.lastViewColumn;
         this.webviewReady = false;
         this.panel.webview.html = this.getHTML(this.panel.webview, context.extensionUri);
         this.scheduleAutoReady();
+        this.wireUpPanelEvents();
 
-        this.panel.webview.onDidReceiveMessage((message: any) => {
+        return this.panel;
+    }
+
+    private wireUpPanelEvents(): void {
+        if (!this.panel) {
+            return;
+        }
+        const panel = this.panel;
+        panel.webview.onDidReceiveMessage((message: any) => {
             if (message.type === 'fix_details_ready') {
                 if (this.autoReadyTimeout) {
                     clearTimeout(this.autoReadyTimeout);
@@ -88,22 +139,30 @@ export class WebviewPanelProvider {
             }
         });
 
-        this.panel.onDidDispose(() => {
-            this.panel = undefined;
-            this.webviewReady = false;
-            this.onActionCallback = undefined;
-            if (this.autoReadyTimeout) {
-                clearTimeout(this.autoReadyTimeout);
-                this.autoReadyTimeout = undefined;
+        panel.onDidChangeViewState((event) => {
+            const col = event.webviewPanel.viewColumn;
+            if (col !== undefined) {
+                this.lastViewColumn = col;
             }
         });
 
-        return this.panel;
+        panel.onDidDispose(() => {
+            if (this.panel === panel) {
+                this.panel = undefined;
+                this.webviewReady = false;
+                this.onActionCallback = undefined;
+                if (this.autoReadyTimeout) {
+                    clearTimeout(this.autoReadyTimeout);
+                    this.autoReadyTimeout = undefined;
+                }
+            }
+        });
     }
 
     revealLatestSession(): void {
         if (this.panel) {
-            this.panel.reveal(vscode.ViewColumn.Beside);
+            const targetColumn = this.panel.viewColumn ?? this.lastViewColumn ?? vscode.ViewColumn.Beside;
+            this.panel.reveal(targetColumn, true);
         }
     }
 

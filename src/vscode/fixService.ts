@@ -9,7 +9,7 @@ import {
     repairIssueFromSanitizerDiagnostic,
 } from './repairIssue';
 import type { RepairIssue } from './repairIssue';
-import { WebviewPanelProvider } from '../webview/webviewPanelProvider';
+import { WebviewPanelProvider, MSAGENT_FIX_VIEW_TYPE } from '../webview/webviewPanelProvider';
 import { StreamChunk } from '../llm/types';
 import { createFixBackend, FixCallbacks, FixResult } from '../backends/backendFactory';
 
@@ -37,6 +37,17 @@ export interface FixProblemOptions {
     suppressProgressNotification?: boolean;
     clearWebview?: boolean;
 }
+/**
+ * Metadata attached to every task that belongs to a single `fixIssues` batch.
+ * Carrying this on the task keeps progress reporting, snapshot display, and
+ * batch cancellation working through the existing single-task queue without
+ * splitting the queueing path into two code paths.
+ */
+export type FixBatchTaskMeta = {
+    batchId: string;
+    batchIndex: number;
+    batchTotal: number;
+};
 type QueuedFixTask = {
     id: string;
     key: string;
@@ -45,22 +56,60 @@ type QueuedFixTask = {
     issue: RepairIssue;
     sourceDiagnostic?: SanitizerDiagnostic;
     options?: FixProblemOptions;
+    batchMeta?: FixBatchTaskMeta;
     resolve: (result: FixProblemResult) => void;
 };
 const fixQueue: QueuedFixTask[] = [];
-let isProcessingFixQueue = false;
-let activeFixKey: string | undefined;
-let activeSanitizerIndex: number | undefined;
+
+/**
+ * Per-task runtime state for a fix currently being processed by a worker.
+ * Stored in `activeTasks` so multiple fixes can run concurrently.
+ */
+interface ActiveTaskEntry {
+    task: QueuedFixTask;
+    cts: vscode.CancellationTokenSource;
+}
+
+/** Tasks currently being processed by a worker, keyed by `task.id`. */
+const activeTasks = new Map<string, ActiveTaskEntry>();
+/** Number of worker loops currently alive (active + about-to-pull-a-task). */
+let activeWorkerCount = 0;
+/** Tasks that were paused mid-run; kept out of `fixQueue` so the panel lists only not-yet-started work. */
+const pausedActiveFixTasks = new Map<string, QueuedFixTask>();
+/** Task ids the user has explicitly asked to cancel; cleared once the worker observes the request. */
+const cancelRequestedTaskIds = new Set<string>();
 let pauseRequested = false;
-let cancelCurrentRequested = false;
 let clearConversationOnIdleAfterCancel = false;
-let currentCancellationTokenSource: vscode.CancellationTokenSource | undefined;
-/** Title of the diagnostic currently being fixed (shifted off the queue). */
-let activeFixTitle: string | undefined;
-/** Task paused mid-run; kept out of fixQueue so the panel lists only not-yet-started work. */
-let pausedActiveFixTask: QueuedFixTask | undefined;
 /** Completed (successfully fixed) sanitizer indices in the current parsed-log session. */
 const fixedSanitizerIndices = new Set<number>();
+
+function isKeyActive(key: string): boolean {
+    for (const entry of activeTasks.values()) {
+        if (entry.task.key === key) return true;
+    }
+    return false;
+}
+
+function isKeyPaused(key: string): boolean {
+    for (const task of pausedActiveFixTasks.values()) {
+        if (task.key === key) return true;
+    }
+    return false;
+}
+
+function isSanitizerIndexActive(index: number): boolean {
+    for (const entry of activeTasks.values()) {
+        if (entry.task.sanitizerIndex === index) return true;
+    }
+    return false;
+}
+
+function isSanitizerIndexPaused(index: number): boolean {
+    for (const task of pausedActiveFixTasks.values()) {
+        if (task.sanitizerIndex === index) return true;
+    }
+    return false;
+}
 
 function logFixQueue(message: string): void {
     getOutputChannel().appendLine(`[QUEUE] ${message}`);
@@ -145,24 +194,61 @@ function createFixRunId(): string {
     return `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/**
+ * Number of fix tasks the queue is allowed to process concurrently.
+ * Reads `msagent.fixesPerBatch` from VS Code settings, clamped to [1, 10] so
+ * a misconfigured value (or a missing setting) always yields safe behavior.
+ */
+export function readFixesPerBatch(): number {
+    try {
+        const raw = vscode.workspace
+            .getConfiguration('msagent')
+            .get<number>('fixesPerBatch', 1);
+        if (typeof raw !== 'number' || !Number.isFinite(raw)) {
+            return 1;
+        }
+        const rounded = Math.floor(raw);
+        if (rounded < 1) return 1;
+        if (rounded > 10) return 10;
+        return rounded;
+    } catch {
+        return 1;
+    }
+}
+
 function clearConversationIfCancelledAndIdle(): void {
     if (!clearConversationOnIdleAfterCancel) {
         return;
     }
-    const noRunningTask = !currentCancellationTokenSource;
-    const noPausedTask = !pausedActiveFixTask;
-    const noQueuedTasks = fixQueue.length === 0;
-    if (noRunningTask && noPausedTask && noQueuedTasks) {
+    if (activeTasks.size === 0 && pausedActiveFixTasks.size === 0 && fixQueue.length === 0) {
         clearConversationOnIdleAfterCancel = false;
         webviewProvider.clear();
         notifyQueueState();
     }
 }
 
+function describeActiveIndices(): string {
+    const indices: string[] = [];
+    for (const entry of activeTasks.values()) {
+        indices.push(String(entry.task.sanitizerIndex ?? 'direct'));
+    }
+    return indices.length === 0 ? 'none' : indices.join(',');
+}
+
+function describePausedIndices(): string {
+    const indices: string[] = [];
+    for (const task of pausedActiveFixTasks.values()) {
+        indices.push(String(task.sanitizerIndex ?? 'direct'));
+    }
+    return indices.length === 0 ? 'none' : indices.join(',');
+}
+
 function notifyQueueState(): void {
     const snapshot = getAiFixQueueSnapshot();
     logFixQueue(
-        `notifyQueueState paused=${snapshot.paused} pending=${snapshot.hasPendingTasks} queued=${snapshot.items.length} active=${activeSanitizerIndex ?? 'none'} pausedActive=${pausedActiveFixTask?.sanitizerIndex ?? 'none'}`,
+        `notifyQueueState paused=${snapshot.paused} pending=${snapshot.hasPendingTasks}`
+        + ` queued=${snapshot.items.length} active=${describeActiveIndices()}`
+        + ` pausedActive=${describePausedIndices()}`,
     );
     webviewProvider.postMessage({
         type: 'queue_state',
@@ -170,23 +256,92 @@ function notifyQueueState(): void {
             paused: snapshot.paused,
             hasPendingTasks: snapshot.hasPendingTasks,
             items: snapshot.items,
+            runningTasks: snapshot.runningTasks,
+            recentlyCompleted: snapshot.recentlyCompleted,
         },
     });
 }
 
 export type SanitizerAiFixState = 'queued' | 'running' | 'fixed';
+
+/** Terminal status the worker stamped on a task when it finished. */
+export type CompletedTaskStatus =
+    | 'completed'
+    | 'no_change'
+    | 'failed'
+    | 'cancelled'
+    | 'stopped';
+
+export interface AiFixQueueSnapshotItem {
+    id: string;
+    title: string;
+    /** Present only for tasks enqueued by `fixIssues` so callers can group them. */
+    batchId?: string;
+    /** Zero-based slot of this task inside its batch. */
+    batchIndex?: number;
+    /** Total tasks originally enqueued in this batch. */
+    batchTotal?: number;
+}
+
+export interface AiFixCompletedSnapshotItem extends AiFixQueueSnapshotItem {
+    status: CompletedTaskStatus;
+    /** Unix-ms timestamp of when the worker recorded the completion. */
+    completedAt: number;
+}
+
 export interface AiFixQueueSnapshot {
     paused: boolean;
     hasPendingTasks: boolean;
-    items: Array<{ id: string; title: string }>;
+    items: AiFixQueueSnapshotItem[];
+    /** Tasks currently being processed by a worker (size ≤ `msagent.fixesPerBatch`). */
+    runningTasks: AiFixQueueSnapshotItem[];
+    /**
+     * Recent task completions in newest-first order. Reset when the WebView
+     * is cleared (e.g. when a new fix run starts with `clearWebview: true`).
+     * Capped to the last `MAX_RECENTLY_COMPLETED` entries.
+     */
+    recentlyCompleted: AiFixCompletedSnapshotItem[];
     states: Record<string, SanitizerAiFixState>;
+    /** Active batch identifier when the currently running task belongs to a batch. */
+    activeBatchId?: string;
+}
+
+const MAX_RECENTLY_COMPLETED = 100;
+const recentlyCompletedTasks: AiFixCompletedSnapshotItem[] = [];
+
+function describeTaskForSnapshot(task: QueuedFixTask): AiFixQueueSnapshotItem {
+    return {
+        id: task.id,
+        title: task.title,
+        ...(task.batchMeta
+            ? {
+                batchId: task.batchMeta.batchId,
+                batchIndex: task.batchMeta.batchIndex,
+                batchTotal: task.batchMeta.batchTotal,
+            }
+            : {}),
+    };
+}
+
+function recordCompletedTask(task: QueuedFixTask, status: CompletedTaskStatus): void {
+    recentlyCompletedTasks.unshift({
+        ...describeTaskForSnapshot(task),
+        status,
+        completedAt: Date.now(),
+    });
+    if (recentlyCompletedTasks.length > MAX_RECENTLY_COMPLETED) {
+        recentlyCompletedTasks.length = MAX_RECENTLY_COMPLETED;
+    }
+}
+
+function resetCompletedHistory(): void {
+    recentlyCompletedTasks.length = 0;
 }
 
 function hasPendingFixTasks(): boolean {
     return (
-        activeSanitizerIndex !== undefined
-        || Boolean(currentCancellationTokenSource)
-        || Boolean(pausedActiveFixTask)
+        activeTasks.size > 0
+        || pausedActiveFixTasks.size > 0
         || fixQueue.length > 0
     );
 }
@@ -198,11 +353,15 @@ export function getAiFixQueueSnapshot(): AiFixQueueSnapshot {
             states[String(task.sanitizerIndex)] = 'queued';
         }
     }
-    if (pausedActiveFixTask?.sanitizerIndex !== undefined) {
-        states[String(pausedActiveFixTask.sanitizerIndex)] = 'queued';
+    for (const task of pausedActiveFixTasks.values()) {
+        if (task.sanitizerIndex !== undefined) {
+            states[String(task.sanitizerIndex)] = 'queued';
+        }
     }
-    if (activeSanitizerIndex !== undefined) {
-        states[String(activeSanitizerIndex)] = 'running';
+    for (const entry of activeTasks.values()) {
+        if (entry.task.sanitizerIndex !== undefined) {
+            states[String(entry.task.sanitizerIndex)] = 'running';
+        }
     }
     for (const fixedIndex of fixedSanitizerIndices) {
         const key = String(fixedIndex);
@@ -213,11 +372,29 @@ export function getAiFixQueueSnapshot(): AiFixQueueSnapshot {
     if (Object.keys(states).length > 0) {
         logFixQueue(`snapshot states=${JSON.stringify(states)}`);
     }
+    // Surface the *first* active batch id for backward-compat; with N>1
+    // concurrency multiple batches could in principle have active tasks at
+    // once, but the consumer only uses this for "is the WebView showing a
+    // batch session" — picking the first deterministic one is fine.
+    let activeBatchId: string | undefined;
+    for (const entry of activeTasks.values()) {
+        if (entry.task.batchMeta) {
+            activeBatchId = entry.task.batchMeta.batchId;
+            break;
+        }
+    }
+    const runningTasksSnapshot: AiFixQueueSnapshotItem[] = [];
+    for (const entry of activeTasks.values()) {
+        runningTasksSnapshot.push(describeTaskForSnapshot(entry.task));
+    }
     return {
         paused: pauseRequested,
         hasPendingTasks: hasPendingFixTasks(),
-        items: fixQueue.map((task) => ({ id: task.id, title: task.title })),
+        items: fixQueue.map(describeTaskForSnapshot),
+        runningTasks: runningTasksSnapshot,
+        recentlyCompleted: recentlyCompletedTasks.slice(),
         states,
+        ...(activeBatchId ? { activeBatchId } : {}),
     };
 }
 
@@ -232,36 +409,120 @@ export function resetAiFixHistory(): void {
     fixedSanitizerIndices.clear();
 }
 
-async function processFixQueue(): Promise<void> {
-    if (isProcessingFixQueue) {
+export interface CancelBatchResult {
+    /** Total tasks for this batch that were transitioned to `cancelled`. */
+    cancelled: number;
+    /** Of those, how many were waiting in the queue (never started). */
+    queued: number;
+    /** Of those, how many were paused mid-run. */
+    paused: number;
+    /** Of those, how many were actively running and got their CTS cancelled. */
+    running: number;
+}
+
+/**
+ * Cancel every task belonging to `batchId`, regardless of whether it is
+ * currently queued, paused, or actively running. The corresponding fixIssues
+ * promise resolves once the running tasks observe the cancellation and unwind
+ * — this function only kicks the cancellations off and returns synchronously
+ * so command callers don't have to wait.
+ */
+export function cancelBatch(batchId: string): CancelBatchResult {
+    if (!batchId || typeof batchId !== 'string') {
+        return { cancelled: 0, queued: 0, paused: 0, running: 0 };
+    }
+    let queued = 0;
+    let paused = 0;
+    let running = 0;
+    // 1. Remove any not-yet-started tasks from the queue (iterate backwards so
+    //    splice indices stay valid).
+    for (let i = fixQueue.length - 1; i >= 0; i -= 1) {
+        const task = fixQueue[i];
+        if (task.batchMeta?.batchId === batchId) {
+            fixQueue.splice(i, 1);
+            task.resolve({ status: 'cancelled' });
+            queued += 1;
+        }
+    }
+    // 2. Drop paused tasks owned by this batch.
+    for (const [id, task] of Array.from(pausedActiveFixTasks.entries())) {
+        if (task.batchMeta?.batchId === batchId) {
+            pausedActiveFixTasks.delete(id);
+            task.resolve({ status: 'cancelled' });
+            paused += 1;
+        }
+    }
+    // 3. Mark every running task in the batch as user-cancelled and cancel
+    //    its CancellationTokenSource so the backend tears down promptly.
+    for (const [id, entry] of activeTasks.entries()) {
+        if (entry.task.batchMeta?.batchId === batchId) {
+            cancelRequestedTaskIds.add(id);
+            entry.cts.cancel();
+            running += 1;
+        }
+    }
+    const total = queued + paused + running;
+    logFixQueue(
+        `cancelBatch id=${batchId} cancelled=${total} queued=${queued} paused=${paused} running=${running}`,
+    );
+    if (total > 0) {
+        notifyQueueState();
+    }
+    return { cancelled: total, queued, paused, running };
+}
+
+/**
+ * Spin up additional worker loops if the queue has work and the active worker
+ * count is below `msagent.fixesPerBatch`. Safe to call repeatedly — workers
+ * exit on their own when the queue drains.
+ */
+function startProcessing(): void {
+    if (pauseRequested) {
         return;
     }
-    isProcessingFixQueue = true;
+    const concurrency = readFixesPerBatch();
+    while (activeWorkerCount < concurrency) {
+        const hasResumableWork = pausedActiveFixTasks.size > 0 || fixQueue.length > 0;
+        if (!hasResumableWork) {
+            break;
+        }
+        activeWorkerCount += 1;
+        void runFixWorker();
+    }
+}
+
+async function runFixWorker(): Promise<void> {
     try {
         for (;;) {
             if (pauseRequested) {
-                break;
+                return;
             }
             let next: QueuedFixTask | undefined;
-            if (pausedActiveFixTask) {
-                next = pausedActiveFixTask;
-                pausedActiveFixTask = undefined;
+            // Drain paused tasks before pulling fresh work.
+            if (pausedActiveFixTasks.size > 0) {
+                const firstEntry = pausedActiveFixTasks.entries().next().value as
+                    | [string, QueuedFixTask]
+                    | undefined;
+                if (firstEntry) {
+                    pausedActiveFixTasks.delete(firstEntry[0]);
+                    next = firstEntry[1];
+                }
             }
-            else if (fixQueue.length > 0) {
+            if (!next && fixQueue.length > 0) {
                 next = fixQueue.shift();
             }
-            else {
-                break;
-            }
             if (!next) {
-                break;
+                return;
             }
 
-            activeFixKey = next.key;
-            activeSanitizerIndex = next.sanitizerIndex;
-            activeFixTitle = next.title;
-            currentCancellationTokenSource = new vscode.CancellationTokenSource();
-            logFixQueue(`start task id=${next.id} index=${next.sanitizerIndex ?? 'direct'} key=${next.key}`);
+            const cts = new vscode.CancellationTokenSource();
+            activeTasks.set(next.id, { task: next, cts });
+            logFixQueue(
+                `start task id=${next.id} index=${next.sanitizerIndex ?? 'direct'} key=${next.key}`
+                + (next.batchMeta
+                    ? ` batch=${next.batchMeta.batchId} (${next.batchMeta.batchIndex + 1}/${next.batchMeta.batchTotal})`
+                    : ''),
+            );
             notifyQueueState();
 
             const result = await fixSingleDiagnostic(
@@ -269,46 +530,49 @@ async function processFixQueue(): Promise<void> {
                 undefined,
                 undefined,
                 next.options,
-                currentCancellationTokenSource,
+                cts,
                 next.options?.clearWebview,
                 next.sourceDiagnostic,
             );
 
-            const wasCancelled = cancelCurrentRequested;
-            cancelCurrentRequested = false;
+            const wasCancelled = cancelRequestedTaskIds.has(next.id);
+            cancelRequestedTaskIds.delete(next.id);
 
             if (result.status === 'stopped' && pauseRequested && !wasCancelled) {
-                pausedActiveFixTask = next;
+                pausedActiveFixTasks.set(next.id, next);
+                activeTasks.delete(next.id);
                 logFixQueue(`pause task id=${next.id} index=${next.sanitizerIndex ?? 'direct'}`);
-                currentCancellationTokenSource = undefined;
-                activeFixKey = undefined;
-                activeSanitizerIndex = undefined;
-                activeFixTitle = undefined;
                 notifyQueueState();
-                break;
+                return;
             }
 
             const finalStatus = wasCancelled ? 'cancelled' : result.status;
             if (finalStatus === 'completed' && !result.removedDiagnostic && next.sanitizerIndex !== undefined) {
                 fixedSanitizerIndices.add(next.sanitizerIndex);
             }
+            // Record the completion in the recently-completed history so the
+            // WebView can show what's been processed already. Statuses other
+            // than the core terminal set (e.g. invalid_payload) come back from
+            // the queue but never from fixSingleDiagnostic — guard the cast.
+            const completedStatus: CompletedTaskStatus =
+                finalStatus === 'completed' || finalStatus === 'no_change'
+                || finalStatus === 'failed' || finalStatus === 'cancelled'
+                || finalStatus === 'stopped'
+                    ? finalStatus
+                    : 'failed';
+            recordCompletedTask(next, completedStatus);
             next.resolve(wasCancelled ? { status: 'cancelled' } : result);
             logFixQueue(`finish task id=${next.id} index=${next.sanitizerIndex ?? 'direct'} status=${finalStatus}`);
-            currentCancellationTokenSource = undefined;
-            activeFixKey = undefined;
-            activeSanitizerIndex = undefined;
-            activeFixTitle = undefined;
+            activeTasks.delete(next.id);
             notifyQueueState();
             clearConversationIfCancelledAndIdle();
         }
     } finally {
-        isProcessingFixQueue = false;
-        currentCancellationTokenSource = undefined;
-        activeFixKey = undefined;
-        activeSanitizerIndex = undefined;
-        activeFixTitle = undefined;
-        notifyQueueState();
-        clearConversationIfCancelledAndIdle();
+        activeWorkerCount = Math.max(0, activeWorkerCount - 1);
+        if (activeWorkerCount === 0) {
+            notifyQueueState();
+            clearConversationIfCancelledAndIdle();
+        }
     }
 }
 
@@ -318,6 +582,31 @@ async function processFixQueue(): Promise<void> {
 export function showFixDetailsPanel(): void {
     ensureFixDetailsPanel();
     webviewProvider.revealLatestSession();
+}
+
+/**
+ * Register a `WebviewPanelSerializer` so VS Code can hand any "msAgent Fix Details"
+ * panels left over from a previous extension activation back to our singleton.
+ *
+ * Without this, every reload (or every time the user closes the panel and triggers
+ * another fix) creates a fresh editor tab while the orphaned ones linger — a
+ * pile of empty "msAgent Fix Details" tabs builds up over time. With the
+ * serializer, the *first* deserialized panel is adopted and reused; any
+ * additional duplicates are disposed so the user always sees a single tab.
+ */
+export function registerFixDetailsSerializer(context: vscode.ExtensionContext): vscode.Disposable {
+    const serializer: vscode.WebviewPanelSerializer = {
+        async deserializeWebviewPanel(panel: vscode.WebviewPanel): Promise<void> {
+            if (webviewProvider.hasPanel()) {
+                // We already own a panel — collapse any duplicates VS Code is
+                // trying to restore so the user keeps a single tab.
+                panel.dispose();
+                return;
+            }
+            webviewProvider.adopt(panel, context);
+        },
+    };
+    return vscode.window.registerWebviewPanelSerializer(MSAGENT_FIX_VIEW_TYPE, serializer);
 }
 
 function ensureFixDetailsPanel(): void {
@@ -331,36 +620,38 @@ function ensureFixDetailsPanel(): void {
             if (pauseRequested) {
                 pauseRequested = false;
                 notifyQueueState();
-                if (!isProcessingFixQueue && (pausedActiveFixTask || fixQueue.length > 0)) {
-                    void processFixQueue();
-                }
+                startProcessing();
                 return;
             }
             pauseRequested = true;
-            cancelCurrentRequested = false;
             notifyQueueState();
             return;
         }
         if (message.type === 'cancel_current') {
             const hasQueuedAfterCurrent = fixQueue.length > 0;
-            if (currentCancellationTokenSource) {
-                cancelCurrentRequested = true;
+            // Cancel every running task — with N>1 concurrency multiple fixes
+            // can be in flight, and the user clicking "cancel" expects all of
+            // them to stop, not just one.
+            if (activeTasks.size > 0) {
+                for (const [id, entry] of activeTasks.entries()) {
+                    cancelRequestedTaskIds.add(id);
+                    entry.cts.cancel();
+                }
                 pauseRequested = false;
                 clearConversationOnIdleAfterCancel = !hasQueuedAfterCurrent;
-                currentCancellationTokenSource.cancel();
                 notifyQueueState();
                 return;
             }
-            if (pausedActiveFixTask) {
-                const task = pausedActiveFixTask;
-                pausedActiveFixTask = undefined;
-                task.resolve({ status: 'cancelled' });
+            if (pausedActiveFixTasks.size > 0) {
+                for (const [id, task] of pausedActiveFixTasks.entries()) {
+                    pausedActiveFixTasks.delete(id);
+                    task.resolve({ status: 'cancelled' });
+                }
                 pauseRequested = false;
-                cancelCurrentRequested = false;
                 clearConversationOnIdleAfterCancel = !hasQueuedAfterCurrent;
                 notifyQueueState();
                 if (hasQueuedAfterCurrent) {
-                    void processFixQueue();
+                    startProcessing();
                 } else {
                     clearConversationIfCancelledAndIdle();
                 }
@@ -388,27 +679,45 @@ function enqueueRepairIssue(
     options?: FixProblemOptions,
     sanitizerIndex?: number,
     sourceDiagnostic?: SanitizerDiagnostic,
+    batchMeta?: FixBatchTaskMeta,
 ): Promise<FixProblemResult> {
     const key = getDiagnosticFixKey(issue);
-    if (activeFixKey === key) {
-        logFixQueue(`skip enqueue key=${key} reason=already_active_key`);
-        webviewProvider.revealLatestSession();
-        return Promise.resolve({ status: 'already_running' });
-    }
-    if (pausedActiveFixTask?.key === key) {
-        logFixQueue(`skip enqueue key=${key} reason=already_paused_key`);
-        webviewProvider.revealLatestSession();
-        return Promise.resolve({ status: 'already_running' });
-    }
-    if (fixQueue.some((task) => task.key === key)) {
-        logFixQueue(`skip enqueue key=${key} reason=already_queued_key`);
-        webviewProvider.revealLatestSession();
-        return Promise.resolve({ status: 'already_running' });
+    // Dedupe by file:line:errorType is meant to suppress accidental double-clicks
+    // on the same diagnostic row. A batch caller (e.g. "AI fix all in group")
+    // intentionally enqueues every row in a group — collapsing rows by key
+    // would make the queue lie about the work it is doing, both visually (the
+    // user expects N queued tasks for N selected rows) and in the result
+    // summary. Sanitizer rows can legitimately share a file:line:errorType
+    // even when they describe different findings (different addresses, byte
+    // sizes, kernels), so for batch tasks we accept every payload unchanged
+    // and rely on the queue to process them one at a time. The single-issue
+    // path keeps the dedupe so a stray UI double-click still no-ops.
+    if (batchMeta === undefined) {
+        if (isKeyActive(key)) {
+            logFixQueue(`skip enqueue key=${key} reason=already_active_key`);
+            webviewProvider.revealLatestSession();
+            return Promise.resolve({ status: 'already_running' });
+        }
+        if (isKeyPaused(key)) {
+            logFixQueue(`skip enqueue key=${key} reason=already_paused_key`);
+            webviewProvider.revealLatestSession();
+            return Promise.resolve({ status: 'already_running' });
+        }
+        if (fixQueue.some((task) => task.key === key)) {
+            logFixQueue(`skip enqueue key=${key} reason=already_queued_key`);
+            webviewProvider.revealLatestSession();
+            return Promise.resolve({ status: 'already_running' });
+        }
     }
 
     return new Promise<FixProblemResult>((resolve) => {
         const taskId = createQueueTaskId();
-        logFixQueue(`enqueue task id=${taskId} index=${sanitizerIndex ?? 'direct'} key=${key}`);
+        logFixQueue(
+            `enqueue task id=${taskId} index=${sanitizerIndex ?? 'direct'} key=${key}`
+            + (batchMeta
+                ? ` batch=${batchMeta.batchId} (${batchMeta.batchIndex + 1}/${batchMeta.batchTotal})`
+                : ''),
+        );
         if (sanitizerIndex !== undefined) {
             fixedSanitizerIndices.delete(sanitizerIndex);
         }
@@ -420,10 +729,11 @@ function enqueueRepairIssue(
             issue,
             sourceDiagnostic,
             options,
+            batchMeta,
             resolve,
         });
         notifyQueueState();
-        void processFixQueue();
+        startProcessing();
     });
 }
 
@@ -441,6 +751,241 @@ export async function fixIssue(
         normalized.issue,
         { clearWebview: true, ...(options ?? {}) },
     );
+}
+
+/**
+ * Options for `fixIssues(...)`.
+ *
+ * `clearWebview` is applied only to the *first* task in the batch by default so
+ * that the WebView preserves the rest of the batch's session history. Callers
+ * that need a different behavior can override per-task options with `options`.
+ */
+export interface FixIssuesOptions {
+    /** Optional caller-supplied batch identifier. Auto-generated when omitted. */
+    batchId?: string;
+    /** Forwarded to every task. The webview is cleared only before the first task unless `clearWebview` is false. */
+    perTaskOptions?: FixProblemOptions;
+}
+
+export interface FixBatchItemResult {
+    /** Index in the original `requests` array. */
+    index: number;
+    status: FixProblemStatus;
+    /** Validation error string, present only when `status === 'invalid_payload'`. */
+    error?: string;
+    /** True when this entry was deduplicated against an already-queued/running fix. */
+    deduplicated?: boolean;
+}
+
+export interface FixBatchResult {
+    batchId: string;
+    /** Number of items in the original `requests` array. */
+    total: number;
+    /** Number of items that passed validation and were enqueued (including dedupe skips). */
+    accepted: number;
+    /** Per-item results in the same order as the input. */
+    results: FixBatchItemResult[];
+    summary: {
+        completed: number;
+        no_change: number;
+        failed: number;
+        cancelled: number;
+        stopped: number;
+        already_running: number;
+        invalid_payload: number;
+    };
+}
+
+function createBatchId(): string {
+    return `batch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function emptyBatchSummary(): FixBatchResult['summary'] {
+    return {
+        completed: 0,
+        no_change: 0,
+        failed: 0,
+        cancelled: 0,
+        stopped: 0,
+        already_running: 0,
+        invalid_payload: 0,
+    };
+}
+
+function bumpBatchSummary(summary: FixBatchResult['summary'], status: FixProblemStatus): void {
+    switch (status) {
+        case 'completed':
+            summary.completed += 1;
+            break;
+        case 'no_change':
+            summary.no_change += 1;
+            break;
+        case 'failed':
+            summary.failed += 1;
+            break;
+        case 'cancelled':
+            summary.cancelled += 1;
+            break;
+        case 'stopped':
+            summary.stopped += 1;
+            break;
+        case 'already_running':
+            summary.already_running += 1;
+            break;
+        case 'invalid_payload':
+            summary.invalid_payload += 1;
+            break;
+        default:
+            // invalid_index / out_of_range never come back from the fixIssue path,
+            // so we count them as failed for summary purposes.
+            summary.failed += 1;
+            break;
+    }
+}
+
+/**
+ * Repair a batch of caller-owned issues sequentially through the existing
+ * fix queue.
+ *
+ * Every valid payload is enqueued as its own `QueuedFixTask` tagged with a
+ * shared `batchId`. The queue processes them one at a time (reusing the pause/
+ * cancel/already-running plumbing), so progress is reported per-issue through
+ * `notifyQueueState`. Invalid payloads short-circuit into the result without
+ * stopping the rest of the batch.
+ */
+export async function fixIssues(
+    requests: unknown,
+    options?: FixIssuesOptions,
+): Promise<FixBatchResult> {
+    ensureFixDetailsPanel();
+    const batchId = options?.batchId ?? createBatchId();
+    const summary = emptyBatchSummary();
+
+    if (!Array.isArray(requests)) {
+        vscode.window.showWarningMessage(
+            'msAgent: fixIssues requires an array of issue payloads.',
+        );
+        return { batchId, total: 0, accepted: 0, results: [], summary };
+    }
+
+    const total = requests.length;
+    if (total === 0) {
+        return { batchId, total: 0, accepted: 0, results: [], summary };
+    }
+
+    logFixQueue(`batch begin id=${batchId} total=${total}`);
+
+    type Pending = {
+        index: number;
+        promise: Promise<FixProblemResult>;
+    };
+    const pending: Pending[] = [];
+    const earlyResults: Map<number, FixBatchItemResult> = new Map();
+
+    let acceptedCount = 0;
+    for (let i = 0; i < requests.length; i += 1) {
+        const normalized = normalizeFixIssueRequest(requests[i]);
+        if (!normalized.ok) {
+            logFixQueue(`batch reject id=${batchId} index=${i} error=${normalized.error}`);
+            earlyResults.set(i, {
+                index: i,
+                status: 'invalid_payload',
+                error: normalized.error,
+            });
+            continue;
+        }
+        // Clear the webview before the first task only — matches the
+        // single-issue `fixIssue` contract — but never wipe history mid-batch.
+        const isFirstAccepted = acceptedCount === 0;
+        const callerClearWebview = options?.perTaskOptions?.clearWebview;
+        const effectiveOptions: FixProblemOptions = {
+            ...(options?.perTaskOptions ?? {}),
+            clearWebview: isFirstAccepted ? (callerClearWebview ?? true) : false,
+        };
+        const batchMeta: FixBatchTaskMeta = {
+            batchId,
+            batchIndex: acceptedCount,
+            // batchTotal is patched after the loop once we know how many were accepted.
+            batchTotal: total,
+        };
+        const promise = enqueueRepairIssue(
+            normalized.issue,
+            effectiveOptions,
+            undefined,
+            undefined,
+            batchMeta,
+        );
+        pending.push({ index: i, promise });
+        acceptedCount += 1;
+    }
+
+    // Patch batchTotal so it reflects the accepted count rather than the raw
+    // input length. We refresh the snapshot so the webview sees the real
+    // denominator immediately.
+    for (const task of fixQueue) {
+        if (task.batchMeta?.batchId === batchId) {
+            task.batchMeta.batchTotal = acceptedCount;
+        }
+    }
+    for (const entry of activeTasks.values()) {
+        if (entry.task.batchMeta?.batchId === batchId) {
+            entry.task.batchMeta.batchTotal = acceptedCount;
+        }
+    }
+    for (const task of pausedActiveFixTasks.values()) {
+        if (task.batchMeta?.batchId === batchId) {
+            task.batchMeta.batchTotal = acceptedCount;
+        }
+    }
+    notifyQueueState();
+
+    const settled = await Promise.all(
+        pending.map(async ({ index, promise }) => {
+            const result = await promise;
+            return { index, result };
+        }),
+    );
+
+    const merged: FixBatchItemResult[] = [];
+    for (let i = 0; i < requests.length; i += 1) {
+        const early = earlyResults.get(i);
+        if (early) {
+            merged.push(early);
+            bumpBatchSummary(summary, early.status);
+            continue;
+        }
+        const settledItem = settled.find((entry) => entry.index === i);
+        if (!settledItem) {
+            // Should never happen — defensive default.
+            merged.push({ index: i, status: 'failed' });
+            bumpBatchSummary(summary, 'failed');
+            continue;
+        }
+        const status = settledItem.result.status;
+        const deduplicated = status === 'already_running';
+        merged.push({
+            index: i,
+            status,
+            ...(deduplicated ? { deduplicated: true } : {}),
+        });
+        bumpBatchSummary(summary, status);
+    }
+
+    logFixQueue(
+        `batch end id=${batchId} total=${total} accepted=${acceptedCount}`
+        + ` completed=${summary.completed} no_change=${summary.no_change}`
+        + ` failed=${summary.failed} cancelled=${summary.cancelled}`
+        + ` stopped=${summary.stopped} already_running=${summary.already_running}`
+        + ` invalid_payload=${summary.invalid_payload}`,
+    );
+
+    return {
+        batchId,
+        total,
+        accepted: acceptedCount,
+        results: merged,
+        summary,
+    };
 }
 
 export async function fixProblem(
@@ -466,12 +1011,12 @@ export async function fixProblem(
         return { status: 'out_of_range' };
     }
     const diagnostic = all[index];
-    if (activeSanitizerIndex === index) {
+    if (isSanitizerIndexActive(index)) {
         logFixQueue(`skip enqueue index=${index} reason=already_active_index`);
         webviewProvider.revealLatestSession();
         return { status: 'already_running' };
     }
-    if (pausedActiveFixTask?.sanitizerIndex === index) {
+    if (isSanitizerIndexPaused(index)) {
         logFixQueue(`skip enqueue index=${index} reason=already_paused_index`);
         webviewProvider.revealLatestSession();
         return { status: 'already_running' };
@@ -563,6 +1108,10 @@ async function fixSingleDiagnostic(
         if (extensionContext) {
             webviewProvider.createOrShow(extensionContext);
             if (clearWebview) {
+                // Reset the recently-completed history too so the WebView's
+                // "Completed" list reflects this run, not whatever was on
+                // screen before.
+                resetCompletedHistory();
                 webviewProvider.clear();
             }
             notifyQueueState();
@@ -792,6 +1341,20 @@ async function fixSingleDiagnostic(
 
         if (cancellationTokenSource.token.isCancellationRequested) {
             logFix(`exit runId=${repairRunId} status=stopped elapsed=${formatElapsed(Date.now() - fixStartedAt)}`);
+            // The backend doesn't always emit a terminal `session_end` when it
+            // gets cancelled mid-flight, so the WebView would otherwise be
+            // stuck showing "Repairing" with the elapsed timer ticking. Post a
+            // synthetic session_end so the panel transitions to a terminal
+            // state and freezes its current content for the user to review.
+            webviewProvider.postMessage({
+                type: 'session_end',
+                runId: repairRunId,
+                payload: {
+                    success: false,
+                    outcome: 'cancelled',
+                    finalMessage: 'Cancelled by user.',
+                },
+            } as any);
             return { status: 'stopped' };
         }
         if (result.outcome === 'no_change') {
@@ -840,7 +1403,7 @@ function formatOpenCodeConnectionError(
     friendly += '\n';
     friendly += 'Underlying error:\n';
     friendly += `${message}\n\n`;
-    friendly += 'Please ensure:\n';
+        friendly += 'Please ensure:\n';
     friendly += '• OpenCode is installed and available in your PATH\n';
     friendly += `• OpenCode can start with \`opencode serve --port ${config.opencodeServePort}\`\n`;
     friendly += '• Review the msAgent settings if the CLI path, model, port, or timeout changed';
@@ -872,16 +1435,14 @@ function handleFixError(e: unknown, config: ReturnType<typeof getLLMConfig>) {
 // For tests only
 export function _resetFixState() {
     fixQueue.length = 0;
-    isProcessingFixQueue = false;
-    activeFixKey = undefined;
-    activeSanitizerIndex = undefined;
+    activeTasks.clear();
+    activeWorkerCount = 0;
+    pausedActiveFixTasks.clear();
+    cancelRequestedTaskIds.clear();
     pauseRequested = false;
-    cancelCurrentRequested = false;
     clearConversationOnIdleAfterCancel = false;
-    currentCancellationTokenSource = undefined;
-    activeFixTitle = undefined;
-    pausedActiveFixTask = undefined;
     fixedSanitizerIndices.clear();
+    resetCompletedHistory();
 }
 
 export function _resetFixOutputChannelForTests() {
@@ -904,13 +1465,66 @@ export function _enqueueFixTask(
     fixQueue.push({ ...rest, issue, id: task.id || `test_${Math.random()}` });
 }
 
+function makeSyntheticFakeIssue(key: string, sanitizerIndex?: number): RepairIssue {
+    return {
+        issueType: 'TEST',
+        errorType: 'TEST',
+        severity: Severity.ERROR,
+        fileName: 'test.cpp',
+        lineNumber: sanitizerIndex ?? 0,
+        message: key,
+        rawLines: [],
+    };
+}
+
 export function _setActiveFix(index: number, title?: string) {
-    activeSanitizerIndex = index;
-    activeFixTitle = title;
+    const taskId = `__test_active_${index}_${Math.random().toString(36).slice(2, 8)}`;
+    const fakeTask: QueuedFixTask = {
+        id: taskId,
+        key: `__test_key_${index}`,
+        sanitizerIndex: index,
+        title: title ?? `__test_${index}`,
+        issue: makeSyntheticFakeIssue(`__test_key_${index}`, index),
+        resolve: () => {},
+    };
+    activeTasks.set(taskId, {
+        task: fakeTask,
+        cts: { token: { isCancellationRequested: false }, cancel: () => {}, dispose: () => {} } as any,
+    });
+}
+
+export function _setActiveBatchMeta(meta: FixBatchTaskMeta | undefined) {
+    for (const [id, entry] of activeTasks.entries()) {
+        if (id.startsWith('__test_batch_')) {
+            activeTasks.delete(id);
+        }
+        else if (entry.task.batchMeta && id.startsWith('__test_active_')) {
+            entry.task.batchMeta = undefined;
+        }
+    }
+    if (meta === undefined) {
+        return;
+    }
+    const taskId = `__test_batch_${meta.batchId}_${Math.random().toString(36).slice(2, 8)}`;
+    const fakeTask: QueuedFixTask = {
+        id: taskId,
+        key: `__test_batch_key_${meta.batchIndex}`,
+        title: `__test_batch_${meta.batchIndex}`,
+        issue: makeSyntheticFakeIssue(`__test_batch_key_${meta.batchIndex}`),
+        batchMeta: meta,
+        resolve: () => {},
+    };
+    activeTasks.set(taskId, {
+        task: fakeTask,
+        cts: { token: { isCancellationRequested: false }, cancel: () => {}, dispose: () => {} } as any,
+    });
 }
 
 export function _setPausedFix(task: QueuedFixTask | undefined) {
-    pausedActiveFixTask = task;
+    pausedActiveFixTasks.clear();
+    if (task !== undefined) {
+        pausedActiveFixTasks.set(task.id, task);
+    }
 }
 
 export function _setPauseRequested(v: boolean) {
@@ -919,4 +1533,8 @@ export function _setPauseRequested(v: boolean) {
 
 export function _addFixedIndex(index: number) {
     fixedSanitizerIndices.add(index);
+}
+
+export function _recordCompletedTaskForTests(task: QueuedFixTask, status: CompletedTaskStatus) {
+    recordCompletedTask(task, status);
 }
