@@ -10,6 +10,7 @@ import {
     extractToolPartParamsUpdate,
     extractTextDelta,
     extractErrorMessage,
+    extractRetryStatus,
     extractSessionId,
     isCompletionEvent,
     extractAssistantFinishReason,
@@ -19,6 +20,7 @@ import {
     isToolCallContinuationBoundary,
     ToolCallInfo,
     ToolResultInfo,
+    RetryStatusInfo,
     OpenCodeEvent,
 } from './opencodeEventAdapter';
 import { SessionStateMachine } from '../agent/sessionStateMachine';
@@ -477,6 +479,26 @@ function extractTerminalReason(
     return reason.length > 0 ? reason : null;
 }
 
+/**
+ * Build the user-facing failure message for an OpenCode `session.status`
+ * retry (see `extractRetryStatus`). Surfaces the provider message and, when
+ * known, the epoch-ms `next` retry time as an ISO timestamp so the user can
+ * see how long the model is unavailable.
+ */
+function formatRetryStatusFailure(info: RetryStatusInfo): string {
+    const detail = info.message.replace(/[.\s]+$/, '') || 'rate limit reached';
+    let retryClause = '';
+    if (info.retryAtMs !== undefined) {
+        const retryAt = new Date(info.retryAtMs);
+        if (!Number.isNaN(retryAt.getTime())) {
+            retryClause = ` The provider will not retry the model until ${retryAt.toISOString()}.`;
+        }
+    }
+    return `OpenCode halted this repair with a retry/rate-limit status: ${detail}.${retryClause}`
+        + ' msAgent ended the run instead of waiting; rerun the fix once the model is available,'
+        + ' or switch msagent.modelName to a model that is not rate-limited.';
+}
+
 export class OpenCodeSession {
     private transport: OpenCodeTransport;
     private callbacks?: OpenCodeSessionCallbacks;
@@ -542,6 +564,10 @@ export class OpenCodeSession {
             let toolCallCount = 0;
             let finalized = false;
             let transportError: Error | null = null;
+            // Set when OpenCode reports a `session.status` retry (rate limit /
+            // quota). Fails the run fast in `finalize` instead of letting it
+            // hang on heartbeats until the hard timeout.
+            let rateLimitFailure: string | null = null;
             let opencodeSessionId: string | undefined;
             let seenReadOnlyToolCall = false;
             let seenEditToolCall = false;
@@ -708,6 +734,26 @@ export class OpenCodeSession {
                         success: false,
                         outcome: 'failed',
                         finalMessage: `Transport error: ${transportError.message}`,
+                        toolCallCount,
+                        fileChanged: false,
+                    });
+                    return;
+                }
+
+                // OpenCode reported a retry/rate-limit status. This is NOT a
+                // hard terminal (R2), so it is handled here, ahead of the
+                // `!sawHardTerminal()` "protocol incomplete" branch, with its
+                // own actionable message instead of the generic one.
+                if (rateLimitFailure) {
+                    sm.dispatch({
+                        kind: 'PROTOCOL_ERROR',
+                        reason: 'OpenCode reported a retry/rate-limit status',
+                    });
+                    emitSessionEnd('failed', rateLimitFailure);
+                    doResolve({
+                        success: false,
+                        outcome: 'failed',
+                        finalMessage: rateLimitFailure,
                         toolCallCount,
                         fileChanged: false,
                     });
@@ -1151,6 +1197,28 @@ export class OpenCodeSession {
                             messageId,
                         );
                     }
+                }
+
+                // OpenCode's `session.status` retry signal (commonly a provider
+                // rate limit / daily quota). It is NOT a terminal event — the
+                // wire stays open and only `server.heartbeat` follows — so
+                // without this the run would hang until the hard timeout. Fail
+                // fast instead, mirroring the inactivity-timeout handler:
+                // record the failure, cancel the transport, and finalize. This
+                // does not make `session.status` a completion event (R2); it is
+                // an explicit failure routed through the early-finalize path.
+                const retryStatus = extractRetryStatus(e);
+                if (retryStatus && !rateLimitFailure) {
+                    rateLimitFailure = formatRetryStatusFailure(retryStatus);
+                    logSession(
+                        `retry_status attempt=${retryStatus.attempt ?? 'unknown'}`
+                        + ` retryAtMs=${retryStatus.retryAtMs ?? 'none'}`
+                        + ` message=${retryStatus.message.replace(/\s+/g, ' ').slice(0, 160)}`
+                        + ' -> failing fast',
+                    );
+                    this.transport.cancel();
+                    void finalize();
+                    return;
                 }
 
                 // Pure observability: snapshot the latest known input for

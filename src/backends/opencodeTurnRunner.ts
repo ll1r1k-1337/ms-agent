@@ -17,6 +17,7 @@ import {
     OpenCodeServerManagerConfig,
     TransportLogger,
 } from './opencodeServerManager';
+import { logRawEvent, RawEventDisposition } from '../vscode/rawEventChannel';
 
 export interface OpenCodeTurnRunnerConfig extends OpenCodeServerManagerConfig {
     model?: string;
@@ -269,6 +270,7 @@ export class OpenCodeTurnRunner {
     }
 
     private handleEvent(event: unknown): void {
+        this.recordRawEvent(event);
         if (!this.sessionId) {
             this.pendingSessionEvents.push(event);
             return;
@@ -418,6 +420,30 @@ export class OpenCodeTurnRunner {
             return false;
         }
         return isCompletionEvent(event as OpenCodeEvent);
+    }
+
+    /**
+     * Mirror every event pulled off the SSE stream to the raw-events channel,
+     * verbatim, before the session-scoping filter runs. Runners share one
+     * OpenCode server, so each `/event` subscription sees every session's
+     * events plus server-wide frames like `server.heartbeat`; the disposition
+     * tag records what this runner did with each one. Pure observability — it
+     * must never throw and never influence protocol decisions.
+     */
+    private recordRawEvent(event: unknown): void {
+        try {
+            let disposition: RawEventDisposition;
+            if (!this.sessionId) {
+                disposition = 'buffered';
+            } else if (this.shouldEmitEventForSession(event)) {
+                disposition = 'emit';
+            } else {
+                disposition = 'skip';
+            }
+            logRawEvent(event, { runnerSessionId: this.sessionId, disposition });
+        } catch {
+            // Observability must never break a repair.
+        }
     }
 
     private emitEvent(event: unknown): void {

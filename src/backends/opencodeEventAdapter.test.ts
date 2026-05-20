@@ -18,6 +18,7 @@ import {
     parseEventLine,
     extractTextDelta,
     extractErrorMessage,
+    extractRetryStatus,
     extractAssistantFinishReason,
     isCompletionEvent,
     isToolCallContinuationBoundary,
@@ -458,6 +459,71 @@ describe('opencodeEventAdapter', () => {
         it('should return null when no error', () => {
             const event: OpenCodeEvent = { type: 'text' };
             expect(extractErrorMessage(event)).to.be.null;
+        });
+    });
+
+    describe('extractRetryStatus', () => {
+        it('returns the message, retry time, and attempt for a session.status retry', () => {
+            const event: OpenCodeEvent = {
+                type: 'session.status',
+                properties: {
+                    sessionID: 'ses_1',
+                    status: {
+                        type: 'retry',
+                        attempt: 1,
+                        message: 'Rate limit exceeded. Please try again later.',
+                        next: 1779321600837,
+                    },
+                },
+            };
+            expect(extractRetryStatus(event)).to.deep.equal({
+                message: 'Rate limit exceeded. Please try again later.',
+                retryAtMs: 1779321600837,
+                attempt: 1,
+            });
+        });
+
+        it('omits retryAtMs and attempt when the retry status does not carry them', () => {
+            const event: OpenCodeEvent = {
+                type: 'session.status',
+                properties: { status: { type: 'retry', message: 'Slow down.' } },
+            };
+            const result = extractRetryStatus(event);
+            expect(result).to.not.be.null;
+            expect(result?.message).to.equal('Slow down.');
+            expect(result?.retryAtMs).to.be.undefined;
+            expect(result?.attempt).to.be.undefined;
+        });
+
+        it('falls back to a default message when the retry status carries none', () => {
+            const event: OpenCodeEvent = {
+                type: 'session.status',
+                properties: { status: { type: 'retry', next: 123 } },
+            };
+            const result = extractRetryStatus(event);
+            expect(result?.message).to.equal('OpenCode reported a retry status with no message');
+            expect(result?.retryAtMs).to.equal(123);
+        });
+
+        it('returns null for non-retry session.status events', () => {
+            expect(extractRetryStatus({
+                type: 'session.status',
+                properties: { status: { type: 'busy' } },
+            })).to.be.null;
+            expect(extractRetryStatus({
+                type: 'session.status',
+                properties: { status: { type: 'idle' } },
+            })).to.be.null;
+        });
+
+        it('returns null for events that are not a session.status retry', () => {
+            expect(extractRetryStatus({ type: 'server.heartbeat', properties: {} })).to.be.null;
+            expect(extractRetryStatus({
+                type: 'message.updated',
+                properties: { info: { role: 'assistant' } },
+            })).to.be.null;
+            expect(extractRetryStatus({ type: 'session.status' })).to.be.null;
+            expect(extractRetryStatus({ type: 'session.status', properties: {} })).to.be.null;
         });
     });
 

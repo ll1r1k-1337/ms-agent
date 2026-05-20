@@ -659,3 +659,52 @@ export function isToolCallContinuationBoundary(event: OpenCodeEvent): boolean {
 export function isSoftCloseEvent(event: OpenCodeEvent): boolean {
     return SOFT_CLOSE_TYPES.has(event.type ?? '');
 }
+
+export interface RetryStatusInfo {
+    /** Provider message, e.g. "Rate limit exceeded. Please try again later." */
+    message: string;
+    /** Epoch-ms the provider says the model may be retried, when present. */
+    retryAtMs?: number;
+    /** Retry attempt counter, when present. */
+    attempt?: number;
+}
+
+/**
+ * Detect OpenCode's `session.status` *retry* signal.
+ *
+ * When a provider rejects a turn — most commonly a rate-limit / daily-quota
+ * exhaustion on free models — OpenCode does NOT close the stream and does NOT
+ * emit a terminal assistant `message.updated`. It emits a `session.status`
+ * event whose `properties.status.type === "retry"` (carrying the provider
+ * message and a `next` epoch-ms retry time), then stays quiet apart from
+ * `server.heartbeat` keep-alives. With no terminal event and no edit, the
+ * session would otherwise sit idle until its hard timeout.
+ *
+ * This is NOT a terminal/completion signal — per the `opencode-protocol`
+ * skill (R2) the only success terminal is an assistant `message.updated`
+ * with `info.time.completed`, and `session.status` is explicitly listed as
+ * non-terminal. Callers use this purely to FAIL the run fast instead of
+ * hanging. Returns null for every event that is not a `session.status` with
+ * `status.type === "retry"` (including `busy`/`idle` statuses and unknown
+ * frames like `server.heartbeat`), so unknown shapes are tolerated.
+ */
+export function extractRetryStatus(event: OpenCodeEvent): RetryStatusInfo | null {
+    if (event.type !== 'session.status' || !isRecordLike(event.properties)) {
+        return null;
+    }
+    const status = event.properties.status;
+    if (!isRecordLike(status) || status.type !== 'retry') {
+        return null;
+    }
+    const rawMessage = typeof status.message === 'string' ? status.message.trim() : '';
+    const info: RetryStatusInfo = {
+        message: rawMessage || 'OpenCode reported a retry status with no message',
+    };
+    if (typeof status.next === 'number' && Number.isFinite(status.next)) {
+        info.retryAtMs = status.next;
+    }
+    if (typeof status.attempt === 'number' && Number.isFinite(status.attempt)) {
+        info.attempt = status.attempt;
+    }
+    return info;
+}

@@ -534,4 +534,25 @@ describe('OpenCodeFixBackend (integration via FixtureTransport)', () => {
             }
         });
     });
+
+    describe('rate-limit-retry (regression 2026-05-20)', () => {
+        it('fails fast on a session.status retry instead of hanging until timeout', async () => {
+            const original = 'int main() { return 0; }\n';
+            const run = await runFixture('rate-limit-retry', original);
+            try {
+                expect(run.result.success).to.equal(false);
+                expect(run.result.outcome).to.equal('failed');
+                expect(run.result.fileChanged).to.equal(false);
+                expect(run.result.finalMessage).to.include('retry/rate-limit status');
+                expect(run.result.finalMessage.toLowerCase()).to.include('rate limit exceeded');
+                expect(run.diskContent).to.equal(original);
+                expect(run.callbacks.diffs.length).to.equal(0);
+                // A rate-limited run must not be retried — a second attempt
+                // would just hit the same limit.
+                expect(run.transports).to.have.length(1);
+            } finally {
+                run.workspace.cleanup();
+            }
+        });
+    });
 });

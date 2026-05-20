@@ -33,9 +33,11 @@ import {
     LEGACY_DEFAULT_OPENCODE_MODELS,
 } from './llm/configResolver';
 import { createActivityChannel, type ActivityChannel } from './vscode/activityChannel';
+import { createRawEventChannel, type RawEventChannel } from './vscode/rawEventChannel';
 
 let outputChannel: vscode.OutputChannel;
 let activityChannel: ActivityChannel | undefined;
+let rawEventChannel: RawEventChannel | undefined;
 
 export const _deps = {
     existsSync: fs.existsSync,
@@ -74,6 +76,14 @@ export async function activate(context: vscode.ExtensionContext) {
     activityChannel = createActivityChannel();
     context.subscriptions.push({ dispose: () => activityChannel?.dispose() });
     activityChannel.appendLine(`msAgent activity channel ready — ${new Date().toISOString()}`);
+
+    // Verbose, opt-in channel: every OpenCode SSE event dumped verbatim before
+    // any session filter. Not auto-shown — it is the channel to open from the
+    // Output dropdown when a fix freezes and you need to see exactly what
+    // OpenCode is (or is not) sending over the wire.
+    rawEventChannel = createRawEventChannel();
+    context.subscriptions.push({ dispose: () => rawEventChannel?.dispose() });
+    rawEventChannel.appendLine(`msAgent OpenCode raw event channel ready — ${new Date().toISOString()}`);
 
     (global as any).msAgentContext = context;
     (global as any).msAgentOutputChannel = outputChannel;

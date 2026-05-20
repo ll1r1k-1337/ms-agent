@@ -8,6 +8,10 @@ import {
     _setTestDeps,
     _resetTestDeps,
 } from './opencodeTransport';
+import {
+    _installFakeRawEventChannelForTests,
+    _resetRawEventChannelForTests,
+} from '../vscode/rawEventChannel';
 
 class MockChildProcess extends EventEmitter {
     public stdout = new EventEmitter();
@@ -106,9 +110,13 @@ describe('opencodeTransport', () => {
     let createSessionStub: sinon.SinonStub;
     let readMessagesStub: sinon.SinonStub;
     let abortSessionStub: sinon.SinonStub;
+    let rawEventLines: string[];
 
     beforeEach(() => {
         clock = sinon.useFakeTimers();
+        // Route raw-event logging to a fake so the runner does not spam the
+        // console fallback for every event these tests push through it.
+        rawEventLines = _installFakeRawEventChannelForTests().lines;
         sdkCalls = [];
         stream = new ManualAsyncStream<unknown>();
         abortSpy = sinon.spy();
@@ -166,6 +174,7 @@ describe('opencodeTransport', () => {
         sinon.restore();
         clock.restore();
         _resetTestDeps();
+        _resetRawEventChannelForTests();
     });
 
     function serverConfig(overrides: Record<string, unknown> = {}) {
@@ -235,6 +244,44 @@ describe('opencodeTransport', () => {
         clock.tick(250);
         expect(closeSpy.calledOnceWith(0)).to.equal(true);
         expect(events.some((event: any) => event?.properties?.sessionID === 'sess_current')).to.equal(true);
+    });
+
+    it('mirrors every SDK event to the raw-events channel before session filtering', async () => {
+        const transport = createTransport(serverConfig());
+        transport.onEvent(() => {});
+        transport.start('fix this');
+        await waitFor(() => sdkCalls.includes('promptAsync'), 'expected promptAsync to be called');
+
+        // Belongs to this runner's session — forwarded downstream (emit).
+        stream.push({
+            type: 'message.part.updated',
+            properties: {
+                sessionID: 'sess_current',
+                part: { type: 'tool', tool: 'grep', callID: 'tc_1', state: { status: 'running' } },
+            },
+        });
+        // Belongs to a different session sharing the same OpenCode server —
+        // dropped by the runner's filter, but still recorded verbatim (skip).
+        stream.push({
+            type: 'message.part.updated',
+            properties: {
+                sessionID: 'sess_foreign',
+                part: { type: 'tool', tool: 'grep', callID: 'tc_2', state: { status: 'running' } },
+            },
+        });
+        await flushMicrotasks();
+
+        const emitLine = rawEventLines.find(
+            (line) => line.includes(' emit ') && line.includes('"sessionID":"sess_current"'),
+        );
+        const skipLine = rawEventLines.find(
+            (line) => line.includes(' skip ') && line.includes('"sessionID":"sess_foreign"'),
+        );
+        expect(emitLine, 'expected an emit line for the owned session').to.not.equal(undefined);
+        expect(skipLine, 'expected a skip line for the foreign session').to.not.equal(undefined);
+        expect(emitLine).to.contain('[sess_current]');
+        expect(emitLine).to.contain('message.part.updated');
+        expect(emitLine).to.contain('"tool":"grep"');
     });
 
     it('keeps the SDK event stream open after a read-only tool-calls boundary', async () => {
