@@ -10,6 +10,7 @@ import {
 } from './repairIssue';
 import type { RepairIssue } from './repairIssue';
 import { WebviewPanelProvider, MSAGENT_FIX_VIEW_TYPE } from '../webview/webviewPanelProvider';
+import type { TaskDetailDiff } from '../webview/messages';
 import { StreamChunk } from '../llm/types';
 import { createFixBackend, FixCallbacks, FixResult } from '../backends/backendFactory';
 
@@ -32,6 +33,24 @@ type FixProblemStatus =
 export interface FixProblemResult {
     status: FixProblemStatus;
     removedDiagnostic?: boolean;
+}
+/**
+ * Rich result detail captured while a single fix task ran. Used to populate
+ * the Tasks card's expandable "Completed" entries so the user can review what
+ * a fix applied — or why it crashed — without it being the active session.
+ * Kept off the public `FixProblemResult` so command callers don't take a
+ * dependency on UI-shaped data.
+ */
+export interface CompletedTaskDetail {
+    /** Assistant explanation (applied) or failure reason (failed/no_change). */
+    finalMessage: string;
+    explanationKind?: 'structured' | 'synthetic' | 'plain' | 'missing';
+    /** File diffs captured during the run; empty when nothing changed. */
+    diffs: TaskDetailDiff[];
+}
+/** Internal `fixSingleDiagnostic` result — a `FixProblemResult` plus UI detail. */
+interface FixSingleResult extends FixProblemResult {
+    detail?: CompletedTaskDetail;
 }
 export interface FixProblemOptions {
     suppressProgressNotification?: boolean;
@@ -57,6 +76,13 @@ type QueuedFixTask = {
     sourceDiagnostic?: SanitizerDiagnostic;
     options?: FixProblemOptions;
     batchMeta?: FixBatchTaskMeta;
+    /**
+     * opencode session id for this task, captured from the backend's
+     * `session_metadata` event. Lets the panel show each task's own session
+     * (the Status card no longer carries a single shared one). A re-enqueued
+     * task keeps its last id until the backend reports a fresh one.
+     */
+    opencodeSessionId?: string;
     resolve: (result: FixProblemResult) => void;
 };
 const fixQueue: QueuedFixTask[] = [];
@@ -82,6 +108,14 @@ let pauseRequested = false;
 let clearConversationOnIdleAfterCancel = false;
 /** Completed (successfully fixed) sanitizer indices in the current parsed-log session. */
 const fixedSanitizerIndices = new Set<number>();
+/**
+ * Task ids of completed caller-owned fixes (`fixIssue` / `fixIssues`). These
+ * tasks carry no `sanitizerIndex` — the mstt integration deliberately omits it
+ * — so the index-keyed `fixedSanitizerIndices` cannot represent them. Tracking
+ * them by task id lets the queue snapshot report `fixed` state for the
+ * integration flow too. Reset per run alongside the completed history.
+ */
+const fixedCallerOwnedTaskIds = new Set<string>();
 
 function isKeyActive(key: string): boolean {
     for (const entry of activeTasks.values()) {
@@ -281,6 +315,8 @@ export interface AiFixQueueSnapshotItem {
     batchIndex?: number;
     /** Total tasks originally enqueued in this batch. */
     batchTotal?: number;
+    /** opencode session id for this task, once the backend reports it. */
+    opencodeSessionId?: string;
 }
 
 export interface AiFixCompletedSnapshotItem extends AiFixQueueSnapshotItem {
@@ -320,6 +356,7 @@ function describeTaskForSnapshot(task: QueuedFixTask): AiFixQueueSnapshotItem {
                 batchTotal: task.batchMeta.batchTotal,
             }
             : {}),
+        ...(task.opencodeSessionId ? { opencodeSessionId: task.opencodeSessionId } : {}),
     };
 }
 
@@ -336,6 +373,33 @@ function recordCompletedTask(task: QueuedFixTask, status: CompletedTaskStatus): 
 
 function resetCompletedHistory(): void {
     recentlyCompletedTasks.length = 0;
+    fixedCallerOwnedTaskIds.clear();
+}
+
+/**
+ * Push one finished task's result detail (diffs / failure reason) to the
+ * WebView so the Tasks card can reveal it when the user expands the Completed
+ * entry. Posted exactly once per task — never re-broadcast like `queue_state`
+ * — so it can safely carry full file contents.
+ */
+function postTaskDetail(
+    taskId: string,
+    status: CompletedTaskStatus,
+    detail: CompletedTaskDetail | undefined,
+): void {
+    if (!detail) {
+        return;
+    }
+    webviewProvider.postMessage({
+        type: 'task_detail',
+        payload: {
+            taskId,
+            status,
+            finalMessage: detail.finalMessage,
+            explanationKind: detail.explanationKind,
+            diffs: detail.diffs,
+        },
+    });
 }
 
 function hasPendingFixTasks(): boolean {
@@ -348,25 +412,30 @@ function hasPendingFixTasks(): boolean {
 
 export function getAiFixQueueSnapshot(): AiFixQueueSnapshot {
     const states: Record<string, SanitizerAiFixState> = {};
+    // Standalone `fixProblem` tasks are keyed by sanitizerIndex; caller-owned
+    // `fixIssue` / `fixIssues` tasks have none, so they are keyed by task id.
+    // Without the id fallback the whole integration flow is invisible in the
+    // snapshot (`states` stays empty), so callers see 0 progress.
+    const stateKeyOf = (task: QueuedFixTask): string =>
+        task.sanitizerIndex !== undefined ? String(task.sanitizerIndex) : task.id;
     for (const task of fixQueue) {
-        if (task.sanitizerIndex !== undefined) {
-            states[String(task.sanitizerIndex)] = 'queued';
-        }
+        states[stateKeyOf(task)] = 'queued';
     }
     for (const task of pausedActiveFixTasks.values()) {
-        if (task.sanitizerIndex !== undefined) {
-            states[String(task.sanitizerIndex)] = 'queued';
-        }
+        states[stateKeyOf(task)] = 'queued';
     }
     for (const entry of activeTasks.values()) {
-        if (entry.task.sanitizerIndex !== undefined) {
-            states[String(entry.task.sanitizerIndex)] = 'running';
-        }
+        states[stateKeyOf(entry.task)] = 'running';
     }
     for (const fixedIndex of fixedSanitizerIndices) {
         const key = String(fixedIndex);
         if (!states[key]) {
             states[key] = 'fixed';
+        }
+    }
+    for (const fixedTaskId of fixedCallerOwnedTaskIds) {
+        if (!states[fixedTaskId]) {
+            states[fixedTaskId] = 'fixed';
         }
     }
     if (Object.keys(states).length > 0) {
@@ -533,6 +602,10 @@ async function runFixWorker(): Promise<void> {
                 cts,
                 next.options?.clearWebview,
                 next.sourceDiagnostic,
+                (opencodeSessionId) => {
+                    next.opencodeSessionId = opencodeSessionId;
+                    notifyQueueState();
+                },
             );
 
             const wasCancelled = cancelRequestedTaskIds.has(next.id);
@@ -547,8 +620,17 @@ async function runFixWorker(): Promise<void> {
             }
 
             const finalStatus = wasCancelled ? 'cancelled' : result.status;
-            if (finalStatus === 'completed' && !result.removedDiagnostic && next.sanitizerIndex !== undefined) {
-                fixedSanitizerIndices.add(next.sanitizerIndex);
+            if (finalStatus === 'completed') {
+                if (next.sanitizerIndex !== undefined) {
+                    if (!result.removedDiagnostic) {
+                        fixedSanitizerIndices.add(next.sanitizerIndex);
+                    }
+                } else {
+                    // Caller-owned fix (fixIssue/fixIssues) — no sanitizerIndex;
+                    // track by task id so the queue snapshot still reports it
+                    // as `fixed` for integration callers (e.g. OP DevTools).
+                    fixedCallerOwnedTaskIds.add(next.id);
+                }
             }
             // Record the completion in the recently-completed history so the
             // WebView can show what's been processed already. Statuses other
@@ -561,6 +643,7 @@ async function runFixWorker(): Promise<void> {
                     ? finalStatus
                     : 'failed';
             recordCompletedTask(next, completedStatus);
+            postTaskDetail(next.id, completedStatus, result.detail);
             next.resolve(wasCancelled ? { status: 'cancelled' } : result);
             logFixQueue(`finish task id=${next.id} index=${next.sanitizerIndex ?? 'direct'} status=${finalStatus}`);
             activeTasks.delete(next.id);
@@ -627,6 +710,10 @@ function ensureFixDetailsPanel(): void {
             notifyQueueState();
             return;
         }
+        // `cancel_current` stops the entire pipeline (every running task plus
+        // the pause state). The webview no longer sends it — per-task
+        // `cancel_task` plus the global `pause_toggle` cover the panel UI — but
+        // it is kept for the `msagent` command path and any external callers.
         if (message.type === 'cancel_current') {
             const hasQueuedAfterCurrent = fixQueue.length > 0;
             // Cancel every running task — with N>1 concurrency multiple fixes
@@ -660,6 +747,30 @@ function ensureFixDetailsPanel(): void {
             clearConversationOnIdleAfterCancel = !hasQueuedAfterCurrent;
             notifyQueueState();
             clearConversationIfCancelledAndIdle();
+            return;
+        }
+        // `cancel_task` cancels exactly one task by id — the per-task Cancel
+        // button on a running task. Unlike `cancel_current` it leaves sibling
+        // tasks running and never touches `pauseRequested` or
+        // `clearConversationOnIdleAfterCancel`, so cancelling one task of an
+        // N-task batch is non-destructive (mirrors `cancelBatch`'s per-task
+        // bits, applied to a single id).
+        if (message.type === 'cancel_task' && message.id) {
+            const entry = activeTasks.get(message.id);
+            if (entry) {
+                cancelRequestedTaskIds.add(message.id);
+                entry.cts.cancel();
+                notifyQueueState();
+                return;
+            }
+            // The task may have been paused mid-run between render and click.
+            const pausedTask = pausedActiveFixTasks.get(message.id);
+            if (pausedTask) {
+                pausedActiveFixTasks.delete(message.id);
+                pausedTask.resolve({ status: 'cancelled' });
+                notifyQueueState();
+                clearConversationIfCancelledAndIdle();
+            }
             return;
         }
         if (message.type === 'remove_queued' && message.id) {
@@ -1076,11 +1187,24 @@ async function fixSingleDiagnostic(
     externalCancellationTokenSource?: vscode.CancellationTokenSource,
     clearWebview: boolean = true,
     sourceDiagnostic?: SanitizerDiagnostic,
-): Promise<FixProblemResult> {
+    onSessionMetadata?: (opencodeSessionId: string) => void,
+): Promise<FixSingleResult> {
     const config = getLLMConfig();
     const backend = createFixBackend(config);
     const workspaceRoot = vscode.workspace.rootPath || '.';
     const fixStartedAt = Date.now();
+
+    /** Files changed during this task, keyed by path (last write wins) — the
+     *  raw material for the Tasks card's expandable "what was applied" view. */
+    const taskDiffs = new Map<string, TaskDetailDiff>();
+    const buildDetail = (
+        finalMessage: string,
+        explanationKind?: 'structured' | 'synthetic' | 'plain' | 'missing',
+    ): CompletedTaskDetail => ({
+        finalMessage: finalMessage || '',
+        explanationKind,
+        diffs: Array.from(taskDiffs.values()),
+    });
 
     const progressTitle = total && current
         ? `msAgent: Fixing ${diagnostic.errorType} (${current}/${total})`
@@ -1204,6 +1328,7 @@ async function fixSingleDiagnostic(
                     },
                     onDiff: (filePath, oldText, newText, toolCallId) => {
                         if (cancellationTokenSource.token.isCancellationRequested) return;
+                        taskDiffs.set(filePath, { path: filePath, oldText, newText });
                         postRunMessage({
                             type: 'diff',
                             payload: { path: filePath, oldText, newText, toolCallId }
@@ -1219,10 +1344,16 @@ async function fixSingleDiagnostic(
                                 });
                                 break;
                             case 'session_metadata':
-                                postRunMessage({
-                                    type: 'session_metadata',
-                                    payload: payload as { opencodeSessionId?: string },
-                                });
+                                {
+                                    const meta = payload as { opencodeSessionId?: string };
+                                    postRunMessage({
+                                        type: 'session_metadata',
+                                        payload: meta,
+                                    });
+                                    if (meta.opencodeSessionId) {
+                                        onSessionMetadata?.(meta.opencodeSessionId);
+                                    }
+                                }
                                 break;
                             case 'session_end':
                                 {
@@ -1299,6 +1430,11 @@ async function fixSingleDiagnostic(
                         && fixResult.originalContent !== undefined
                         && fixResult.newContent !== undefined
                     ) {
+                        taskDiffs.set(resolvedPath, {
+                            path: resolvedPath,
+                            oldText: fixResult.originalContent,
+                            newText: fixResult.newContent,
+                        });
                         postRunMessage({
                             type: 'final_diff',
                             payload: {
@@ -1355,25 +1491,35 @@ async function fixSingleDiagnostic(
                     finalMessage: 'Cancelled by user.',
                 },
             } as any);
-            return { status: 'stopped' };
+            return { status: 'stopped', detail: buildDetail('Cancelled by user.') };
         }
         if (result.outcome === 'no_change') {
             logFix(`exit runId=${repairRunId} status=no_change elapsed=${formatElapsed(Date.now() - fixStartedAt)}`);
-            return { status: 'no_change' };
+            return {
+                status: 'no_change',
+                detail: buildDetail(result.finalMessage, result.explanationKind),
+            };
         }
         if (!result.success) {
             logFix(
                 `exit runId=${repairRunId} status=failed elapsed=${formatElapsed(Date.now() - fixStartedAt)}`
                 + ` toolCalls=${result.toolCallCount} fileChanged=${result.fileChanged}`,
             );
-            return { status: 'failed' };
+            return {
+                status: 'failed',
+                detail: buildDetail(result.finalMessage, result.explanationKind),
+            };
         }
         logFix(
             `exit runId=${repairRunId} status=completed elapsed=${formatElapsed(Date.now() - fixStartedAt)}`
             + ` toolCalls=${result.toolCallCount} fileChanged=${result.fileChanged}`
             + ` removedDiagnostic=${removedDiagnostic}`,
         );
-        return { status: 'completed', removedDiagnostic };
+        return {
+            status: 'completed',
+            removedDiagnostic,
+            detail: buildDetail(result.finalMessage, result.explanationKind),
+        };
     } catch (e) {
         // Session already sends session_end via onEvent callback on error.
         // Just show the VSCode error notification here.
@@ -1383,7 +1529,7 @@ async function fixSingleDiagnostic(
             + ` error=${errMsg.replace(/\s+/g, ' ').slice(0, 200)}`,
         );
         handleFixError(e, config);
-        return { status: 'failed' };
+        return { status: 'failed', detail: buildDetail(errMsg) };
     } finally {
         if (!externalCancellationTokenSource) {
             cancellationTokenSource.dispose();
@@ -1477,7 +1623,11 @@ function makeSyntheticFakeIssue(key: string, sanitizerIndex?: number): RepairIss
     };
 }
 
-export function _setActiveFix(index: number, title?: string) {
+export function _setActiveFix(
+    index: number,
+    title?: string,
+    cts?: vscode.CancellationTokenSource,
+): string {
     const taskId = `__test_active_${index}_${Math.random().toString(36).slice(2, 8)}`;
     const fakeTask: QueuedFixTask = {
         id: taskId,
@@ -1489,8 +1639,9 @@ export function _setActiveFix(index: number, title?: string) {
     };
     activeTasks.set(taskId, {
         task: fakeTask,
-        cts: { token: { isCancellationRequested: false }, cancel: () => {}, dispose: () => {} } as any,
+        cts: cts ?? ({ token: { isCancellationRequested: false }, cancel: () => {}, dispose: () => {} } as any),
     });
+    return taskId;
 }
 
 export function _setActiveBatchMeta(meta: FixBatchTaskMeta | undefined) {

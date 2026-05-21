@@ -35,9 +35,7 @@ describe('fixDetailsScript string inclusion', () => {
   it('contains all DOM element IDs', () => {
     const ids = [
       'messages',
-      'meta-target',
       'meta-model',
-      'meta-session',
       'meta-backend',
       'meta-mode',
       'meta-elapsed',
@@ -48,7 +46,6 @@ describe('fixDetailsScript string inclusion', () => {
       'elapsed-row',
       'queue-row',
       'queue-badge',
-      'action-row',
       'files-card',
       'files-list',
       'files-meta',
@@ -56,8 +53,9 @@ describe('fixDetailsScript string inclusion', () => {
       'explanation-body',
       'explanation-meta',
       'idle-hint',
-      'stopBtn',
-      'cancelBtn',
+      'tasks-cancelled-group',
+      'tasks-cancelled-list',
+      'tasks-pause-btn',
     ];
     for (const id of ids) {
       expect(fixDetailsScript).to.include(id);
@@ -82,6 +80,7 @@ describe('fixDetailsScript string inclusion', () => {
       'user_message',
       'message_complete',
       'queue_state',
+      'task_detail',
     ];
     for (const type of messageTypes) {
       expect(fixDetailsScript).to.include("'" + type + "'");
@@ -158,14 +157,13 @@ describe('fixDetailsScript string inclusion', () => {
     expect(fixDetailsScript).to.include('isProgressMessageId(messageId)');
   });
 
-  it('renders final-only explanation sections and full session ids', () => {
+  it('renders final-only explanation sections', () => {
     expect(fixDetailsScript).to.include('Problem Explanation');
     expect(fixDetailsScript).to.include('Fix Explanation');
     expect(fixDetailsScript).to.include('Why it works');
     expect(fixDetailsScript).to.include('Full Explanation');
     expect(fixDetailsScript).to.include('Failure Reason');
     expect(fixDetailsScript).to.include("if (!finished) {");
-    expect(fixDetailsScript).to.include("els.metaSession.textContent = sid || '-'");
   });
 
   it('guards completed runs from stale running updates', () => {
@@ -193,5 +191,69 @@ describe('fixDetailsScript string inclusion', () => {
     expect(fixDetailsScript).to.include('status: false');
     expect(fixDetailsScript).to.include('files: false');
     expect(fixDetailsScript).to.include('explanation: false');
+    expect(fixDetailsScript).to.include('tasks: false');
+  });
+
+  it('renders completed tasks as expandable detail entries', () => {
+    expect(fixDetailsScript).to.include('handleTaskDetail');
+    expect(fixDetailsScript).to.include('buildCompletedTaskItem');
+    expect(fixDetailsScript).to.include('taskDetailHtml');
+    expect(fixDetailsScript).to.include('taskDiffHtml');
+    expect(fixDetailsScript).to.include('task-entry');
+    expect(fixDetailsScript).to.include('task-entry-summary');
+    expect(fixDetailsScript).to.include('task-entry-body');
+    expect(fixDetailsScript).to.include('task-detail-label');
+    expect(fixDetailsScript).to.include('task-diff');
+  });
+
+  it('tracks per-task detail state and preserved expansion', () => {
+    expect(fixDetailsScript).to.include('state.taskDetails');
+    expect(fixDetailsScript).to.include('state.expandedTasks');
+    expect(fixDetailsScript).to.include('Failure reason');
+    expect(fixDetailsScript).to.include('Applied change');
+  });
+
+  it('hides the shared Explanation card for multi-task sessions', () => {
+    expect(fixDetailsScript).to.include('countSessionTasks');
+    expect(fixDetailsScript).to.include('countSessionTasks() > 1');
+  });
+
+  it('surfaces a failed count in the Tasks card meta', () => {
+    expect(fixDetailsScript).to.include('tasks-meta-failed');
+    expect(fixDetailsScript).to.include("t.status === 'failed'");
+  });
+
+  it('separates failed tasks into a dedicated Failed group', () => {
+    expect(fixDetailsScript).to.include('tasks-failed-group');
+    expect(fixDetailsScript).to.include('tasks-failed-list');
+    expect(fixDetailsScript).to.include("t.status !== 'failed'");
+  });
+
+  it('separates cancelled tasks into a dedicated Cancelled group', () => {
+    expect(fixDetailsScript).to.include('tasks-cancelled-group');
+    expect(fixDetailsScript).to.include('tasks-cancelled-list');
+    expect(fixDetailsScript).to.include("t.status === 'cancelled'");
+  });
+
+  it('renders a per-task Cancel button and a header Pause control', () => {
+    expect(fixDetailsScript).to.include('buildRunningTaskItem');
+    expect(fixDetailsScript).to.include('task-cancel-btn');
+    expect(fixDetailsScript).to.include("type: 'cancel_task'");
+    expect(fixDetailsScript).to.include('tasksPauseBtn');
+    expect(fixDetailsScript).to.include("type: 'pause_toggle'");
+  });
+
+  it('renders a per-task opencode Session line', () => {
+    expect(fixDetailsScript).to.include('taskSessionLineHtml');
+    expect(fixDetailsScript).to.include('task-session');
+    expect(fixDetailsScript).to.include('task-row-sub');
+    expect(fixDetailsScript).to.include('opencodeSessionId');
+  });
+
+  it('supports collapsing the Completed and Failed task groups', () => {
+    expect(fixDetailsScript).to.include('toggleGroupCollapse');
+    expect(fixDetailsScript).to.include('renderCollapsedGroups');
+    expect(fixDetailsScript).to.include('collapsedGroups');
+    expect(fixDetailsScript).to.include('data-group-toggle');
   });
 });

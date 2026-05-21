@@ -133,6 +133,7 @@ export class WebviewPanelProvider {
             if (
                 message.type === 'pause_toggle'
                 || message.type === 'cancel_current'
+                || message.type === 'cancel_task'
                 || message.type === 'remove_queued'
             ) {
                 this.onActionCallback?.(message);

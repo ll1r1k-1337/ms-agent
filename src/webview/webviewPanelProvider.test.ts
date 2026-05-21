@@ -37,8 +37,6 @@ describe('WebviewPanelProvider', () => {
 
             const requiredIds = [
                 'messages',
-                'meta-target',
-                'meta-session',
                 'meta-backend',
                 'meta-mode',
                 'meta-model',
@@ -50,7 +48,6 @@ describe('WebviewPanelProvider', () => {
                 'elapsed-row',
                 'queue-row',
                 'queue-badge',
-                'action-row',
                 'files-card',
                 'files-list',
                 'files-meta',
@@ -58,8 +55,8 @@ describe('WebviewPanelProvider', () => {
                 'explanation-body',
                 'explanation-meta',
                 'idle-hint',
-                'stopBtn',
-                'cancelBtn',
+                'tasks-cancelled-list',
+                'tasks-pause-btn',
             ];
 
             for (const id of requiredIds) {
@@ -68,7 +65,11 @@ describe('WebviewPanelProvider', () => {
             expect(html).to.include('data-card-toggle="status"');
             expect(html).to.include('data-card-toggle="files"');
             expect(html).to.include('data-card-toggle="explanation"');
-            expect(html).to.include('class="kv-value is-session"');
+            expect(html).to.include('data-group-toggle="completed"');
+            expect(html).to.include('data-group-toggle="failed"');
+            expect(html).to.include('data-group-toggle="cancelled"');
+            expect(html).to.include('id="tasks-failed-list"');
+            expect(html).to.include('id="tasks-cancelled-group"');
         });
 
         it('includes CSP nonce in script and link tags', () => {

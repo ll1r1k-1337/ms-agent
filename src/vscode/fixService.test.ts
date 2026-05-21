@@ -13,6 +13,7 @@ import {
     fixIssue,
     fixIssues,
     cancelBatch,
+    showFixDetailsPanel,
     _resetFixState,
     _enqueueFixTask,
     _setActiveFix,
@@ -191,6 +192,32 @@ describe('fixService', () => {
         it('starts with an empty recentlyCompleted list', () => {
             const snapshot = getAiFixQueueSnapshot();
             expect(snapshot.recentlyCompleted).to.deep.equal([]);
+        });
+
+        it('keys caller-owned (no sanitizerIndex) tasks by task id', () => {
+            _enqueueFixTask({
+                id: 'task_caller_1',
+                key: 'k',
+                title: 'Caller-owned task',
+                diagnostic: makeDiag(),
+                resolve: () => {},
+            });
+            const snapshot = getAiFixQueueSnapshot();
+            expect(snapshot.states['task_caller_1']).to.equal('queued');
+        });
+
+        it('surfaces opencodeSessionId on snapshot items once the backend reports it', () => {
+            _enqueueFixTask({
+                key: 'k-session',
+                sanitizerIndex: 0,
+                title: 'OUT_OF_BOUNDS - test.cpp:10',
+                diagnostic: makeDiag(),
+                opencodeSessionId: 'ses_abc123',
+                resolve: () => {},
+            });
+            const snapshot = getAiFixQueueSnapshot();
+            expect(snapshot.items).to.have.length(1);
+            expect(snapshot.items[0].opencodeSessionId).to.equal('ses_abc123');
         });
     });
 
@@ -519,6 +546,131 @@ describe('fixService', () => {
         });
     });
 
+    describe('task_detail posting', () => {
+        function stubWebview(): sinon.SinonStub {
+            const postMessageStub = sinon.stub(WebviewPanelProvider.prototype, 'postMessage');
+            sinon.stub(WebviewPanelProvider.prototype, 'createOrShow').returns({
+                webview: { postMessage: () => Promise.resolve(true) },
+                reveal: () => {},
+                dispose: () => {},
+                onDidDispose: () => {},
+            } as any);
+            sinon.stub(WebviewPanelProvider.prototype, 'clear');
+            sinon.stub(WebviewPanelProvider.prototype, 'onAction');
+            sinon.stub(WebviewPanelProvider.prototype, 'nextMessageId').callsFake(() => `msg_${Date.now()}`);
+            (global as any).msAgentContext = {
+                extensionUri: { fsPath: '/workspace' },
+                subscriptions: [],
+            };
+            return postMessageStub;
+        }
+
+        function stubConfig() {
+            sinon.stub(configModule, 'getLLMConfig').returns({
+                modelName: 'opencode/minimax-m2.5-free',
+                providerID: 'opencode',
+                modelID: 'minimax-m2.5-free',
+                modelFullName: 'opencode/minimax-m2.5-free',
+                timeoutMs: 300000,
+                opencodeServePort: 7325,
+                opencodeCliPath: 'opencode',
+            });
+        }
+
+        function findTaskDetail(postMessageStub: sinon.SinonStub): any {
+            return postMessageStub.getCalls()
+                .map((call) => call.args[0])
+                .find((message) => message && message.type === 'task_detail');
+        }
+
+        it('posts task_detail carrying the applied diff for a completed fix', async () => {
+            const diagnostic = makeDiag({ fileName: '/workspace/test.cpp' });
+            const postMessageStub = stubWebview();
+            stubConfig();
+            sinon.stub(DiagnosticsManager, 'getCurrentDiagnostics').returns([diagnostic]);
+            sinon.stub(DiagnosticsManager, 'removeDiagnostic').returns(true);
+            sinon.stub(backendFactory, 'createFixBackend').returns({
+                name: 'opencode',
+                supportsStreaming: () => true,
+                cancel: () => {},
+                executeFix: async (
+                    _diag: SanitizerDiagnostic,
+                    _context: FixContext,
+                    callbacks?: FixCallbacks,
+                ) => {
+                    callbacks?.onEvent?.('session_start', { backend: 'opencode', mode: 'server' });
+                    callbacks?.onEvent?.('session_end', {
+                        success: true,
+                        outcome: 'applied',
+                        finalMessage: 'Fix: clamped the copy length to the buffer size.',
+                    });
+                    return {
+                        success: true,
+                        outcome: 'applied',
+                        finalMessage: 'Fix: clamped the copy length to the buffer size.',
+                        toolCallCount: 1,
+                        fileChanged: true,
+                        originalContent: 'int n = 8;',
+                        newContent: 'int n = 4;',
+                    };
+                },
+            } as any);
+
+            const result = await fixProblem(0, { clearWebview: true });
+            expect(result.status).to.equal('completed');
+
+            const taskDetail = findTaskDetail(postMessageStub);
+            expect(taskDetail, 'expected a task_detail message').to.not.be.undefined;
+            expect(taskDetail.payload.status).to.equal('completed');
+            expect(taskDetail.payload.taskId).to.be.a('string');
+            expect(taskDetail.payload.taskId.length).to.be.greaterThan(0);
+            expect(taskDetail.payload.diffs).to.have.length(1);
+            expect(taskDetail.payload.diffs[0].oldText).to.equal('int n = 8;');
+            expect(taskDetail.payload.diffs[0].newText).to.equal('int n = 4;');
+            expect(taskDetail.payload.finalMessage).to.include('clamped the copy length');
+        });
+
+        it('posts task_detail carrying the failure reason for a failed fix', async () => {
+            const diagnostic = makeDiag({ fileName: '/workspace/test.cpp' });
+            const postMessageStub = stubWebview();
+            stubConfig();
+            sinon.stub(DiagnosticsManager, 'getCurrentDiagnostics').returns([diagnostic]);
+            sinon.stub(backendFactory, 'createFixBackend').returns({
+                name: 'opencode',
+                supportsStreaming: () => true,
+                cancel: () => {},
+                executeFix: async (
+                    _diag: SanitizerDiagnostic,
+                    _context: FixContext,
+                    callbacks?: FixCallbacks,
+                ) => {
+                    callbacks?.onEvent?.('session_start', { backend: 'opencode', mode: 'server' });
+                    callbacks?.onEvent?.('session_end', {
+                        success: false,
+                        outcome: 'failed',
+                        finalMessage: 'Rate limit exceeded. Please try again later.',
+                    });
+                    return {
+                        success: false,
+                        outcome: 'failed',
+                        finalMessage: 'Rate limit exceeded. Please try again later.',
+                        toolCallCount: 0,
+                        fileChanged: false,
+                    };
+                },
+            } as any);
+
+            const result = await fixProblem(0, { clearWebview: true });
+            expect(result.status).to.equal('failed');
+
+            const taskDetail = findTaskDetail(postMessageStub);
+            expect(taskDetail, 'expected a task_detail message').to.not.be.undefined;
+            expect(taskDetail.payload.status).to.equal('failed');
+            expect(taskDetail.payload.diffs).to.deep.equal([]);
+            expect(taskDetail.payload.finalMessage).to.include('Rate limit exceeded');
+        });
+    });
+
     describe('fixIssue direct payload handling', () => {
         function stubWebview() {
             sinon.stub(WebviewPanelProvider.prototype, 'postMessage');
@@ -706,6 +858,74 @@ describe('fixService', () => {
             expect(result).to.deep.equal({ cancelled: 0, queued: 0, paused: 0, running: 0 });
             const snapshot = getAiFixQueueSnapshot();
             expect(snapshot.items).to.have.length(1);
+        });
+    });
+
+    describe('cancel_task webview action', () => {
+        function stubPanelPlumbing() {
+            sinon.stub(WebviewPanelProvider.prototype, 'postMessage');
+            sinon.stub(WebviewPanelProvider.prototype, 'createOrShow').returns({
+                webview: { postMessage: () => Promise.resolve(true) },
+                reveal: () => {},
+                dispose: () => {},
+                onDidDispose: () => {},
+            } as any);
+            sinon.stub(WebviewPanelProvider.prototype, 'revealLatestSession');
+            (global as any).msAgentContext = {
+                extensionUri: { fsPath: '/workspace' },
+                subscriptions: [],
+            };
+        }
+
+        // Capture the onAction callback fixService registers in ensureFixDetailsPanel.
+        function captureOnAction(): () => ((m: { type?: string; id?: string }) => void) | undefined {
+            let captured: ((m: { type?: string; id?: string }) => void) | undefined;
+            sinon.stub(WebviewPanelProvider.prototype, 'onAction')
+                .callsFake((cb: (m: { type?: string; id?: string }) => void) => {
+                    captured = cb;
+                });
+            return () => captured;
+        }
+
+        function makeSpyCts(): { cts: any; cancel: sinon.SinonSpy } {
+            const cancel = sinon.spy();
+            return {
+                cts: { token: { isCancellationRequested: false }, cancel, dispose: () => {} },
+                cancel,
+            };
+        }
+
+        it('cancels one active task without pausing the pipeline', () => {
+            stubPanelPlumbing();
+            const getHandler = captureOnAction();
+            const { cts, cancel } = makeSpyCts();
+            const taskId = _setActiveFix(3, 'CANCEL_ME', cts);
+
+            showFixDetailsPanel();
+            const handler = getHandler();
+            expect(handler, 'onAction callback was registered').to.be.a('function');
+
+            handler!({ type: 'cancel_task', id: taskId });
+
+            expect(cancel.calledOnce).to.be.true;
+            // Cancelling one task must not pause the whole queue.
+            expect(getAiFixQueueSnapshot().paused).to.be.false;
+        });
+
+        it('leaves sibling active tasks running when one is cancelled', () => {
+            stubPanelPlumbing();
+            const getHandler = captureOnAction();
+            const target = makeSpyCts();
+            const sibling = makeSpyCts();
+            const targetId = _setActiveFix(1, 'TARGET', target.cts);
+            _setActiveFix(2, 'SIBLING', sibling.cts);
+
+            showFixDetailsPanel();
+            getHandler()!({ type: 'cancel_task', id: targetId });
+
+            expect(target.cancel.calledOnce).to.be.true;
+            expect(sibling.cancel.called).to.be.false;
+            expect(getAiFixQueueSnapshot().runningTasks).to.have.length(2);
         });
     });
 
@@ -911,6 +1131,19 @@ describe('fixService', () => {
             const result = await resultPromise;
             expect(peakInFlight).to.equal(3);
             expect(result.summary.completed).to.equal(payloads.length);
+        });
+
+        it('reports caller-owned batch completions as fixed in the queue snapshot', async () => {
+            stubWebview(); stubConfig(); stubAppliedBackend();
+            sinon.stub(DiagnosticsManager, 'removeDiagnostic');
+            const result = await fixIssues([
+                makeValidPayload('/workspace/a.cpp', 10, 'OUT_OF_BOUNDS'),
+                makeValidPayload('/workspace/b.cpp', 20, 'MEM_LEAK'),
+            ]);
+            expect(result.summary.completed).to.equal(2);
+            const snapshot = getAiFixQueueSnapshot();
+            const fixedCount = Object.values(snapshot.states).filter((state) => state === 'fixed').length;
+            expect(fixedCount).to.equal(2);
         });
     });
 });

@@ -110,6 +110,7 @@ describe('opencodeTransport', () => {
     let createSessionStub: sinon.SinonStub;
     let readMessagesStub: sinon.SinonStub;
     let abortSessionStub: sinon.SinonStub;
+    let permissionRespondStub: sinon.SinonStub;
     let rawEventLines: string[];
 
     beforeEach(() => {
@@ -135,6 +136,7 @@ describe('opencodeTransport', () => {
         abortSessionStub = sinon.stub().callsFake(async () => {
             sdkCalls.push('abortSession');
         });
+        permissionRespondStub = sinon.stub().resolves(true);
 
         spawnStub = sinon.stub().returns(new MockChildProcess() as unknown as child_process.ChildProcess);
         httpRequestStub = sinon.stub().callsFake((_options: any, callback?: any) => {
@@ -165,6 +167,9 @@ describe('opencodeTransport', () => {
                     promptAsync: promptAsyncStub,
                     abort: abortSessionStub.callsFake(async () => undefined),
                     messages: readMessagesStub,
+                },
+                permission: {
+                    respond: permissionRespondStub,
                 },
             }),
         });
@@ -442,5 +447,59 @@ describe('opencodeTransport', () => {
         expect(errors[0]).to.include('provider/model');
         expect(errors[0]).to.include('Refusing to use the OpenCode server default model');
         expect(closeSpy.calledOnceWith(1)).to.equal(true);
+    });
+
+    it('auto-approves a permission.asked external read, including subagent sessions', async () => {
+        const transport = createTransport(serverConfig());
+        transport.onEvent(() => {});
+        transport.start('fix this');
+        await waitFor(() => sdkCalls.includes('promptAsync'), 'expected promptAsync to be called');
+
+        // A `task` subagent runs in a child session; its permission ask must
+        // still be answered (handled before the session-scope filter).
+        stream.push({
+            type: 'permission.asked',
+            properties: {
+                id: 'per_ext_1',
+                sessionID: 'sess_subagent',
+                permission: 'external_directory',
+                patterns: ['/home/developer/Ascend/cann-9.0.0/*'],
+                metadata: { filepath: '/home/developer/Ascend/cann-9.0.0/asc/include/kernel_operator.h' },
+                always: [],
+            },
+        });
+        await waitFor(() => permissionRespondStub.called, 'expected the permission to be answered');
+
+        expect(permissionRespondStub.calledOnceWithExactly({
+            sessionID: 'sess_subagent',
+            permissionID: 'per_ext_1',
+            response: 'once',
+        })).to.equal(true);
+    });
+
+    it('rejects a permission.asked that targets a credential file', async () => {
+        const transport = createTransport(serverConfig());
+        transport.onEvent(() => {});
+        transport.start('fix this');
+        await waitFor(() => sdkCalls.includes('promptAsync'), 'expected promptAsync to be called');
+
+        stream.push({
+            type: 'permission.asked',
+            properties: {
+                id: 'per_secret_1',
+                sessionID: 'sess_current',
+                permission: 'external_directory',
+                patterns: [],
+                metadata: { filepath: '/home/developer/.local/share/opencode/auth.json' },
+                always: [],
+            },
+        });
+        await waitFor(() => permissionRespondStub.called, 'expected the permission to be answered');
+
+        expect(permissionRespondStub.calledOnceWithExactly({
+            sessionID: 'sess_current',
+            permissionID: 'per_secret_1',
+            response: 'reject',
+        })).to.equal(true);
     });
 });

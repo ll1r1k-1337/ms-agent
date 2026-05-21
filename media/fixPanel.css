@@ -212,8 +212,7 @@ body { overflow: hidden; }
 
 .card.is-collapsed .card-body,
 .card.is-collapsed .files-list,
-.card.is-collapsed .explanation-body,
-.card.is-collapsed .action-row {
+.card.is-collapsed .explanation-body {
     display: none !important;
 }
 
@@ -317,13 +316,6 @@ body { overflow: hidden; }
 .kv-value.is-green  { color: var(--oc-green); }
 .kv-value.is-yellow { color: var(--oc-yellow); }
 .kv-value.is-amber  { color: var(--oc-amber); }
-.kv-value.is-session {
-    white-space: normal;
-    overflow: visible;
-    text-overflow: clip;
-    overflow-wrap: anywhere;
-    max-width: 60%;
-}
 
 /* ── Progress shimmer ────────────────────────────────────────── */
 .progress-track {
@@ -348,16 +340,7 @@ body { overflow: hidden; }
     100% { width: 35%; opacity: 0.7; }
 }
 
-/* ── Action row (Pause / Cancel — shown only when queue has work) */
-.action-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 8px 10px;
-    border-top: 1px solid var(--panel-border);
-    background: color-mix(in srgb, var(--panel-strong) 2%, transparent);
-}
-
+/* ── Action buttons (Pause in Tasks header, Cancel per running task) ── */
 .action-btn {
     appearance: none;
     border: 1px solid var(--panel-border);
@@ -372,11 +355,6 @@ body { overflow: hidden; }
 
 .action-btn:hover {
     background: color-mix(in srgb, var(--panel-strong) 8%, transparent);
-}
-
-.action-btn.is-danger {
-    color: var(--oc-red);
-    border-color: color-mix(in srgb, var(--oc-red) 50%, var(--panel-border));
 }
 
 /* ── Files (multi-diff, collapsed by default) ────────────────── */
@@ -578,12 +556,45 @@ body { overflow: hidden; }
 .tasks-group-head {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    gap: 5px;
     padding: 2px 4px;
     font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.04em;
     color: var(--panel-muted);
+}
+
+/* Completed / Failed group heads are double-click collapsible, like cards. */
+.is-group-collapsible .tasks-group-head {
+    cursor: ns-resize;
+    user-select: none;
+    border-radius: 4px;
+}
+
+.is-group-collapsible .tasks-group-head:hover {
+    background: color-mix(in srgb, var(--panel-strong) 6%, transparent);
+}
+
+.tasks-group-chevron {
+    display: inline-flex;
+    align-items: center;
+    width: 9px;
+    flex-shrink: 0;
+}
+
+.tasks-group-chevron::before {
+    content: '▸';
+    color: var(--panel-muted);
+    transition: transform 0.12s ease;
+    transform: rotate(90deg);
+}
+
+.tasks-group.is-collapsed .tasks-group-chevron::before {
+    transform: rotate(0deg);
+}
+
+.tasks-group.is-collapsed .tasks-list {
+    display: none;
 }
 
 .tasks-group-title { font-weight: 600; }
@@ -592,9 +603,16 @@ body { overflow: hidden; }
     color: var(--panel-strong);
     font-weight: 600;
     font-size: 11px;
+    margin-left: auto;
     padding: 0 6px;
     border-radius: 8px;
     background: var(--panel-overlay, rgba(255, 255, 255, 0.08));
+}
+
+/* Failed-count segment in the Tasks card header meta. */
+.tasks-meta-failed {
+    color: var(--oc-red);
+    font-weight: 600;
 }
 
 .tasks-list {
@@ -612,6 +630,11 @@ body { overflow: hidden; }
     display: flex;
     align-items: center;
     gap: 8px;
+    /* The list is a column flex container with a bounded max-height; without
+       this, flex would shrink an item below its content height and the
+       expanded task body would get clipped. Keep natural height and let the
+       list scroll instead. */
+    flex-shrink: 0;
     padding: 4px 8px;
     border-radius: 4px;
     font-size: 12px;
@@ -656,6 +679,190 @@ body { overflow: hidden; }
 .tasks-list-item.is-cancelled { color: var(--panel-muted); }
 .tasks-list-item.is-stopped { color: var(--panel-muted); }
 .tasks-list-item.is-queued { color: var(--panel-muted); }
+
+/* ── Completed tasks: expand to reveal the diff / failure reason ── */
+.tasks-list-item.task-entry {
+    display: block;
+    padding: 0;
+    overflow: hidden;
+}
+
+.task-entry-details { width: 100%; }
+
+.task-entry-summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    cursor: pointer;
+    list-style: none;
+    outline: none;
+    font-size: 12px;
+}
+
+.task-entry-summary::-webkit-details-marker { display: none; }
+
+.task-entry-summary::before {
+    content: '▸';
+    display: inline-block;
+    width: 9px;
+    flex-shrink: 0;
+    color: var(--panel-muted);
+    transition: transform 0.12s ease;
+}
+
+.task-entry-details[open] > .task-entry-summary::before {
+    transform: rotate(90deg);
+}
+
+.task-entry-summary:hover {
+    background: color-mix(in srgb, var(--panel-strong) 6%, transparent);
+}
+
+.task-entry-body {
+    padding: 6px 8px 8px 25px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    border-top: 1px solid var(--panel-border);
+    background: color-mix(in srgb, var(--panel-strong) 2.5%, transparent);
+}
+
+.task-detail-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--panel-muted);
+}
+
+.task-detail-text {
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--panel-strong);
+    overflow-wrap: anywhere;
+}
+
+.task-detail-text p { margin: 0 0 6px; }
+.task-detail-text p:last-child { margin-bottom: 0; }
+
+.task-detail-text code {
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 11.5px;
+    padding: 1px 4px;
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--vscode-textCodeBlock-background) 80%, transparent);
+}
+
+.task-detail-text pre {
+    margin: 4px 0;
+    padding: 6px 8px;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--vscode-textCodeBlock-background) 80%, transparent);
+    font-size: 11.5px;
+    max-height: 220px;
+    overflow: auto;
+    overscroll-behavior: contain;
+    white-space: pre;
+}
+
+.task-detail-empty {
+    font-size: 12px;
+    color: var(--panel-muted);
+    font-style: italic;
+}
+
+.task-diff {
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.task-diff-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    background: color-mix(in srgb, var(--panel-strong) 4%, transparent);
+}
+
+.task-diff .file-diff { max-height: 260px; }
+
+#tasks-completed-list,
+#tasks-failed-list,
+#tasks-cancelled-list { max-height: 420px; }
+
+/* ── Running task: two-row entry (main row + Session sub-row) ───── */
+.tasks-list-item.task-active-entry {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 3px;
+}
+
+.task-row-main {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* ── Per-task opencode Session id line (running + terminal entries) ── */
+.task-row-sub {
+    padding-left: 22px;
+}
+
+.task-session {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+}
+
+.task-session-label {
+    flex: 0 0 auto;
+    color: var(--panel-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 10px;
+}
+
+.task-session-id {
+    flex: 1 1 auto;
+    min-width: 0;
+    color: var(--panel-muted);
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 11px;
+    overflow-wrap: anywhere;
+}
+
+/* Per-task Cancel button on a running task's main row. */
+.task-cancel-btn {
+    appearance: none;
+    flex: 0 0 auto;
+    border: 1px solid color-mix(in srgb, var(--oc-red) 45%, var(--panel-border));
+    background: transparent;
+    color: var(--oc-red);
+    padding: 1px 8px;
+    border-radius: 4px;
+    font: inherit;
+    font-size: 10.5px;
+    cursor: pointer;
+}
+
+.task-cancel-btn:hover {
+    background: color-mix(in srgb, var(--oc-red) 12%, transparent);
+}
+
+.task-cancel-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
+/* Global Pause/Resume control, relocated into the Tasks card header. */
+.tasks-pause-btn {
+    flex: 0 0 auto;
+    padding: 2px 9px;
+    font-size: 11px;
+}
 
 @keyframes tasks-spin {
     0%   { transform: rotate(0deg); }

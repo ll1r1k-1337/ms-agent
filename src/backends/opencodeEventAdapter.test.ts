@@ -12,6 +12,7 @@ import {
     isToolCallPart,
     isToolResultPart,
     isToolUsePart,
+    isReasoningPart,
     extractToolCall,
     extractToolResult,
     extractToolPartParamsUpdate,
@@ -26,6 +27,7 @@ import {
     extractMessageRole,
     extractMessageId,
     extractPartMessageId,
+    extractPermissionRequest,
 } from './opencodeEventAdapter';
 
 describe('opencodeEventAdapter', () => {
@@ -524,6 +526,61 @@ describe('opencodeEventAdapter', () => {
             })).to.be.null;
             expect(extractRetryStatus({ type: 'session.status' })).to.be.null;
             expect(extractRetryStatus({ type: 'session.status', properties: {} })).to.be.null;
+        });
+    });
+
+    describe('extractPermissionRequest', () => {
+        it('extracts a permission.asked request', () => {
+            const info = extractPermissionRequest({
+                type: 'permission.asked',
+                properties: {
+                    id: 'per_abc',
+                    sessionID: 'ses_xyz',
+                    permission: 'external_directory',
+                    patterns: ['/home/developer/Ascend/*'],
+                    metadata: { filepath: '/home/developer/Ascend/cann/include/kernel_operator.h' },
+                    always: ['/home/developer/Ascend/*'],
+                },
+            });
+            expect(info).to.not.equal(null);
+            expect(info!.permissionId).to.equal('per_abc');
+            expect(info!.sessionId).to.equal('ses_xyz');
+            expect(info!.permission).to.equal('external_directory');
+            expect(info!.patterns).to.deep.equal(['/home/developer/Ascend/*']);
+            expect(info!.filepath).to.equal('/home/developer/Ascend/cann/include/kernel_operator.h');
+        });
+
+        it('returns null for non-permission events and malformed payloads', () => {
+            expect(extractPermissionRequest({ type: 'session.idle', properties: {} })).to.equal(null);
+            expect(extractPermissionRequest({ type: 'permission.asked', properties: { id: 'per_x' } })).to.equal(null);
+            expect(extractPermissionRequest({ type: 'permission.asked' })).to.equal(null);
+            expect(extractPermissionRequest(null)).to.equal(null);
+        });
+    });
+
+    describe('isReasoningPart', () => {
+        it('detects a ReasoningPart on a message.part.updated event', () => {
+            expect(isReasoningPart({
+                type: 'message.part.updated',
+                properties: { part: { type: 'reasoning', text: 'thinking through the bounds' } },
+            })).to.be.true;
+        });
+
+        it('returns false for text and tool parts', () => {
+            expect(isReasoningPart({
+                type: 'message.part.updated',
+                properties: { part: { type: 'text', text: 'the answer' } },
+            })).to.be.false;
+            expect(isReasoningPart({
+                type: 'message.part.updated',
+                properties: { part: { type: 'tool', state: { type: 'pending' } } },
+            })).to.be.false;
+        });
+
+        it('returns false when the event carries no part', () => {
+            expect(isReasoningPart({ type: 'session.idle', properties: {} })).to.be.false;
+            expect(isReasoningPart({})).to.be.false;
+            expect(isReasoningPart(null)).to.be.false;
         });
     });
 

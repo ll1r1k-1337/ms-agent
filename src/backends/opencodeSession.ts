@@ -13,6 +13,7 @@ import {
     extractRetryStatus,
     extractSessionId,
     isCompletionEvent,
+    isReasoningPart,
     extractAssistantFinishReason,
     extractMessageId,
     extractMessageRole,
@@ -556,6 +557,12 @@ export class OpenCodeSession {
             let parsedText = '';
             const messageTexts = new Map<string, string>();
             const assistantMessageOrder: string[] = [];
+            // Reasoning ("thinking") accumulation — kept entirely separate from
+            // messageTexts / parsedText so the model's monologue never pollutes
+            // the parsed answer (code-block / NO_FIX_NEEDED scanning).
+            const reasoningTexts = new Map<string, string>();
+            let reasoningLogBuffer = '';
+            let totalReasoningChars = 0;
             const errorMessages: string[] = [];
             const seenErrorMessages = new Set<string>();
             const assistantMessageIds = new Set<string>();
@@ -659,6 +666,25 @@ export class OpenCodeSession {
             store.add(unsubscribeSm);
             sm.dispatch({ kind: 'START', detail: options.mode });
 
+            // Emit accumulated model reasoning to the session log one complete
+            // line at a time, so the "thinking" stays readable without spamming
+            // a line per streamed token. `force` flushes a trailing partial line.
+            const flushReasoningLog = (force: boolean): void => {
+                let newlineIndex = reasoningLogBuffer.indexOf('\n');
+                while (newlineIndex >= 0) {
+                    const line = reasoningLogBuffer.slice(0, newlineIndex).trim();
+                    reasoningLogBuffer = reasoningLogBuffer.slice(newlineIndex + 1);
+                    if (line) {
+                        logSession(`model_reasoning | ${line}`);
+                    }
+                    newlineIndex = reasoningLogBuffer.indexOf('\n');
+                }
+                if ((force || reasoningLogBuffer.length >= 400) && reasoningLogBuffer.trim()) {
+                    logSession(`model_reasoning | ${reasoningLogBuffer.trim()}`);
+                    reasoningLogBuffer = '';
+                }
+            };
+
             const doResolve = (result: FixResult): void => {
                 if (finalized) {
                     return;
@@ -693,6 +719,9 @@ export class OpenCodeSession {
                 if (finalized) {
                     return;
                 }
+                // Flush any trailing reasoning so the full "thinking" is in the
+                // log before the session ends.
+                flushReasoningLog(true);
                 logSession(
                     `finalize entered elapsedMs=${Date.now() - runStartedAt}`
                     + ` sm.state=${sm.state()} sawHardTerminal=${sawHardTerminal()}`
@@ -701,7 +730,7 @@ export class OpenCodeSession {
                     + ` errors=${errorMessages.length} toolCalls=${toolCallCount}`
                     + ` editToolCall=${seenEditToolCall} editToolResult=${seenEditToolResult}`
                     + ` finish=${lastAssistantFinishReason || 'none'}`
-                    + ` parsedTextChars=${parsedText.length}`,
+                    + ` parsedTextChars=${parsedText.length} reasoningChars=${totalReasoningChars}`,
                 );
                 const emitSessionEnd = (
                     outcome: FixOutcome,
@@ -1144,10 +1173,12 @@ export class OpenCodeSession {
                 const assistantTextMessageId = partMessageId || eventMessageId || messageId;
 
                 const textDelta = extractTextDelta(e);
+                const isReasoning = textDelta !== null && isReasoningPart(e);
                 if (textDelta && isAssistantScopedPart) {
                     if (waitingForToolContinuation) {
                         logSession(
-                            `continuation_received via text_delta message=${assistantTextMessageId}`
+                            `continuation_received via ${isReasoning ? 'reasoning' : 'text_delta'}`
+                            + ` message=${assistantTextMessageId}`
                             + ` afterMs=${Date.now() - lastEventAt}`,
                         );
                         waitingForToolContinuation = false;
@@ -1155,7 +1186,7 @@ export class OpenCodeSession {
                     // Promote SM from sending -> streaming on first meaningful chunk.
                     // The SM ignores TEXT_DELTA in states that don't accept it.
                     sm.dispatch({ kind: 'TEXT_DELTA', chunk: textDelta });
-                    if (e.type !== 'reasoning') {
+                    if (!isReasoning) {
                         const prev = messageTexts.get(assistantTextMessageId) || '';
                         ensureAssistantMessageOrder(assistantTextMessageId);
                         let deltaSize = 0;
@@ -1184,7 +1215,25 @@ export class OpenCodeSession {
                             }
                         }
                     } else {
-                        this.callbacks?.onMessageChunk?.({ type: 'text_delta', delta: textDelta }, assistantTextMessageId + '_reasoning');
+                        // ReasoningPart — the model's internal "thinking". Surface
+                        // it in the session log so the user can see what the model
+                        // is reasoning about, but keep it OUT of parsedText: it is
+                        // the model's monologue, not its answer, and must not be
+                        // scanned for code blocks or NO_FIX_NEEDED markers.
+                        const prevReasoning = reasoningTexts.get(assistantTextMessageId) || '';
+                        let reasoningChunk = '';
+                        if (textDelta.startsWith(prevReasoning) && textDelta.length > prevReasoning.length) {
+                            reasoningChunk = textDelta.substring(prevReasoning.length);
+                            reasoningTexts.set(assistantTextMessageId, textDelta);
+                        } else if (textDelta !== prevReasoning) {
+                            reasoningChunk = textDelta;
+                            reasoningTexts.set(assistantTextMessageId, prevReasoning + textDelta);
+                        }
+                        if (reasoningChunk) {
+                            totalReasoningChars += reasoningChunk.length;
+                            reasoningLogBuffer += reasoningChunk;
+                            flushReasoningLog(false);
+                        }
                     }
                 } else {
                 }

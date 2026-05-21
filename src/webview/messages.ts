@@ -15,7 +15,9 @@ export type WebviewMessageType =
     | 'session_end'
     | 'status'
     | 'backend_info'
-    | 'step_update';
+    | 'step_update'
+    // Per-task result detail for the Tasks card's expandable Completed list:
+    | 'task_detail';
 
 export type WebviewPayload =
     | TextStreamPayload
@@ -34,7 +36,8 @@ export type WebviewPayload =
     | SessionEndPayload
     | StatusPayload
     | BackendInfoPayload
-    | StepUpdatePayload;
+    | StepUpdatePayload
+    | TaskDetailPayload;
 
 export interface WebviewMessage {
     type: WebviewMessageType;
@@ -93,6 +96,16 @@ export interface ClearPayload {}
 export interface QueueStateItem {
     id: string;
     title: string;
+    /** Present only for tasks enqueued by `fixIssues` (batch grouping). */
+    batchId?: string;
+    batchIndex?: number;
+    batchTotal?: number;
+    /** opencode session id for this task, once the backend reports it. */
+    opencodeSessionId?: string;
+    /** Terminal status — present only on `recentlyCompleted` entries. */
+    status?: 'completed' | 'no_change' | 'failed' | 'cancelled' | 'stopped';
+    /** Unix-ms completion time — present only on `recentlyCompleted` entries. */
+    completedAt?: number;
 }
 
 export interface QueueStatePayload {
@@ -100,7 +113,12 @@ export interface QueueStatePayload {
     paused: boolean;
     /** There is active, paused, or queued work that can still be controlled. */
     hasPendingTasks: boolean;
+    /** Not-yet-started queued tasks. */
     items: QueueStateItem[];
+    /** Tasks currently being processed by a worker. */
+    runningTasks?: QueueStateItem[];
+    /** Recently finished tasks, newest-first. */
+    recentlyCompleted?: QueueStateItem[];
 }
 
 // NEW for PR-C:
@@ -135,4 +153,29 @@ export interface BackendInfoPayload {
 export interface StepUpdatePayload {
     step: string;
     detail?: string;
+}
+
+/** A single file's before/after content captured during a finished fix task. */
+export interface TaskDetailDiff {
+    path: string;
+    oldText: string;
+    newText: string;
+}
+
+/**
+ * Result detail for one finished fix task, keyed by the queue task id so the
+ * Tasks card can show "what was applied" / "why it crashed" when the user
+ * expands a Completed entry. Posted once per task (unlike `queue_state`, which
+ * re-broadcasts the whole queue), so it can safely carry file contents.
+ */
+export interface TaskDetailPayload {
+    /** Queue task id — matches `QueueStateItem.id` in `recentlyCompleted`. */
+    taskId: string;
+    /** Terminal status the worker stamped on the task. */
+    status: 'completed' | 'no_change' | 'failed' | 'cancelled' | 'stopped';
+    /** Assistant explanation (for applied) or failure reason (for failed). */
+    finalMessage: string;
+    explanationKind?: 'structured' | 'synthetic' | 'plain' | 'missing';
+    /** File diffs captured while this task ran. Empty when nothing changed. */
+    diffs: TaskDetailDiff[];
 }

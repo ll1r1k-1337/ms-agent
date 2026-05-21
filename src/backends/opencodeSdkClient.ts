@@ -28,6 +28,17 @@ interface OpencodeSdkClientLike {
         abort?: (input: Record<string, unknown>) => Promise<unknown>;
         messages?: (input: Record<string, unknown>) => Promise<unknown>;
     };
+    permission?: {
+        respond?: (parameters: {
+            sessionID: string;
+            permissionID: string;
+            response: 'once' | 'always' | 'reject';
+        }) => Promise<unknown>;
+        reply?: (parameters: {
+            requestID: string;
+            reply: 'once' | 'always' | 'reject';
+        }) => Promise<unknown>;
+    };
     post?: (path: string, options: { body: unknown }) => Promise<unknown>;
 }
 
@@ -199,6 +210,44 @@ export class OpenCodeSdkClient {
         } catch (error) {
             throw new Error(`OpenCode SDK failed to abort the session: ${getErrorMessage(error)}`);
         }
+    }
+
+    /**
+     * Answer an OpenCode `permission.asked` request so the gated tool call can
+     * proceed instead of stalling until the hard timeout. Prefers the
+     * session-scoped respond endpoint (`PUT /session/{id}/permissions/
+     * {permissionID}` — documented in the opencode-protocol skill and present
+     * on older servers); falls back to the newer flat reply endpoint.
+     */
+    async respondToPermission(
+        sessionID: string,
+        permissionID: string,
+        decision: 'once' | 'always' | 'reject',
+    ): Promise<void> {
+        const client = await this.getClient();
+        const permission = client.permission;
+        if (!permission) {
+            throw new Error('OpenCode SDK does not expose a permission API');
+        }
+        let respondError: unknown;
+        if (permission.respond) {
+            try {
+                await permission.respond({ sessionID, permissionID, response: decision });
+                return;
+            } catch (error) {
+                respondError = error;
+            }
+        }
+        if (permission.reply) {
+            await permission.reply({ requestID: permissionID, reply: decision });
+            return;
+        }
+        if (respondError) {
+            throw new Error(
+                `OpenCode SDK failed to respond to permission: ${getErrorMessage(respondError)}`,
+            );
+        }
+        throw new Error('OpenCode SDK permission API exposes neither respond() nor reply()');
     }
 
     async readSessionMessages(sessionID: string): Promise<unknown[] | null> {

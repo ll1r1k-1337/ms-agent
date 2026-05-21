@@ -206,6 +206,19 @@ export function isToolUsePart(part: unknown): part is Record<string, unknown> {
 }
 
 /**
+ * True when `event` carries a ReasoningPart — the model's internal
+ * "thinking" stream. Parts are discriminated by `part.type` (opencode-protocol
+ * Part Type Catalog); a ReasoningPart has `part.type === 'reasoning'`. Accepts
+ * a full SSE event and resolves the nested part internally, mirroring
+ * `extractTextDelta`. Reasoning is distinct from the TextPart answer and must
+ * not be parsed as the model's final output.
+ */
+export function isReasoningPart(event: unknown): boolean {
+    const part = resolvePart(event);
+    return isRecordLike(part) && part.type === 'reasoning';
+}
+
+/**
  * Inspect any event for a tool-part update and return the latest known
  * `(callID, params)` pair, regardless of the part's `state.type`.
  *
@@ -707,4 +720,55 @@ export function extractRetryStatus(event: OpenCodeEvent): RetryStatusInfo | null
         info.attempt = status.attempt;
     }
     return info;
+}
+
+export interface PermissionRequestInfo {
+    /** Permission id — the `{permissionID}` for the respond endpoint. */
+    permissionId: string;
+    /** Session the request belongs to (may be a `task` subagent session). */
+    sessionId: string;
+    /** Permission kind, e.g. `external_directory`. */
+    permission: string;
+    /** Path glob patterns the request covers. */
+    patterns: string[];
+    /** Best-effort target file/dir path from the request `metadata`. */
+    filepath: string;
+}
+
+/**
+ * Detect OpenCode's `permission.asked` event — emitted when a tool action
+ * (commonly a `read` of a file outside the project directory) needs the
+ * client's approval. Wire shape is `{type:"permission.asked", properties:
+ * PermissionRequest}`, per `@opencode-ai/sdk` `EventPermissionAsked`. Until
+ * the client answers via `PUT /session/{id}/permissions/{permissionID}` the
+ * gated tool call stalls, so callers use this to auto-respond. Returns null
+ * for every other event.
+ */
+export function extractPermissionRequest(event: unknown): PermissionRequestInfo | null {
+    if (!isRecordLike(event) || event.type !== 'permission.asked') {
+        return null;
+    }
+    const props = event.properties;
+    if (!isRecordLike(props)) {
+        return null;
+    }
+    const permissionId = readStringField(props, 'id');
+    const sessionId = readStringField(props, 'sessionID', 'sessionId');
+    if (!permissionId || !sessionId) {
+        return null;
+    }
+    const patterns = Array.isArray(props.patterns)
+        ? props.patterns.filter((value): value is string => typeof value === 'string')
+        : [];
+    let filepath = '';
+    if (isRecordLike(props.metadata)) {
+        filepath = readStringField(props.metadata, 'filepath', 'filePath', 'parentDir', 'path') ?? '';
+    }
+    return {
+        permissionId,
+        sessionId,
+        permission: readStringField(props, 'permission') ?? '',
+        patterns,
+        filepath,
+    };
 }

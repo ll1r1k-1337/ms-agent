@@ -41,6 +41,12 @@
         terminalLocked: false,
         opencodeSessionId: '',
         queueState: { paused: false, hasPendingTasks: false, items: [] },
+        // Per-task result detail keyed by queue task id — populated by
+        // 'task_detail' messages so a Completed entry can be expanded to show
+        // what it applied or why it crashed.
+        taskDetails: new Map(),
+        // Task ids the user has expanded; survives Tasks-card re-renders.
+        expandedTasks: new Set(),
         changes: new Map(),
         explanation: '',
         explanationMessages: new Map(),
@@ -49,6 +55,13 @@
             status: false,
             files: false,
             explanation: false,
+            tasks: false,
+        },
+        // Collapse state for the Completed / Failed / Cancelled task groups.
+        collapsedGroups: {
+            completed: false,
+            failed: false,
+            cancelled: false,
         },
         userPinnedToBottom: true,
     };
@@ -63,18 +76,13 @@
         els.statusPill = $('status-pill');
         els.statusLabel = $('status-label');
         els.statusProgress = $('status-progress');
-        els.metaTarget = $('meta-target');
         els.metaBackend = $('meta-backend');
         els.metaMode = $('meta-mode');
         els.metaModel = $('meta-model');
-        els.metaSession = $('meta-session');
         els.metaElapsed = $('meta-elapsed');
         els.elapsedRow = $('elapsed-row');
         els.queueRow = $('queue-row');
         els.queueBadge = $('queue-badge');
-        els.actionRow = $('action-row');
-        els.stopBtn = $('stopBtn');
-        els.cancelBtn = $('cancelBtn');
         els.statusCard = $('status-card');
         els.filesCard = $('files-card');
         els.filesList = $('files-list');
@@ -90,11 +98,19 @@
         els.tasksCompletedGroup = $('tasks-completed-group');
         els.tasksCompletedCount = $('tasks-completed-count');
         els.tasksCompletedList = $('tasks-completed-list');
+        els.tasksFailedGroup = $('tasks-failed-group');
+        els.tasksFailedCount = $('tasks-failed-count');
+        els.tasksFailedList = $('tasks-failed-list');
+        els.tasksCancelledGroup = $('tasks-cancelled-group');
+        els.tasksCancelledCount = $('tasks-cancelled-count');
+        els.tasksCancelledList = $('tasks-cancelled-list');
+        els.tasksPauseBtn = $('tasks-pause-btn');
         els.explanationCard = $('explanation-card');
         els.explanationBody = $('explanation-body');
         els.explanationMeta = $('explanation-meta');
         els.idleHint = $('idle-hint');
         els.collapseToggles = Array.prototype.slice.call(document.querySelectorAll('[data-card-toggle]'));
+        els.groupCollapseToggles = Array.prototype.slice.call(document.querySelectorAll('[data-group-toggle]'));
     }
 
     function log(message) {
@@ -463,6 +479,9 @@
         if (els.explanationCard) {
             els.explanationCard.classList.toggle('is-collapsed', !!state.collapsedCards.explanation);
         }
+        if (els.tasksCard) {
+            els.tasksCard.classList.toggle('is-collapsed', !!state.collapsedCards.tasks);
+        }
     }
 
     function toggleCardCollapse(cardId) {
@@ -471,6 +490,26 @@
         }
         state.collapsedCards[cardId] = !state.collapsedCards[cardId];
         renderCollapsedCards();
+    }
+
+    function renderCollapsedGroups() {
+        if (els.tasksCompletedGroup) {
+            els.tasksCompletedGroup.classList.toggle('is-collapsed', !!state.collapsedGroups.completed);
+        }
+        if (els.tasksFailedGroup) {
+            els.tasksFailedGroup.classList.toggle('is-collapsed', !!state.collapsedGroups.failed);
+        }
+        if (els.tasksCancelledGroup) {
+            els.tasksCancelledGroup.classList.toggle('is-collapsed', !!state.collapsedGroups.cancelled);
+        }
+    }
+
+    function toggleGroupCollapse(groupId) {
+        if (!Object.prototype.hasOwnProperty.call(state.collapsedGroups, groupId)) {
+            return;
+        }
+        state.collapsedGroups[groupId] = !state.collapsedGroups[groupId];
+        renderCollapsedGroups();
     }
 
     // ── timers ───────────────────────────────────────────────────
@@ -532,19 +571,9 @@
             els.statusLabel.textContent = PHASE_LABELS[state.phase] || PHASE_LABELS.waiting;
         }
         // Kv-rows
-        if (els.metaTarget) {
-            const t = state.target || '-';
-            els.metaTarget.textContent = t;
-            els.metaTarget.title = t;
-        }
         if (els.metaBackend) els.metaBackend.textContent = state.backend || '-';
         if (els.metaMode) els.metaMode.textContent = state.mode || '-';
         if (els.metaModel) els.metaModel.textContent = state.model || '-';
-        if (els.metaSession) {
-            const sid = state.opencodeSessionId || '';
-            els.metaSession.textContent = sid || '-';
-            els.metaSession.title = sid;
-        }
         // Elapsed (visible only while session is active or just ended this run)
         if (els.elapsedRow) {
             els.elapsedRow.classList.toggle('hidden', state.sessionStartedAt === 0);
@@ -556,13 +585,6 @@
         }
         if (els.queueBadge) {
             els.queueBadge.textContent = String(queued);
-        }
-        // Action row (visible only when there's queued work)
-        if (els.actionRow) {
-            els.actionRow.classList.toggle('hidden', !state.queueState.hasPendingTasks);
-        }
-        if (els.stopBtn) {
-            els.stopBtn.textContent = state.queueState.paused ? 'Resume' : 'Pause';
         }
         // Progress shimmer (visible while in-flight)
         if (els.statusProgress) {
@@ -606,8 +628,24 @@
             + '</details>';
     }
 
+    // Total tasks tracked in this session — queued + running + completed.
+    function countSessionTasks() {
+        const q = state.queueState || {};
+        const running = Array.isArray(q.runningTasks) ? q.runningTasks.length : 0;
+        const queued = Array.isArray(q.items) ? q.items.length : 0;
+        const completed = Array.isArray(q.recentlyCompleted) ? q.recentlyCompleted.length : 0;
+        return running + queued + completed;
+    }
+
     function renderExplanation() {
         if (!els.explanationCard || !els.explanationBody || !els.explanationMeta) return;
+        // With more than one task in the session, every Completed entry carries
+        // its own diff/explanation — the single shared Explanation card only
+        // reflects the latest task, so it is noise. Hide it for multi-task runs.
+        if (countSessionTasks() > 1) {
+            els.explanationCard.classList.add('hidden');
+            return;
+        }
         const finished = state.currentOutcome !== 'pending';
         if (!finished) {
             els.explanationCard.classList.add('hidden');
@@ -774,6 +812,24 @@
         state.queueState = payload || state.queueState;
         renderStatusCard();
         renderTasksCard();
+        // The task count just changed — re-evaluate whether the shared
+        // Explanation card should hide itself for a multi-task run.
+        renderExplanation();
+    }
+
+    function handleTaskDetail(payload) {
+        if (!payload || !payload.taskId) {
+            return;
+        }
+        state.taskDetails.set(payload.taskId, {
+            status: payload.status || '',
+            finalMessage: payload.finalMessage || '',
+            explanationKind: payload.explanationKind || '',
+            diffs: Array.isArray(payload.diffs) ? payload.diffs : [],
+        });
+        // The completed entry may already be on screen from an earlier
+        // queue_state — re-render so its expanded body picks up the detail.
+        renderTasksCard();
     }
 
     function renderTasksCard() {
@@ -781,21 +837,50 @@
         const queue = state.queueState || {};
         const running = Array.isArray(queue.runningTasks) ? queue.runningTasks : [];
         const queued = Array.isArray(queue.items) ? queue.items : [];
-        const completed = Array.isArray(queue.recentlyCompleted) ? queue.recentlyCompleted : [];
+        const terminal = Array.isArray(queue.recentlyCompleted) ? queue.recentlyCompleted : [];
+        // Failed and Cancelled tasks each get their own group — lumping them
+        // under "Completed" misrepresents the outcome. A user-cancelled or
+        // pipeline-stopped task is "cancelled"; anything else that is not a
+        // failure counts as completed.
+        const failed = terminal.filter(function (t) {
+            return t && t.status === 'failed';
+        });
+        const cancelled = terminal.filter(function (t) {
+            return t && (t.status === 'cancelled' || t.status === 'stopped');
+        });
+        const completed = terminal.filter(function (t) {
+            return t && t.status !== 'failed'
+                && t.status !== 'cancelled' && t.status !== 'stopped';
+        });
 
-        // Show the card whenever any of the three groups has at least one
-        // entry — otherwise keep it hidden so the panel doesn't get noisy for
-        // a one-off single-issue fix.
-        const hasAny = running.length > 0 || queued.length > 0 || completed.length > 0;
+        // Show the card whenever any group has at least one entry — otherwise
+        // keep it hidden so the panel doesn't get noisy for a one-off fix.
+        const hasAny = running.length > 0 || queued.length > 0
+            || completed.length > 0 || failed.length > 0 || cancelled.length > 0;
         els.tasksCard.classList.toggle('hidden', !hasAny);
 
         if (els.tasksMeta) {
-            els.tasksMeta.textContent =
-                running.length + ' in progress · ' + completed.length + ' completed';
+            let meta = running.length + ' in progress · ' + completed.length + ' completed';
+            if (failed.length > 0) {
+                meta += ' · <span class="tasks-meta-failed">' + failed.length + ' failed</span>';
+            }
+            if (cancelled.length > 0) {
+                meta += ' · ' + cancelled.length + ' cancelled';
+            }
+            els.tasksMeta.innerHTML = meta;
+        }
+        // The global Pause/Resume control lives in the Tasks card header; it
+        // is shown only while the pipeline has controllable work.
+        if (els.tasksPauseBtn) {
+            els.tasksPauseBtn.classList.toggle('hidden', !queue.hasPendingTasks);
+            els.tasksPauseBtn.textContent = queue.paused ? 'Resume' : 'Pause';
         }
         renderTasksGroup(els.tasksRunningGroup, els.tasksRunningCount, els.tasksRunningList, running, 'running');
         renderTasksGroup(els.tasksQueuedGroup, els.tasksQueuedCount, els.tasksQueuedList, queued, 'queued');
         renderTasksGroup(els.tasksCompletedGroup, els.tasksCompletedCount, els.tasksCompletedList, completed, 'completed');
+        renderTasksGroup(els.tasksFailedGroup, els.tasksFailedCount, els.tasksFailedList, failed, 'failed');
+        renderTasksGroup(els.tasksCancelledGroup, els.tasksCancelledCount, els.tasksCancelledList, cancelled, 'cancelled');
+        renderCollapsedGroups();
     }
 
     function renderTasksGroup(group, count, list, tasks, kind) {
@@ -809,14 +894,25 @@
     }
 
     function buildTaskListItem(task, kind) {
+        // Terminal tasks (completed / failed / cancelled) are expandable so the
+        // user can review what each fix applied, why it crashed, or where it
+        // was cancelled.
+        if (kind === 'completed' || kind === 'failed' || kind === 'cancelled') {
+            return buildCompletedTaskItem(task);
+        }
+        // Running tasks get a two-row layout: a main row (icon + title +
+        // per-task Cancel button) and a sub-row carrying this task's session id.
+        if (kind === 'running') {
+            return buildRunningTaskItem(task);
+        }
+        // Queued tasks stay a plain flat row — no session id yet.
         const li = document.createElement('li');
-        const status = kind === 'completed' && task && task.status ? task.status : kind;
-        li.className = 'tasks-list-item is-' + status;
+        li.className = 'tasks-list-item is-' + kind;
 
         const icon = document.createElement('span');
         icon.className = 'task-icon';
         icon.setAttribute('aria-hidden', 'true');
-        icon.innerHTML = taskIconSvg(status);
+        icon.innerHTML = taskIconSvg(kind);
         li.appendChild(icon);
 
         const title = document.createElement('span');
@@ -825,13 +921,181 @@
         title.textContent = (task && task.title) || '(untitled)';
         li.appendChild(title);
 
-        if (kind === 'completed') {
-            const badge = document.createElement('span');
-            badge.className = 'task-badge';
-            badge.textContent = badgeLabelForStatus(status);
-            li.appendChild(badge);
+        return li;
+    }
+
+    // Inner HTML for the per-task "Session <id>" line (label + monospace id).
+    // Shared by running task rows and the expanded body of terminal tasks.
+    function taskSessionLineHtml(sessionId) {
+        return '<div class="task-session">'
+            + '<span class="task-session-label">Session</span>'
+            + '<span class="task-session-id">' + escapeHtml(sessionId) + '</span>'
+            + '</div>';
+    }
+
+    // A running task: a two-row entry. The main row carries the icon, title and
+    // a per-task Cancel button; the sub-row shows this task's opencode session
+    // id once the backend has reported it.
+    function buildRunningTaskItem(task) {
+        const taskId = (task && task.id) || '';
+        const sessionId = (task && task.opencodeSessionId) || '';
+        const li = document.createElement('li');
+        li.className = 'tasks-list-item task-active-entry is-running';
+
+        const mainRow = document.createElement('div');
+        mainRow.className = 'task-row-main';
+
+        const icon = document.createElement('span');
+        icon.className = 'task-icon';
+        icon.setAttribute('aria-hidden', 'true');
+        icon.innerHTML = taskIconSvg('running');
+        mainRow.appendChild(icon);
+
+        const title = document.createElement('span');
+        title.className = 'task-title';
+        title.title = (task && task.title) || '';
+        title.textContent = (task && task.title) || '(untitled)';
+        mainRow.appendChild(title);
+
+        const cancelBtn = document.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.className = 'task-cancel-btn';
+        cancelBtn.textContent = 'Cancel';
+        if (taskId) {
+            // Task lists are rebuilt on every queue_state, so this listener is
+            // bound here per build — never in bindEvents.
+            cancelBtn.addEventListener('click', function (event) {
+                event.preventDefault();
+                event.stopPropagation();
+                cancelBtn.disabled = true;
+                cancelBtn.textContent = 'Cancelling…';
+                vscode.postMessage({ type: 'cancel_task', id: taskId });
+            });
+        } else {
+            cancelBtn.disabled = true;
+        }
+        mainRow.appendChild(cancelBtn);
+
+        li.appendChild(mainRow);
+
+        if (sessionId) {
+            const sub = document.createElement('div');
+            sub.className = 'task-row-sub';
+            sub.innerHTML = taskSessionLineHtml(sessionId);
+            li.appendChild(sub);
         }
         return li;
+    }
+
+    // A finished task rendered as a <details>: the summary is the same icon +
+    // title + badge row, and expanding it reveals the diff / failure reason.
+    function buildCompletedTaskItem(task) {
+        const status = (task && task.status) || 'completed';
+        const taskId = (task && task.id) || '';
+        const li = document.createElement('li');
+        li.className = 'tasks-list-item task-entry is-' + status;
+
+        const details = document.createElement('details');
+        details.className = 'task-entry-details';
+        if (taskId && state.expandedTasks.has(taskId)) {
+            details.open = true;
+        }
+        details.addEventListener('toggle', function () {
+            if (!taskId) return;
+            if (details.open) {
+                state.expandedTasks.add(taskId);
+            } else {
+                state.expandedTasks.delete(taskId);
+            }
+        });
+
+        const summary = document.createElement('summary');
+        summary.className = 'task-entry-summary';
+
+        const icon = document.createElement('span');
+        icon.className = 'task-icon';
+        icon.setAttribute('aria-hidden', 'true');
+        icon.innerHTML = taskIconSvg(status);
+        summary.appendChild(icon);
+
+        const title = document.createElement('span');
+        title.className = 'task-title';
+        title.title = (task && task.title) || '';
+        title.textContent = (task && task.title) || '(untitled)';
+        summary.appendChild(title);
+
+        const badge = document.createElement('span');
+        badge.className = 'task-badge';
+        badge.textContent = badgeLabelForStatus(status);
+        summary.appendChild(badge);
+
+        details.appendChild(summary);
+
+        const body = document.createElement('div');
+        body.className = 'task-entry-body';
+        body.innerHTML = taskDetailHtml(taskId, status, (task && task.opencodeSessionId) || '');
+        details.appendChild(body);
+
+        li.appendChild(details);
+        return li;
+    }
+
+    // Inner HTML for an expanded completed task: the applied diff(s) and/or the
+    // assistant's explanation / failure reason, whichever the task produced.
+    function taskDetailHtml(taskId, status, sessionId) {
+        const detail = taskId ? state.taskDetails.get(taskId) : undefined;
+        // The Session line is shown for every terminal task, even one with no
+        // captured detail (e.g. a task cancelled before it produced a diff).
+        const sessionHtml = sessionId ? taskSessionLineHtml(sessionId) : '';
+        const emptyHtml = '<div class="task-detail-empty">'
+            + 'No fix details were captured for this task.</div>';
+        if (!detail) {
+            return sessionHtml + emptyHtml;
+        }
+        let html = sessionHtml;
+        const diffs = Array.isArray(detail.diffs) ? detail.diffs : [];
+        if (diffs.length > 0) {
+            html += '<div class="task-detail-label">'
+                + (diffs.length === 1 ? 'Applied change' : 'Applied changes')
+                + '</div>';
+            html += diffs.map(taskDiffHtml).join('');
+        }
+        const message = String(detail.finalMessage || '').trim();
+        if (message) {
+            const label = status === 'failed' ? 'Failure reason'
+                : (status === 'cancelled' || status === 'stopped') ? 'Status'
+                : diffs.length > 0 ? 'Explanation'
+                : 'Result';
+            html += '<div class="task-detail-label">' + escapeHtml(label) + '</div>';
+            html += '<div class="task-detail-text">' + renderInlineMarkdown(message) + '</div>';
+        }
+        if (html === sessionHtml) {
+            return sessionHtml + emptyHtml;
+        }
+        return html;
+    }
+
+    // One file's diff, rendered like the Modified-files card but without its
+    // own nested <details> (the task entry already provides the expand toggle).
+    function taskDiffHtml(file) {
+        const stat = diffStat(file.oldText, file.newText);
+        const lines = formatDiffLines(file.oldText, file.newText);
+        const diffHtml = lines.map(function (l) {
+            const cls = l.type === 'add' ? 'line-add'
+                : l.type === 'del' ? 'line-del'
+                : l.type === 'ctx' ? 'line-ctx'
+                : 'line-meta';
+            return '<span class="' + cls + '">' + escapeHtml(l.text) + '</span>';
+        }).join('');
+        return '<div class="task-diff">'
+            + '<div class="task-diff-head">'
+                + '<span class="file-path">' + escapeHtml(dirname(file.path)) + '</span>'
+                + '<span class="file-name">' + escapeHtml(basename(file.path)) + '</span>'
+                + '<span class="file-stat"><span class="add">+' + stat.added + '</span> '
+                    + '<span class="del">-' + stat.removed + '</span></span>'
+            + '</div>'
+            + '<pre class="file-diff">' + diffHtml + '</pre>'
+            + '</div>';
     }
 
     function badgeLabelForStatus(status) {
@@ -933,9 +1197,17 @@
             status: false,
             files: false,
             explanation: false,
+            tasks: false,
+        };
+        state.collapsedGroups = {
+            completed: false,
+            failed: false,
+            cancelled: false,
         };
         state.userPinnedToBottom = true;
         state.queueState = { paused: false, hasPendingTasks: false, items: [], runningTasks: [], recentlyCompleted: [] };
+        state.taskDetails = new Map();
+        state.expandedTasks = new Set();
         if (els.metaElapsed) els.metaElapsed.textContent = '00:00';
         if (els.jumpLatest) els.jumpLatest.classList.remove('is-visible');
         renderAll();
@@ -978,8 +1250,10 @@
                 handleSessionStart(p);
                 break;
             case 'session_metadata':
+                // Per-task Session ids now arrive via queue_state; the Status
+                // card no longer renders a session row. Keep the assignment so
+                // the last run's id stays available to any other consumer.
                 state.opencodeSessionId = p.opencodeSessionId || state.opencodeSessionId;
-                renderStatusCard();
                 break;
             case 'session_end':
                 appendSessionResult(p.outcome, p.finalMessage, p.explanationKind);
@@ -1032,6 +1306,9 @@
             case 'queue_state':
                 updateQueueState(p);
                 break;
+            case 'task_detail':
+                handleTaskDetail(p);
+                break;
             default:
                 break;
         }
@@ -1053,14 +1330,24 @@
                 });
             });
         }
-        if (els.stopBtn) {
-            els.stopBtn.addEventListener('click', function () {
-                vscode.postMessage({ type: 'pause_toggle' });
+        if (els.groupCollapseToggles) {
+            els.groupCollapseToggles.forEach(function (node) {
+                node.addEventListener('dblclick', function (event) {
+                    if (shouldIgnoreCollapseToggle(event.target)) {
+                        return;
+                    }
+                    const groupId = node.getAttribute('data-group-toggle');
+                    if (!groupId) {
+                        return;
+                    }
+                    event.preventDefault();
+                    toggleGroupCollapse(groupId);
+                });
             });
         }
-        if (els.cancelBtn) {
-            els.cancelBtn.addEventListener('click', function () {
-                vscode.postMessage({ type: 'cancel_current' });
+        if (els.tasksPauseBtn) {
+            els.tasksPauseBtn.addEventListener('click', function () {
+                vscode.postMessage({ type: 'pause_toggle' });
             });
         }
         if (els.messages) {
