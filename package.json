@@ -104,6 +104,13 @@
           "minimum": 1,
           "maximum": 10,
           "description": "Number of AI fixes to run concurrently. When greater than 1, queued repair tasks (e.g. from msagent.fixIssues) are processed in parallel — up to this many at once. Set to 1 to keep the original one-at-a-time behavior."
+        },
+        "msagent.maxBatchSize": {
+          "type": "number",
+          "default": 500,
+          "minimum": 1,
+          "maximum": 5000,
+          "description": "Maximum number of payloads accepted by msagent.fixIssues in a single call. Excess payloads are rejected with status=invalid_payload and error=batch_size_limit_exceeded; the rest are processed normally."
         }
       }
     },

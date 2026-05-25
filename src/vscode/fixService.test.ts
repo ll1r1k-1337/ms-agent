@@ -1377,5 +1377,75 @@ describe('fixService', () => {
             const fixedCount = Object.values(snapshot.states).filter((state) => state === 'fixed').length;
             expect(fixedCount).to.equal(2);
         });
+
+        describe('fixIssues admission cap', () => {
+            it('rejects payloads beyond msagent.maxBatchSize as invalid_payload with batch_size_limit_exceeded', async () => {
+                _resetFixState();
+                stubWebview(); stubConfig();
+                sinon.stub(DiagnosticsManager, 'removeDiagnostic');
+                const cfgStub = sinon.stub(vscode.workspace, 'getConfiguration');
+                cfgStub.withArgs('msagent').returns({
+                    get: (key: string, def: unknown) =>
+                        key === 'maxBatchSize' ? 3 : def,
+                    has: () => true,
+                    inspect: () => undefined,
+                    update: async () => {},
+                } as any);
+                sinon.stub(backendFactory, 'createFixBackend').returns({
+                    name: 'stub',
+                    supportsStreaming: () => false,
+                    cancel: () => {},
+                    executeFix: async () => ({
+                        outcome: 'no_change',
+                        success: true,
+                        fileChanged: false,
+                        toolCallCount: 0,
+                        finalMessage: '',
+                    }),
+                } as any);
+                const payloads = Array.from({ length: 5 }, (_, i) =>
+                    makeValidPayload('/workspace/test.cpp', i + 1),
+                );
+                const result = await fixIssues(payloads);
+                expect(result.total).to.equal(5);
+                expect(result.results[3].status).to.equal('invalid_payload');
+                expect(result.results[3].error).to.equal('batch_size_limit_exceeded');
+                expect(result.results[4].status).to.equal('invalid_payload');
+                expect(result.results[4].error).to.equal('batch_size_limit_exceeded');
+                expect(result.summary.invalid_payload).to.equal(2);
+            });
+
+            it('clamps a misconfigured maxBatchSize <= 0 to 1', async () => {
+                _resetFixState();
+                stubWebview(); stubConfig();
+                sinon.stub(DiagnosticsManager, 'removeDiagnostic');
+                const cfgStub = sinon.stub(vscode.workspace, 'getConfiguration');
+                cfgStub.withArgs('msagent').returns({
+                    get: (key: string, def: unknown) =>
+                        key === 'maxBatchSize' ? -7 : def,
+                    has: () => true,
+                    inspect: () => undefined,
+                    update: async () => {},
+                } as any);
+                sinon.stub(backendFactory, 'createFixBackend').returns({
+                    name: 'stub',
+                    supportsStreaming: () => false,
+                    cancel: () => {},
+                    executeFix: async () => ({
+                        outcome: 'no_change',
+                        success: true,
+                        fileChanged: false,
+                        toolCallCount: 0,
+                        finalMessage: '',
+                    }),
+                } as any);
+                const payloads = Array.from({ length: 2 }, (_, i) =>
+                    makeValidPayload('/workspace/test.cpp', i + 1),
+                );
+                const result = await fixIssues(payloads);
+                expect(result.results[1].status).to.equal('invalid_payload');
+                expect(result.results[1].error).to.equal('batch_size_limit_exceeded');
+            });
+        });
     });
 });

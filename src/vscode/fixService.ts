@@ -286,6 +286,28 @@ export function readFixesPerBatch(): number {
     }
 }
 
+/**
+ * Maximum number of payloads accepted by a single `fixIssues` call. Reads
+ * `msagent.maxBatchSize` from VS Code settings; clamps to [1, 5000] so a
+ * misconfigured value never gates the queue completely or blows up memory.
+ */
+export function readMaxBatchSize(): number {
+    try {
+        const raw = vscode.workspace
+            .getConfiguration('msagent')
+            .get<number>('maxBatchSize', 500);
+        if (typeof raw !== 'number' || !Number.isFinite(raw)) {
+            return 500;
+        }
+        const rounded = Math.floor(raw);
+        if (rounded < 1) return 1;
+        if (rounded > 5000) return 5000;
+        return rounded;
+    } catch {
+        return 500;
+    }
+}
+
 function clearConversationIfCancelledAndIdle(): void {
     if (!clearConversationOnIdleAfterCancel) {
         return;
@@ -1139,6 +1161,9 @@ export async function fixIssues(
 
     logFixQueue(`batch begin id=${batchId} total=${total}`);
 
+    const maxBatchSize = readMaxBatchSize();
+    const acceptIndexLimit = Math.min(requests.length, maxBatchSize);
+
     // Two-pass: validate first so we know the accepted count before enqueueing.
     // Knowing `batchTotal` up front lets every task carry the real denominator
     // when it lands in the queue, removing the need to walk three task
@@ -1149,6 +1174,15 @@ export async function fixIssues(
     const normalizedItems: Normalized[] = [];
     let acceptedCount = 0;
     for (let i = 0; i < requests.length; i += 1) {
+        if (i >= acceptIndexLimit) {
+            logFixQueue(`batch reject id=${batchId} index=${i} error=batch_size_limit_exceeded`);
+            normalizedItems.push({
+                kind: 'err',
+                index: i,
+                error: 'batch_size_limit_exceeded',
+            });
+            continue;
+        }
         const r = normalizeFixIssueRequest(requests[i]);
         if (!r.ok) {
             logFixQueue(`batch reject id=${batchId} index=${i} error=${r.error}`);
