@@ -1413,6 +1413,7 @@ describe('fixService', () => {
                 expect(result.results[4].status).to.equal('invalid_payload');
                 expect(result.results[4].error).to.equal('batch_size_limit_exceeded');
                 expect(result.summary.invalid_payload).to.equal(2);
+                expect(result.accepted).to.equal(3);
             });
 
             it('clamps a misconfigured maxBatchSize <= 0 to 1', async () => {

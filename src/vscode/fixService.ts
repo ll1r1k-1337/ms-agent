@@ -1057,7 +1057,16 @@ export interface FixBatchItemResult {
     /** Index in the original `requests` array. */
     index: number;
     status: FixProblemStatus;
-    /** Validation error string, present only when `status === 'invalid_payload'`. */
+    /**
+     * Validation error, present only when `status === 'invalid_payload'`.
+     * The field carries one of two kinds of values:
+     *  - **Human-readable sentences** from `normalizeFixIssueRequest` (e.g.
+     *    `'uri must be a file URI or path'`) — surfaced to the user.
+     *  - **Stable tokens** for caller-side branching (e.g.
+     *    `'batch_size_limit_exceeded'` from the admission cap). Tokens
+     *    documented per call-site; do not change without bumping the
+     *    documented contract in `docs/MSTT_INTEGRATION_ARCHITECTURE.md`.
+     */
     error?: string;
     /** True when this entry was deduplicated against an already-queued/running fix. */
     deduplicated?: boolean;
@@ -1173,9 +1182,16 @@ export async function fixIssues(
         | { kind: 'err'; index: number; error: string };
     const normalizedItems: Normalized[] = [];
     let acceptedCount = 0;
+    if (requests.length > acceptIndexLimit) {
+        logFixQueue(
+            `batch reject id=${batchId} reason=batch_size_limit_exceeded`
+            + ` count=${requests.length - acceptIndexLimit}`
+            + ` firstIndex=${acceptIndexLimit}`
+            + ` cap=${maxBatchSize}`,
+        );
+    }
     for (let i = 0; i < requests.length; i += 1) {
         if (i >= acceptIndexLimit) {
-            logFixQueue(`batch reject id=${batchId} index=${i} error=batch_size_limit_exceeded`);
             normalizedItems.push({
                 kind: 'err',
                 index: i,
