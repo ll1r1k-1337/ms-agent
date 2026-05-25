@@ -13,6 +13,8 @@ import { WebviewPanelProvider, MSAGENT_FIX_VIEW_TYPE } from '../webview/webviewP
 import type { TaskDetailDiff, QueueGroup } from '../webview/messages';
 import { StreamChunk } from '../llm/types';
 import { createFixBackend, FixCallbacks, FixResult } from '../backends/backendFactory';
+import { QueueEventEmitter, type QueueDeltaListener } from './queueEvents';
+import type { QueueSummary } from '../webview/messages';
 
 export const _deps = { existsSync: fs.existsSync };
 export function _setTestDeps(deps: Partial<typeof _deps>) { Object.assign(_deps, deps); }
@@ -380,6 +382,32 @@ export interface AiFixQueueSnapshot {
 const MAX_RECENTLY_COMPLETED = 100;
 const recentlyCompletedTasks: AiFixCompletedSnapshotItem[] = [];
 
+function computeQueueSummary(): QueueSummary {
+    let completedCount = 0;
+    for (const entry of recentlyCompletedTasks) {
+        if (entry.status === 'completed' || entry.status === 'no_change') {
+            completedCount += 1;
+        }
+    }
+    return {
+        paused: pauseRequested,
+        hasPendingTasks: hasPendingFixTasks(),
+        runningCount: activeTasks.size,
+        queuedCount: fixQueue.length,
+        completedCount,
+    };
+}
+
+const queueEvents = new QueueEventEmitter(computeQueueSummary);
+
+queueEvents.subscribe((delta) => {
+    webviewProvider.postMessage({ type: 'queue_delta', payload: delta });
+});
+
+export function _subscribeQueueEventsForTests(listener: QueueDeltaListener): () => void {
+    return queueEvents.subscribe(listener);
+}
+
 function describeTaskForSnapshot(
     task: QueuedFixTask,
     group: QueueGroup,
@@ -608,7 +636,9 @@ export function cancelBatch(batchId: string): CancelBatchResult {
         `cancelBatch id=${batchId} cancelled=${total} queued=${queued} paused=${paused} running=${running}`,
     );
     if (total > 0) {
-        notifyQueueState();
+        for (const id of idSet) {
+            queueEvents.removed(id);
+        }
     }
     return { cancelled: total, queued, paused, running };
 }
@@ -665,7 +695,7 @@ async function runFixWorker(): Promise<void> {
                     ? ` batch=${next.batchMeta.batchId} (${next.batchMeta.batchIndex + 1}/${next.batchMeta.batchTotal})`
                     : ''),
             );
-            notifyQueueState();
+            queueEvents.updated(next.id, { group: 'running' });
 
             // Clear the webview exactly once per batch: the first task of a
             // batch to reach a worker clears; siblings — and any resumed task —
@@ -704,7 +734,7 @@ async function runFixWorker(): Promise<void> {
                 pausedActiveFixTasks.set(next.id, next);
                 activeTasks.delete(next.id);
                 logFixQueue(`pause task id=${next.id} index=${next.sanitizerIndex ?? 'direct'}`);
-                notifyQueueState();
+                queueEvents.updated(next.id, { group: 'queued' });
                 return;
             }
 
@@ -740,7 +770,11 @@ async function runFixWorker(): Promise<void> {
             if (next.batchMeta) {
                 pruneClearedBatchId(next.batchMeta.batchId);
             }
-            notifyQueueState();
+            queueEvents.removed(next.id);
+            const completedItem = recentlyCompletedTasks[0];
+            if (completedItem) {
+                queueEvents.added(completedItem);
+            }
             clearConversationIfCancelledAndIdle();
         }
     } finally {
@@ -854,7 +888,7 @@ function ensureFixDetailsPanel(): void {
             if (entry) {
                 cancelRequestedTaskIds.add(message.id);
                 entry.cts.cancel();
-                notifyQueueState();
+                queueEvents.removed(message.id);
                 return;
             }
             // The task may have been paused mid-run between render and click.
@@ -863,7 +897,7 @@ function ensureFixDetailsPanel(): void {
                 pausedActiveFixTasks.delete(message.id);
                 unlinkTaskFromBatch(message.id, pausedTask.batchMeta);
                 pausedTask.resolve({ status: 'cancelled' });
-                notifyQueueState();
+                queueEvents.removed(message.id);
                 clearConversationIfCancelledAndIdle();
             }
             return;
@@ -874,7 +908,7 @@ function ensureFixDetailsPanel(): void {
                 const [removed] = fixQueue.splice(idx, 1);
                 unlinkTaskFromBatch(removed.id, removed.batchMeta);
                 removed.resolve({ status: 'cancelled' });
-                notifyQueueState();
+                queueEvents.removed(removed.id);
             }
         }
     });
@@ -929,7 +963,7 @@ function enqueueRepairIssue(
         if (sanitizerIndex !== undefined) {
             fixedSanitizerIndices.delete(sanitizerIndex);
         }
-        fixQueue.push({
+        const queued: QueuedFixTask = {
             id: taskId,
             key,
             sanitizerIndex,
@@ -939,9 +973,10 @@ function enqueueRepairIssue(
             options,
             batchMeta,
             resolve,
-        });
+        };
+        fixQueue.push(queued);
         linkTaskToBatch(taskId, batchMeta);
-        notifyQueueState();
+        queueEvents.added(describeTaskForSnapshot(queued, 'queued'));
         startProcessing();
     });
 }
@@ -1725,6 +1760,7 @@ export function _enqueueFixTask(
     const queued: QueuedFixTask = { ...rest, issue, id: taskId };
     fixQueue.push(queued);
     linkTaskToBatch(taskId, queued.batchMeta);
+    queueEvents.added(describeTaskForSnapshot(queued, 'queued'));
 }
 
 function makeSyntheticFakeIssue(key: string, sanitizerIndex?: number): RepairIssue {

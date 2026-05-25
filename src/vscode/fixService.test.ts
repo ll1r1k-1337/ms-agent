@@ -25,6 +25,7 @@ import {
     _resetTestDeps,
     _resetFixOutputChannelForTests,
     _recordCompletedTaskForTests,
+    _subscribeQueueEventsForTests,
 } from './fixService';
 import * as backendFactory from '../backends/backendFactory';
 import * as configModule from '../llm/config';
@@ -917,6 +918,31 @@ describe('fixService', () => {
             expect(result).to.deep.equal({ cancelled: 0, queued: 0, paused: 0, running: 0 });
             const snapshot = getAiFixQueueSnapshot();
             expect(snapshot.items).to.have.length(1);
+        });
+    });
+
+    describe('queueEvents coalescing', () => {
+        it('400 sequential enqueues produce exactly one queue_delta with added.length === 400', async () => {
+            _resetFixState();
+            const sink = sinon.stub();
+            const unsubscribe = _subscribeQueueEventsForTests(sink);
+            try {
+                for (let i = 0; i < 400; i += 1) {
+                    _enqueueFixTask({
+                        key: 'k:' + i,
+                        title: 'T' + i,
+                        issue: repairIssueFromSanitizerDiagnostic(makeDiag({ lineNumber: i + 1 })),
+                        resolve: () => {},
+                    });
+                }
+                await Promise.resolve();
+                await Promise.resolve();
+                expect(sink.callCount).to.equal(1);
+                const delta = sink.firstCall.args[0];
+                expect(delta.added).to.have.lengthOf(400);
+            } finally {
+                unsubscribe();
+            }
         });
     });
 
