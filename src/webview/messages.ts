@@ -9,6 +9,7 @@ export type WebviewMessageType =
     | 'error'
     | 'clear'
     | 'queue_state'
+    | 'queue_delta'
     // NEW for PR-C:
     | 'session_start'
     | 'session_metadata'
@@ -30,6 +31,7 @@ export type WebviewPayload =
     | ErrorPayload
     | ClearPayload
     | QueueStatePayload
+    | QueueDeltaPayload
     // NEW for PR-C:
     | SessionStartPayload
     | SessionMetadataPayload
@@ -97,8 +99,21 @@ export interface ErrorPayload {
 
 export interface ClearPayload {}
 
+export type QueueGroup =
+    | 'queued'
+    | 'running'
+    | 'completed'
+    | 'failed'
+    | 'cancelled';
+
 export interface QueueStateItem {
     id: string;
+    /**
+     * Which group the item currently belongs to. Set by the server-side
+     * snapshot builder; lets the webview reducer reconcile additions/moves
+     * across groups without a separate "move" message.
+     */
+    group: QueueGroup;
     title: string;
     /** Present only for tasks enqueued by `fixIssues` (batch grouping). */
     batchId?: string;
@@ -123,6 +138,22 @@ export interface QueueStatePayload {
     runningTasks?: QueueStateItem[];
     /** Recently finished tasks, newest-first. */
     recentlyCompleted?: QueueStateItem[];
+    summary?: QueueSummary;
+}
+
+export interface QueueSummary {
+    paused: boolean;
+    hasPendingTasks: boolean;
+    runningCount: number;
+    queuedCount: number;
+    completedCount: number;
+}
+
+export interface QueueDeltaPayload {
+    added?: QueueStateItem[];
+    removed?: string[];
+    updated?: Array<Partial<QueueStateItem> & { id: string }>;
+    summary: QueueSummary;
 }
 
 // NEW for PR-C:
