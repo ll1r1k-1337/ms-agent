@@ -758,18 +758,118 @@
         renderIdleHint();
     }
 
-    function renderTasksCard() {
-        applyQueueState(state.queueState);
+    function applyQueueDelta(delta) {
+        if (!delta || typeof delta !== 'object') return;
+        var summary = delta.summary || {};
+        state.queueState = state.queueState || {};
+        state.queueState.paused = !!summary.paused;
+        state.queueState.hasPendingTasks = !!summary.hasPendingTasks;
+
+        if (Array.isArray(delta.added)) {
+            var fragmentsByGroup = {};
+            for (var ai = 0; ai < delta.added.length; ai += 1) {
+                var item = delta.added[ai];
+                if (!item || !item.id || !item.group) continue;
+                var node = buildTaskListItem(item, item.group);
+                node.setAttribute('data-task-id', item.id);
+                state.groupNodeMaps[item.group].set(item.id, node);
+                if (!fragmentsByGroup[item.group]) {
+                    fragmentsByGroup[item.group] = document.createDocumentFragment();
+                }
+                fragmentsByGroup[item.group].appendChild(node);
+            }
+            var lists = listsByGroup();
+            var groupKeys = Object.keys(fragmentsByGroup);
+            for (var gi = 0; gi < groupKeys.length; gi += 1) {
+                var gk = groupKeys[gi];
+                if (lists[gk]) lists[gk].appendChild(fragmentsByGroup[gk]);
+            }
+        }
+
+        if (Array.isArray(delta.removed)) {
+            var mapKeys = ['queued', 'running', 'completed', 'failed', 'cancelled'];
+            for (var ri = 0; ri < delta.removed.length; ri += 1) {
+                var id = delta.removed[ri];
+                for (var mi = 0; mi < mapKeys.length; mi += 1) {
+                    var m = state.groupNodeMaps[mapKeys[mi]];
+                    var found = m.get(id);
+                    if (found) {
+                        found.remove();
+                        m.delete(id);
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (Array.isArray(delta.updated)) {
+            for (var ui = 0; ui < delta.updated.length; ui += 1) {
+                applyOneUpdate(delta.updated[ui]);
+            }
+        }
+
+        refreshGroupVisibilityAndCounts();
     }
 
-    function renderTasksGroup(group, count, list, tasks, kind) {
-        if (!group || !list) return;
-        group.classList.toggle('hidden', tasks.length === 0);
-        if (count) count.textContent = String(tasks.length);
-        list.textContent = '';
-        for (const task of tasks) {
-            list.appendChild(buildTaskListItem(task, kind));
+    function applyOneUpdate(patch) {
+        if (!patch || !patch.id) return;
+        var groupKeys = ['queued', 'running', 'completed', 'failed', 'cancelled'];
+        var currentGroup = null;
+        var currentNode = null;
+        for (var i = 0; i < groupKeys.length; i += 1) {
+            var found = state.groupNodeMaps[groupKeys[i]].get(patch.id);
+            if (found) {
+                currentGroup = groupKeys[i];
+                currentNode = found;
+                break;
+            }
         }
+        if (!currentNode) {
+            // Unknown id — ask the host for a fresh full sync. See T9 handler.
+            try {
+                vscode.postMessage({ type: 'request_queue_state' });
+            } catch (e) { /* vscode may be undefined in tests */ }
+            return;
+        }
+        var targetGroup = patch.group && patch.group !== currentGroup ? patch.group : currentGroup;
+        if (targetGroup !== currentGroup) {
+            currentNode.remove();
+            state.groupNodeMaps[currentGroup].delete(patch.id);
+            // Re-build with merged fields. taskFromNode pulls the previous title/sessionId
+            // off the DOM; patch fields override.
+            var merged = Object.assign({}, taskFromNode(currentNode), patch);
+            var fresh = buildTaskListItem(merged, targetGroup);
+            fresh.setAttribute('data-task-id', patch.id);
+            var lists = listsByGroup();
+            if (lists[targetGroup]) lists[targetGroup].appendChild(fresh);
+            state.groupNodeMaps[targetGroup].set(patch.id, fresh);
+        } else {
+            if (typeof patch.title === 'string') {
+                var titleEl = currentNode.querySelector('.task-title');
+                if (titleEl) {
+                    titleEl.title = patch.title;
+                    titleEl.textContent = patch.title;
+                }
+            }
+            if (typeof patch.opencodeSessionId === 'string') {
+                var sessionEl = currentNode.querySelector('.task-session-id');
+                if (sessionEl) sessionEl.textContent = patch.opencodeSessionId;
+            }
+        }
+    }
+
+    function taskFromNode(node) {
+        var titleEl = node.querySelector('.task-title');
+        var sessionEl = node.querySelector('.task-session-id');
+        return {
+            id: node.getAttribute('data-task-id') || '',
+            title: titleEl ? titleEl.textContent : '',
+            opencodeSessionId: sessionEl && sessionEl.textContent ? sessionEl.textContent : undefined,
+        };
+    }
+
+    function renderTasksCard() {
+        applyQueueState(state.queueState);
     }
 
     function buildTaskListItem(task, kind) {
@@ -1215,6 +1315,9 @@
                 break;
             case 'queue_state':
                 applyQueueState(p);
+                break;
+            case 'queue_delta':
+                applyQueueDelta(p);
                 break;
             case 'task_detail':
                 handleTaskDetail(p);
