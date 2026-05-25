@@ -923,16 +923,13 @@ describe('fixService', () => {
     describe('getAiFixQueueSnapshot groups', () => {
         it('stamps group=queued on items, group=running on runningTasks, group=completed on terminal', () => {
             _resetFixState();
-            // Queued task — entered through _enqueueFixTask without running.
             _enqueueFixTask({
                 key: 'q:k:OUT',
                 title: 'Q',
                 issue: repairIssueFromSanitizerDiagnostic(makeDiag()),
                 resolve: () => {},
             });
-            // Active (running) task.
             _setActiveFix(0, 'R');
-            // Completed entry.
             _recordCompletedTaskForTests(
                 {
                     id: 'done',
@@ -945,9 +942,37 @@ describe('fixService', () => {
             );
 
             const snap = getAiFixQueueSnapshot();
-            for (const i of snap.items) expect(i.group).to.equal('queued');
-            for (const r of (snap.runningTasks ?? [])) expect(r.group).to.equal('running');
-            for (const c of (snap.recentlyCompleted ?? [])) expect(c.group).to.equal('completed');
+            expect(snap.items.map((i) => i.group)).to.deep.equal(['queued']);
+            expect((snap.runningTasks ?? []).map((r) => r.group)).to.deep.equal(['running']);
+            expect((snap.recentlyCompleted ?? []).map((c) => c.group)).to.deep.equal(['completed']);
+        });
+
+        it('maps every CompletedTaskStatus value to the right group', () => {
+            _resetFixState();
+            const cases: Array<['completed' | 'no_change' | 'failed' | 'cancelled' | 'stopped', 'completed' | 'failed' | 'cancelled']> = [
+                ['completed', 'completed'],
+                ['no_change', 'completed'],
+                ['failed', 'failed'],
+                ['cancelled', 'cancelled'],
+                ['stopped', 'cancelled'],
+            ];
+            for (const [status, expectedGroup] of cases) {
+                _resetFixState();
+                _recordCompletedTaskForTests(
+                    {
+                        id: `t-${status}`,
+                        key: `k:${status}`,
+                        title: `T-${status}`,
+                        issue: repairIssueFromSanitizerDiagnostic(makeDiag()),
+                        resolve: () => {},
+                    } as any,
+                    status,
+                );
+                const snap = getAiFixQueueSnapshot();
+                const item = (snap.recentlyCompleted ?? []).find((c) => c.id === `t-${status}`);
+                expect(item, `recentlyCompleted entry for ${status}`).to.exist;
+                expect(item!.group, `group for status=${status}`).to.equal(expectedGroup);
+            }
         });
     });
 

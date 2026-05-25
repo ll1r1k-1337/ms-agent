@@ -399,13 +399,22 @@ function describeTaskForSnapshot(
     };
 }
 
+export function statusToGroup(status: CompletedTaskStatus): QueueGroup {
+    switch (status) {
+        case 'failed':
+            return 'failed';
+        case 'cancelled':
+        case 'stopped':
+            return 'cancelled';
+        case 'completed':
+        case 'no_change':
+            return 'completed';
+    }
+}
+
 function recordCompletedTask(task: QueuedFixTask, status: CompletedTaskStatus): void {
-    const group: QueueGroup =
-        status === 'failed' ? 'failed'
-        : status === 'cancelled' || status === 'stopped' ? 'cancelled'
-        : 'completed';
     recentlyCompletedTasks.unshift({
-        ...describeTaskForSnapshot(task, group),
+        ...describeTaskForSnapshot(task, statusToGroup(status)),
         status,
         completedAt: Date.now(),
     });
