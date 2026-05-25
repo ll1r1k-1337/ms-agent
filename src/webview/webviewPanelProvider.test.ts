@@ -115,4 +115,35 @@ describe('WebviewPanelProvider', () => {
             expect(createWebviewPanelStub.firstCall.args[1]).to.equal('msAgent Fix Details');
         });
     });
+
+    describe('flushSessionMessages', () => {
+        it('replays only the active task on restore', () => {
+            // Simulate a 3-task batch where only taskId=t3 is "active" via the last
+            // queue_state's runningTasks; messages for t1 and t2 are stale.
+            (provider as any).lastQueueState = {
+                type: 'queue_state',
+                payload: {
+                    paused: false,
+                    hasPendingTasks: true,
+                    items: [],
+                    runningTasks: [{ id: 't3', group: 'running', title: 'T3' }],
+                    recentlyCompleted: [],
+                },
+            };
+            (provider as any).sessionMessages = [
+                { type: 'text_stream', payload: { messageId: 'm', delta: 'old1' }, taskId: 't1' },
+                { type: 'text_stream', payload: { messageId: 'm', delta: 'old2' }, taskId: 't2' },
+                { type: 'text_stream', payload: { messageId: 'm', delta: 'live' }, taskId: 't3' },
+            ];
+            const fakePanel = {
+                webview: { postMessage: sinon.stub() },
+            };
+            (provider as any).panel = fakePanel;
+            (provider as any).flushSessionMessages();
+            const calls = fakePanel.webview.postMessage.getCalls().map((c: any) => c.args[0]);
+            const replayed = calls.filter((m: any) => m && m.type === 'text_stream');
+            expect(replayed).to.have.lengthOf(1);
+            expect(replayed[0].taskId).to.equal('t3');
+        });
+    });
 });

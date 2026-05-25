@@ -217,17 +217,37 @@ export class WebviewPanelProvider {
         const channel = getOutputChannel();
         const start = this.sessionMessageFlushIndex;
         const end = this.sessionMessages.length;
+        const activeIds = this.collectActiveTaskIdsFromLastSnapshot();
         if (end > start) {
-            channel.appendLine(`[WebviewPanelProvider] replaying ${end - start} session messages`);
+            let posted = 0;
             for (let i = start; i < end; i++) {
-                void this.panel?.webview.postMessage(this.sessionMessages[i]);
+                const m = this.sessionMessages[i];
+                if (m.taskId && activeIds.size > 0 && !activeIds.has(m.taskId)) {
+                    // Stale: belongs to a non-active task. The user can review it
+                    // through the Tasks card's Completed expand instead of replay.
+                    continue;
+                }
+                void this.panel?.webview.postMessage(m);
+                posted += 1;
             }
+            channel.appendLine(`[WebviewPanelProvider] replayed ${posted}/${end - start} session messages (filtered by active taskId)`);
             this.sessionMessageFlushIndex = end;
         }
         if (this.lastQueueState) {
             channel.appendLine('[WebviewPanelProvider] replaying last queue_state');
             void this.panel?.webview.postMessage(this.lastQueueState);
         }
+    }
+
+    private collectActiveTaskIdsFromLastSnapshot(): Set<string> {
+        const ids = new Set<string>();
+        const payload = (this.lastQueueState?.payload ?? {}) as { runningTasks?: Array<{ id?: unknown }> };
+        if (Array.isArray(payload.runningTasks)) {
+            for (const t of payload.runningTasks) {
+                if (t && typeof t.id === 'string') ids.add(t.id);
+            }
+        }
+        return ids;
     }
 
     private recordSessionMessage(message: WebviewMessage): void {
