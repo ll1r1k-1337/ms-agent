@@ -229,3 +229,24 @@ describe('fixDetailsScript string inclusion', () => {
     expect(fixDetailsScript).to.include('data-group-toggle');
   });
 });
+
+describe('fixDetailsScript delta protocol', () => {
+    it('contains applyQueueState as the single full-sync entry point', () => {
+        expect(fixDetailsScript).to.include('function applyQueueState');
+    });
+    it('contains applyQueueDelta as the incremental entry point', () => {
+        expect(fixDetailsScript).to.include('function applyQueueDelta');
+    });
+    it('handles queue_delta in the message dispatcher', () => {
+        expect(fixDetailsScript).to.include("'queue_delta'");
+    });
+    it('keeps per-group DOM maps keyed by taskId', () => {
+        expect(fixDetailsScript).to.include('groupNodeMaps');
+    });
+    it('uses event delegation on the task lists', () => {
+        expect(fixDetailsScript).to.include("matches('.task-cancel-btn'");
+    });
+    it('posts request_queue_state on unknown taskId in a delta', () => {
+        expect(fixDetailsScript).to.include("type: 'request_queue_state'");
+    });
+});

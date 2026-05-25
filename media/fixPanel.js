@@ -637,21 +637,7 @@
     }
 
     function updateQueueState(payload) {
-        state.queueState = payload || state.queueState;
-        const q = state.queueState || {};
-        const running = Array.isArray(q.runningTasks) ? q.runningTasks.length : 0;
-        const queued = Array.isArray(q.items) ? q.items.length : 0;
-        // The batch is active while any task is running or queued; once it
-        // drains, freeze the wall-clock timer.
-        if (running === 0 && queued === 0) {
-            state.sessionActive = false;
-            stopElapsedTimer();
-        } else {
-            state.sessionActive = true;
-        }
-        renderStatusCard();
-        renderTasksCard();
-        renderIdleHint();
+        applyQueueState(payload);
     }
 
     function handleTaskDetail(payload) {
@@ -669,55 +655,111 @@
         renderTasksCard();
     }
 
-    function renderTasksCard() {
-        if (!els.tasksCard) return;
-        const queue = state.queueState || {};
-        const running = Array.isArray(queue.runningTasks) ? queue.runningTasks : [];
-        const queued = Array.isArray(queue.items) ? queue.items : [];
-        const terminal = Array.isArray(queue.recentlyCompleted) ? queue.recentlyCompleted : [];
-        // Failed and Cancelled tasks each get their own group — lumping them
-        // under "Completed" misrepresents the outcome. A user-cancelled or
-        // pipeline-stopped task is "cancelled"; anything else that is not a
-        // failure counts as completed.
-        const failed = terminal.filter(function (t) {
-            return t && t.status === 'failed';
-        });
-        const cancelled = terminal.filter(function (t) {
-            return t && (t.status === 'cancelled' || t.status === 'stopped');
-        });
-        const completed = terminal.filter(function (t) {
-            return t && t.status !== 'failed'
-                && t.status !== 'cancelled' && t.status !== 'stopped';
-        });
+    function listsByGroup() {
+        return {
+            queued: els.tasksQueuedList,
+            running: els.tasksRunningList,
+            completed: els.tasksCompletedList,
+            failed: els.tasksFailedList,
+            cancelled: els.tasksCancelledList,
+        };
+    }
 
-        // Show the card whenever any group has at least one entry — otherwise
-        // keep it hidden so the panel doesn't get noisy for a one-off fix.
-        const hasAny = running.length > 0 || queued.length > 0
-            || completed.length > 0 || failed.length > 0 || cancelled.length > 0;
-        els.tasksCard.classList.toggle('hidden', !hasAny);
+    function groupOfTerminal(t) {
+        if (!t) return 'completed';
+        if (t.status === 'failed') return 'failed';
+        if (t.status === 'cancelled' || t.status === 'stopped') return 'cancelled';
+        // Any terminal task that is not failed or cancelled counts as completed.
+        // This mirrors the old renderTasksCard filter: t.status !== 'failed'
+        // && t.status !== 'cancelled' && t.status !== 'stopped'.
+        return 'completed';
+    }
 
+    function insertItem(task, group) {
+        if (!task || !task.id) return;
+        var lists = listsByGroup();
+        var list = lists[group];
+        if (!list) return;
+        var node = buildTaskListItem(task, group);
+        node.setAttribute('data-task-id', task.id);
+        list.appendChild(node);
+        state.groupNodeMaps[group].set(task.id, node);
+    }
+
+    function refreshGroupVisibilityAndCounts() {
+        var groups = ['queued', 'running', 'completed', 'failed', 'cancelled'];
+        var groupElements = {
+            queued: { group: els.tasksQueuedGroup, count: els.tasksQueuedCount },
+            running: { group: els.tasksRunningGroup, count: els.tasksRunningCount },
+            completed: { group: els.tasksCompletedGroup, count: els.tasksCompletedCount },
+            failed: { group: els.tasksFailedGroup, count: els.tasksFailedCount },
+            cancelled: { group: els.tasksCancelledGroup, count: els.tasksCancelledCount },
+        };
+        var anyShown = false;
+        for (var i = 0; i < groups.length; i += 1) {
+            var key = groups[i];
+            var size = state.groupNodeMaps[key].size;
+            var entry = groupElements[key];
+            if (entry.group) entry.group.classList.toggle('hidden', size === 0);
+            if (entry.count) entry.count.textContent = String(size);
+            if (size > 0) anyShown = true;
+        }
+        if (els.tasksCard) {
+            els.tasksCard.classList.toggle('hidden', !anyShown);
+        }
+        var q = state.queueState || {};
+        if (els.tasksPauseBtn) {
+            els.tasksPauseBtn.classList.toggle('hidden', !q.hasPendingTasks);
+            els.tasksPauseBtn.textContent = q.paused ? 'Resume' : 'Pause';
+        }
         if (els.tasksMeta) {
-            let meta = running.length + ' in progress · ' + completed.length + ' completed';
-            if (failed.length > 0) {
-                meta += ' · <span class="tasks-meta-failed">' + failed.length + ' failed</span>';
-            }
-            if (cancelled.length > 0) {
-                meta += ' · ' + cancelled.length + ' cancelled';
-            }
+            var running = state.groupNodeMaps.running.size;
+            var completed = state.groupNodeMaps.completed.size;
+            var failed = state.groupNodeMaps.failed.size;
+            var cancelled = state.groupNodeMaps.cancelled.size;
+            var meta = running + ' in progress · ' + completed + ' completed';
+            if (failed > 0) meta += ' · <span class="tasks-meta-failed">' + failed + ' failed</span>';
+            if (cancelled > 0) meta += ' · ' + cancelled + ' cancelled';
             els.tasksMeta.innerHTML = meta;
         }
-        // The global Pause/Resume control lives in the Tasks card header; it
-        // is shown only while the pipeline has controllable work.
-        if (els.tasksPauseBtn) {
-            els.tasksPauseBtn.classList.toggle('hidden', !queue.hasPendingTasks);
-            els.tasksPauseBtn.textContent = queue.paused ? 'Resume' : 'Pause';
+    }
+
+    function applyQueueState(snapshot) {
+        state.queueState = snapshot || state.queueState || {};
+        var q = state.queueState;
+        var runningCount = Array.isArray(q.runningTasks) ? q.runningTasks.length : 0;
+        var queuedCount = Array.isArray(q.items) ? q.items.length : 0;
+        // The batch is active while any task is running or queued; once it
+        // drains, freeze the wall-clock timer.
+        if (runningCount === 0 && queuedCount === 0) {
+            state.sessionActive = false;
+            stopElapsedTimer();
+        } else {
+            state.sessionActive = true;
         }
-        renderTasksGroup(els.tasksRunningGroup, els.tasksRunningCount, els.tasksRunningList, running, 'running');
-        renderTasksGroup(els.tasksQueuedGroup, els.tasksQueuedCount, els.tasksQueuedList, queued, 'queued');
-        renderTasksGroup(els.tasksCompletedGroup, els.tasksCompletedCount, els.tasksCompletedList, completed, 'completed');
-        renderTasksGroup(els.tasksFailedGroup, els.tasksFailedCount, els.tasksFailedList, failed, 'failed');
-        renderTasksGroup(els.tasksCancelledGroup, els.tasksCancelledCount, els.tasksCancelledList, cancelled, 'cancelled');
-        renderCollapsedGroups();
+        var lists = listsByGroup();
+        var groupKeys = ['queued', 'running', 'completed', 'failed', 'cancelled'];
+        for (var i = 0; i < groupKeys.length; i += 1) {
+            var key = groupKeys[i];
+            state.groupNodeMaps[key].clear();
+            if (lists[key]) lists[key].textContent = '';
+        }
+        var running = Array.isArray(q.runningTasks) ? q.runningTasks : [];
+        var queued = Array.isArray(q.items) ? q.items : [];
+        var terminal = Array.isArray(q.recentlyCompleted) ? q.recentlyCompleted : [];
+        for (var j = 0; j < running.length; j += 1) insertItem(running[j], 'running');
+        for (var k = 0; k < queued.length; k += 1) insertItem(queued[k], 'queued');
+        for (var t = 0; t < terminal.length; t += 1) {
+            insertItem(terminal[t], groupOfTerminal(terminal[t]));
+        }
+        refreshGroupVisibilityAndCounts();
+        if (typeof renderCollapsedGroups === 'function') renderCollapsedGroups();
+        renderStatusCard();
+        renderIdleHint();
+    }
+
+    function renderTasksCard() {
+        applyQueueState(state.queueState);
     }
 
     function renderTasksGroup(group, count, list, tasks, kind) {
@@ -1096,6 +1138,13 @@
         };
         state.userPinnedToBottom = true;
         state.queueState = { paused: false, hasPendingTasks: false, items: [], runningTasks: [], recentlyCompleted: [] };
+        state.groupNodeMaps = {
+            queued: new Map(),
+            running: new Map(),
+            completed: new Map(),
+            failed: new Map(),
+            cancelled: new Map(),
+        };
         state.taskDetails = new Map();
         state.expandedTasks = new Set();
         if (els.metaElapsed) els.metaElapsed.textContent = '00:00';
@@ -1165,7 +1214,7 @@
                 clearAll();
                 break;
             case 'queue_state':
-                updateQueueState(p);
+                applyQueueState(p);
                 break;
             case 'task_detail':
                 handleTaskDetail(p);
