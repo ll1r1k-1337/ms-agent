@@ -29,6 +29,7 @@ This document defines **separation of responsibilities**, the **integration API*
 | 11 | mstt owns problem diagnosis and parser semantics for its UI. msAgent keeps its parser only for standalone use. |
 | 12 | Integration is gated by **`op-devtools.sanitizer.enableMsAgentAiFix`** (default on; AI actions stay hidden when msAgent is absent). Only users who **manually install** msAgent see the AI actions while this setting is enabled. |
 | 13 | **Telemetry / privacy**: out of scope for mstt integration spec; **msAgent team** owns. |
+| 14 | **Per-issue progress channel** for `fixIssues` is the `op-devtools.msAgentFixIssuesProgress` command, registered by mstt and capability-detected by msAgent via `vscode.commands.getCommands(true)`. No `extension.exports`. |
 
 ---
 
@@ -74,6 +75,7 @@ sequenceDiagram
 |---------|-----------|--------|
 | `msagent.fixIssue` | `{ uri, range, issueType, message, severity?, details? }` | Invoked from sanitizer sidebar when feature flag + msAgent available. msAgent validates and enqueues the issue, but does not publish Problems for this payload. |
 | `msagent.fixIssues` | `payloads: Array<{ uri, range, issueType, message, severity?, details? }>, options?: { batchId?, perTaskOptions? }` | Additive batch variant. mstt sends a set of issues (e.g. every leaf under a sidebar group node) and msAgent enqueues them as a single batch. The fix-queue still processes one at a time; the result reports per-issue status plus a summary. mstt should feature-detect by checking `vscode.commands.getCommands(true)` for `msagent.fixIssues` and fall back to sequential `fixIssue` calls when only the single-issue command is registered. |
+| `op-devtools.msAgentFixIssuesProgress` (mstt-registered) | `{ batchId, index, status, completedCount, batchTotal, taskId?, title? }` | Optional receiver. mstt registers this command when its AI-fix feature flag is on. msAgent capability-detects via `vscode.commands.getCommands(true)` and calls it once per per-issue terminal status during a `fixIssues` batch. When the command is absent, msAgent skips notification — mstt's existing snapshot-polling path remains the only signal. No `extension.exports` lookup. |
 
 Payload contract:
 
