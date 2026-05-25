@@ -122,6 +122,34 @@ const fixedCallerOwnedTaskIds = new Set<string>();
  * of the same batch skips it. Pruned when a batch fully drains.
  */
 const clearedBatchIds = new Set<string>();
+/**
+ * Authoritative index from batchId to the set of "live" task ids belonging to
+ * that batch (across queued, active, and paused states). Maintained at every
+ * task creation / termination so `pruneClearedBatchId` and `cancelBatch` can
+ * answer "does this batch have any live tasks?" in O(1) instead of walking the
+ * three task containers on every task completion.
+ */
+const batchTasks = new Map<string, Set<string>>();
+
+function linkTaskToBatch(taskId: string, batchMeta: FixBatchTaskMeta | undefined): void {
+    if (!batchMeta) return;
+    let set = batchTasks.get(batchMeta.batchId);
+    if (!set) {
+        set = new Set();
+        batchTasks.set(batchMeta.batchId, set);
+    }
+    set.add(taskId);
+}
+
+function unlinkTaskFromBatch(taskId: string, batchMeta: FixBatchTaskMeta | undefined): void {
+    if (!batchMeta) return;
+    const set = batchTasks.get(batchMeta.batchId);
+    if (!set) return;
+    set.delete(taskId);
+    if (set.size === 0) {
+        batchTasks.delete(batchMeta.batchId);
+    }
+}
 
 function isKeyActive(key: string): boolean {
     for (const entry of activeTasks.values()) {
@@ -385,14 +413,11 @@ function resetCompletedHistory(): void {
 /**
  * Drop a batch id from `clearedBatchIds` once no task of that batch remains
  * queued, active, or paused — keeps the set from growing unbounded across a
- * long session. Called after each task completes.
+ * long session. Called after each task completes. O(1) via the `batchTasks`
+ * index, which is kept in sync as tasks are created and terminated.
  */
 function pruneClearedBatchId(batchId: string): void {
-    const present =
-        fixQueue.some((t) => t.batchMeta?.batchId === batchId)
-        || Array.from(activeTasks.values()).some((e) => e.task.batchMeta?.batchId === batchId)
-        || Array.from(pausedActiveFixTasks.values()).some((t) => t.batchMeta?.batchId === batchId);
-    if (!present) {
+    if (!batchTasks.has(batchId)) {
         clearedBatchIds.delete(batchId);
     }
 }
@@ -521,33 +546,42 @@ export function cancelBatch(batchId: string): CancelBatchResult {
     if (!batchId || typeof batchId !== 'string') {
         return { cancelled: 0, queued: 0, paused: 0, running: 0 };
     }
+    const taskIds = batchTasks.get(batchId);
+    if (!taskIds || taskIds.size === 0) {
+        return { cancelled: 0, queued: 0, paused: 0, running: 0 };
+    }
     let queued = 0;
     let paused = 0;
     let running = 0;
-    // 1. Remove any not-yet-started tasks from the queue (iterate backwards so
-    //    splice indices stay valid).
+    // Snapshot the id set so we can mutate the index while iterating.
+    const idSet = new Set(taskIds);
+    // 1. Queued — single backward walk of `fixQueue`, splicing tasks whose id
+    //    is in the batch. One O(N_queue) pass instead of the previous
+    //    per-container scan.
     for (let i = fixQueue.length - 1; i >= 0; i -= 1) {
         const task = fixQueue[i];
-        if (task.batchMeta?.batchId === batchId) {
+        if (idSet.has(task.id)) {
             fixQueue.splice(i, 1);
+            unlinkTaskFromBatch(task.id, task.batchMeta);
             task.resolve({ status: 'cancelled' });
             queued += 1;
         }
     }
-    // 2. Drop paused tasks owned by this batch.
-    for (const [id, task] of Array.from(pausedActiveFixTasks.entries())) {
-        if (task.batchMeta?.batchId === batchId) {
+    // 2. Paused + Active — direct Map lookups for the remaining batch task ids.
+    //    Each id sits in exactly one container, so the first hit wins.
+    for (const id of idSet) {
+        const pausedTask = pausedActiveFixTasks.get(id);
+        if (pausedTask) {
             pausedActiveFixTasks.delete(id);
-            task.resolve({ status: 'cancelled' });
+            unlinkTaskFromBatch(id, pausedTask.batchMeta);
+            pausedTask.resolve({ status: 'cancelled' });
             paused += 1;
+            continue;
         }
-    }
-    // 3. Mark every running task in the batch as user-cancelled and cancel
-    //    its CancellationTokenSource so the backend tears down promptly.
-    for (const [id, entry] of activeTasks.entries()) {
-        if (entry.task.batchMeta?.batchId === batchId) {
+        const active = activeTasks.get(id);
+        if (active) {
             cancelRequestedTaskIds.add(id);
-            entry.cts.cancel();
+            active.cts.cancel();
             running += 1;
         }
     }
@@ -684,6 +718,7 @@ async function runFixWorker(): Promise<void> {
             next.resolve(wasCancelled ? { status: 'cancelled' } : result);
             logFixQueue(`finish task id=${next.id} index=${next.sanitizerIndex ?? 'direct'} status=${finalStatus}`);
             activeTasks.delete(next.id);
+            unlinkTaskFromBatch(next.id, next.batchMeta);
             if (next.batchMeta) {
                 pruneClearedBatchId(next.batchMeta.batchId);
             }
@@ -772,6 +807,7 @@ function ensureFixDetailsPanel(): void {
             if (pausedActiveFixTasks.size > 0) {
                 for (const [id, task] of pausedActiveFixTasks.entries()) {
                     pausedActiveFixTasks.delete(id);
+                    unlinkTaskFromBatch(id, task.batchMeta);
                     task.resolve({ status: 'cancelled' });
                 }
                 pauseRequested = false;
@@ -807,6 +843,7 @@ function ensureFixDetailsPanel(): void {
             const pausedTask = pausedActiveFixTasks.get(message.id);
             if (pausedTask) {
                 pausedActiveFixTasks.delete(message.id);
+                unlinkTaskFromBatch(message.id, pausedTask.batchMeta);
                 pausedTask.resolve({ status: 'cancelled' });
                 notifyQueueState();
                 clearConversationIfCancelledAndIdle();
@@ -817,6 +854,7 @@ function ensureFixDetailsPanel(): void {
             const idx = fixQueue.findIndex((task) => task.id === message.id);
             if (idx >= 0) {
                 const [removed] = fixQueue.splice(idx, 1);
+                unlinkTaskFromBatch(removed.id, removed.batchMeta);
                 removed.resolve({ status: 'cancelled' });
                 notifyQueueState();
             }
@@ -884,6 +922,7 @@ function enqueueRepairIssue(
             batchMeta,
             resolve,
         });
+        linkTaskToBatch(taskId, batchMeta);
         notifyQueueState();
         startProcessing();
     });
@@ -1032,22 +1071,36 @@ export async function fixIssues(
 
     logFixQueue(`batch begin id=${batchId} total=${total}`);
 
-    type Pending = {
-        index: number;
-        promise: Promise<FixProblemResult>;
-    };
-    const pending: Pending[] = [];
-    const earlyResults: Map<number, FixBatchItemResult> = new Map();
-
+    // Two-pass: validate first so we know the accepted count before enqueueing.
+    // Knowing `batchTotal` up front lets every task carry the real denominator
+    // when it lands in the queue, removing the need to walk three task
+    // containers afterward to patch it.
+    type Normalized =
+        | { kind: 'ok'; index: number; issue: RepairIssue }
+        | { kind: 'err'; index: number; error: string };
+    const normalizedItems: Normalized[] = [];
     let acceptedCount = 0;
     for (let i = 0; i < requests.length; i += 1) {
-        const normalized = normalizeFixIssueRequest(requests[i]);
-        if (!normalized.ok) {
-            logFixQueue(`batch reject id=${batchId} index=${i} error=${normalized.error}`);
-            earlyResults.set(i, {
-                index: i,
+        const r = normalizeFixIssueRequest(requests[i]);
+        if (!r.ok) {
+            logFixQueue(`batch reject id=${batchId} index=${i} error=${r.error}`);
+            normalizedItems.push({ kind: 'err', index: i, error: r.error });
+        } else {
+            normalizedItems.push({ kind: 'ok', index: i, issue: r.issue });
+            acceptedCount += 1;
+        }
+    }
+
+    type Pending = { index: number; promise: Promise<FixProblemResult> };
+    const pending: Pending[] = [];
+    const earlyResults: Map<number, FixBatchItemResult> = new Map();
+    let batchIndex = 0;
+    for (const entry of normalizedItems) {
+        if (entry.kind === 'err') {
+            earlyResults.set(entry.index, {
+                index: entry.index,
                 status: 'invalid_payload',
-                error: normalized.error,
+                error: entry.error,
             });
             continue;
         }
@@ -1060,41 +1113,20 @@ export async function fixIssues(
         };
         const batchMeta: FixBatchTaskMeta = {
             batchId,
-            batchIndex: acceptedCount,
-            // batchTotal is patched after the loop once we know how many were accepted.
-            batchTotal: total,
+            batchIndex,
+            batchTotal: acceptedCount,
         };
         const promise = enqueueRepairIssue(
-            normalized.issue,
+            entry.issue,
             effectiveOptions,
             undefined,
             undefined,
             batchMeta,
             /* dedupe */ false,
         );
-        pending.push({ index: i, promise });
-        acceptedCount += 1;
+        pending.push({ index: entry.index, promise });
+        batchIndex += 1;
     }
-
-    // Patch batchTotal so it reflects the accepted count rather than the raw
-    // input length. We refresh the snapshot so the webview sees the real
-    // denominator immediately.
-    for (const task of fixQueue) {
-        if (task.batchMeta?.batchId === batchId) {
-            task.batchMeta.batchTotal = acceptedCount;
-        }
-    }
-    for (const entry of activeTasks.values()) {
-        if (entry.task.batchMeta?.batchId === batchId) {
-            entry.task.batchMeta.batchTotal = acceptedCount;
-        }
-    }
-    for (const task of pausedActiveFixTasks.values()) {
-        if (task.batchMeta?.batchId === batchId) {
-            task.batchMeta.batchTotal = acceptedCount;
-        }
-    }
-    notifyQueueState();
 
     const settled = await Promise.all(
         pending.map(async ({ index, promise }) => {
@@ -1102,6 +1134,14 @@ export async function fixIssues(
             return { index, result };
         }),
     );
+
+    // O(N) merge: build an index once, then look up by input position. The
+    // previous `settled.find((e) => e.index === i)` inside the loop was O(N²)
+    // on batch size.
+    const settledByIndex = new Map<number, FixProblemResult>();
+    for (const s of settled) {
+        settledByIndex.set(s.index, s.result);
+    }
 
     const merged: FixBatchItemResult[] = [];
     for (let i = 0; i < requests.length; i += 1) {
@@ -1111,14 +1151,14 @@ export async function fixIssues(
             bumpBatchSummary(summary, early.status);
             continue;
         }
-        const settledItem = settled.find((entry) => entry.index === i);
-        if (!settledItem) {
+        const settledResult = settledByIndex.get(i);
+        if (!settledResult) {
             // Should never happen — defensive default.
             merged.push({ index: i, status: 'failed' });
             bumpBatchSummary(summary, 'failed');
             continue;
         }
-        const status = settledItem.result.status;
+        const status = settledResult.status;
         const deduplicated = status === 'already_running';
         merged.push({
             index: i,
@@ -1642,6 +1682,7 @@ export function _resetFixState() {
     clearConversationOnIdleAfterCancel = false;
     fixedSanitizerIndices.clear();
     clearedBatchIds.clear();
+    batchTasks.clear();
     resetCompletedHistory();
 }
 
@@ -1662,7 +1703,10 @@ export function _enqueueFixTask(
         throw new Error('_enqueueFixTask requires issue or diagnostic');
     }
     const { diagnostic: _diagnostic, ...rest } = task;
-    fixQueue.push({ ...rest, issue, id: task.id || `test_${Math.random()}` });
+    const taskId = task.id || `test_${Math.random()}`;
+    const queued: QueuedFixTask = { ...rest, issue, id: taskId };
+    fixQueue.push(queued);
+    linkTaskToBatch(taskId, queued.batchMeta);
 }
 
 function makeSyntheticFakeIssue(key: string, sanitizerIndex?: number): RepairIssue {
@@ -1701,9 +1745,11 @@ export function _setActiveFix(
 export function _setActiveBatchMeta(meta: FixBatchTaskMeta | undefined) {
     for (const [id, entry] of activeTasks.entries()) {
         if (id.startsWith('__test_batch_')) {
+            unlinkTaskFromBatch(id, entry.task.batchMeta);
             activeTasks.delete(id);
         }
         else if (entry.task.batchMeta && id.startsWith('__test_active_')) {
+            unlinkTaskFromBatch(id, entry.task.batchMeta);
             entry.task.batchMeta = undefined;
         }
     }
@@ -1723,12 +1769,17 @@ export function _setActiveBatchMeta(meta: FixBatchTaskMeta | undefined) {
         task: fakeTask,
         cts: { token: { isCancellationRequested: false }, cancel: () => {}, dispose: () => {} } as any,
     });
+    linkTaskToBatch(taskId, meta);
 }
 
 export function _setPausedFix(task: QueuedFixTask | undefined) {
+    for (const [id, t] of pausedActiveFixTasks.entries()) {
+        unlinkTaskFromBatch(id, t.batchMeta);
+    }
     pausedActiveFixTasks.clear();
     if (task !== undefined) {
         pausedActiveFixTasks.set(task.id, task);
+        linkTaskToBatch(task.id, task.batchMeta);
     }
 }
 
