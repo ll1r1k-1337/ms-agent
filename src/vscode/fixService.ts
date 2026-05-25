@@ -10,7 +10,7 @@ import {
 } from './repairIssue';
 import type { RepairIssue } from './repairIssue';
 import { WebviewPanelProvider, MSAGENT_FIX_VIEW_TYPE } from '../webview/webviewPanelProvider';
-import type { TaskDetailDiff } from '../webview/messages';
+import type { TaskDetailDiff, QueueGroup } from '../webview/messages';
 import { StreamChunk } from '../llm/types';
 import { createFixBackend, FixCallbacks, FixResult } from '../backends/backendFactory';
 
@@ -342,6 +342,7 @@ export type CompletedTaskStatus =
 
 export interface AiFixQueueSnapshotItem {
     id: string;
+    group: QueueGroup;
     title: string;
     /** Present only for tasks enqueued by `fixIssues` so callers can group them. */
     batchId?: string;
@@ -379,9 +380,13 @@ export interface AiFixQueueSnapshot {
 const MAX_RECENTLY_COMPLETED = 100;
 const recentlyCompletedTasks: AiFixCompletedSnapshotItem[] = [];
 
-function describeTaskForSnapshot(task: QueuedFixTask): AiFixQueueSnapshotItem {
+function describeTaskForSnapshot(
+    task: QueuedFixTask,
+    group: QueueGroup,
+): AiFixQueueSnapshotItem {
     return {
         id: task.id,
+        group,
         title: task.title,
         ...(task.batchMeta
             ? {
@@ -395,8 +400,12 @@ function describeTaskForSnapshot(task: QueuedFixTask): AiFixQueueSnapshotItem {
 }
 
 function recordCompletedTask(task: QueuedFixTask, status: CompletedTaskStatus): void {
+    const group: QueueGroup =
+        status === 'failed' ? 'failed'
+        : status === 'cancelled' || status === 'stopped' ? 'cancelled'
+        : 'completed';
     recentlyCompletedTasks.unshift({
-        ...describeTaskForSnapshot(task),
+        ...describeTaskForSnapshot(task, group),
         status,
         completedAt: Date.now(),
     });
@@ -500,12 +509,12 @@ export function getAiFixQueueSnapshot(): AiFixQueueSnapshot {
     }
     const runningTasksSnapshot: AiFixQueueSnapshotItem[] = [];
     for (const entry of activeTasks.values()) {
-        runningTasksSnapshot.push(describeTaskForSnapshot(entry.task));
+        runningTasksSnapshot.push(describeTaskForSnapshot(entry.task, 'running'));
     }
     return {
         paused: pauseRequested,
         hasPendingTasks: hasPendingFixTasks(),
-        items: fixQueue.map(describeTaskForSnapshot),
+        items: fixQueue.map((task) => describeTaskForSnapshot(task, 'queued')),
         runningTasks: runningTasksSnapshot,
         recentlyCompleted: recentlyCompletedTasks.slice(),
         states,

@@ -24,6 +24,7 @@ import {
     _setTestDeps,
     _resetTestDeps,
     _resetFixOutputChannelForTests,
+    _recordCompletedTaskForTests,
 } from './fixService';
 import * as backendFactory from '../backends/backendFactory';
 import * as configModule from '../llm/config';
@@ -916,6 +917,37 @@ describe('fixService', () => {
             expect(result).to.deep.equal({ cancelled: 0, queued: 0, paused: 0, running: 0 });
             const snapshot = getAiFixQueueSnapshot();
             expect(snapshot.items).to.have.length(1);
+        });
+    });
+
+    describe('getAiFixQueueSnapshot groups', () => {
+        it('stamps group=queued on items, group=running on runningTasks, group=completed on terminal', () => {
+            _resetFixState();
+            // Queued task — entered through _enqueueFixTask without running.
+            _enqueueFixTask({
+                key: 'q:k:OUT',
+                title: 'Q',
+                issue: repairIssueFromSanitizerDiagnostic(makeDiag()),
+                resolve: () => {},
+            });
+            // Active (running) task.
+            _setActiveFix(0, 'R');
+            // Completed entry.
+            _recordCompletedTaskForTests(
+                {
+                    id: 'done',
+                    key: 'c:k:OUT',
+                    title: 'D',
+                    issue: repairIssueFromSanitizerDiagnostic(makeDiag()),
+                    resolve: () => {},
+                } as any,
+                'completed',
+            );
+
+            const snap = getAiFixQueueSnapshot();
+            for (const i of snap.items) expect(i.group).to.equal('queued');
+            for (const r of (snap.runningTasks ?? [])) expect(r.group).to.equal('running');
+            for (const c of (snap.recentlyCompleted ?? [])) expect(c.group).to.equal('completed');
         });
     });
 
