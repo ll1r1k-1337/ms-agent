@@ -382,6 +382,14 @@ export interface AiFixQueueSnapshot {
 const MAX_RECENTLY_COMPLETED = 100;
 const recentlyCompletedTasks: AiFixCompletedSnapshotItem[] = [];
 
+// ── Queue-event emitter wiring ────────────────────────────────────────────
+// Microtask-coalesced delta channel. During the T4→T7 rollout, EVERY queue
+// mutation also still triggers `notifyQueueState()` from a small set of
+// explicit full-sync sites (initial open, pause-toggle, drain). Once the
+// webview reducer in `media/fixPanel.js` handles `queue_delta` (T7), most of
+// the surviving `notifyQueueState()` calls can be removed and this channel
+// becomes the single source of truth.
+// ─────────────────────────────────────────────────────────────────────────
 function computeQueueSummary(): QueueSummary {
     let completedCount = 0;
     for (const entry of recentlyCompletedTasks) {
@@ -401,6 +409,10 @@ function computeQueueSummary(): QueueSummary {
 const queueEvents = new QueueEventEmitter(computeQueueSummary);
 
 queueEvents.subscribe((delta) => {
+    const a = delta.added?.length ?? 0;
+    const r = delta.removed?.length ?? 0;
+    const u = delta.updated?.length ?? 0;
+    logFixQueue(`queue_delta added=${a} removed=${r} updated=${u}`);
     webviewProvider.postMessage({ type: 'queue_delta', payload: delta });
 });
 
@@ -610,6 +622,7 @@ export function cancelBatch(batchId: string): CancelBatchResult {
             fixQueue.splice(i, 1);
             unlinkTaskFromBatch(task.id, task.batchMeta);
             task.resolve({ status: 'cancelled' });
+            queueEvents.removed(task.id);
             queued += 1;
         }
     }
@@ -621,6 +634,7 @@ export function cancelBatch(batchId: string): CancelBatchResult {
             pausedActiveFixTasks.delete(id);
             unlinkTaskFromBatch(id, pausedTask.batchMeta);
             pausedTask.resolve({ status: 'cancelled' });
+            queueEvents.removed(id);
             paused += 1;
             continue;
         }
@@ -629,17 +643,14 @@ export function cancelBatch(batchId: string): CancelBatchResult {
             cancelRequestedTaskIds.add(id);
             active.cts.cancel();
             running += 1;
+            // NOTE: do NOT emit queueEvents.removed(id) here — the worker
+            // emits it when cancellation settles (see runFixWorker line ~773).
         }
     }
     const total = queued + paused + running;
     logFixQueue(
         `cancelBatch id=${batchId} cancelled=${total} queued=${queued} paused=${paused} running=${running}`,
     );
-    if (total > 0) {
-        for (const id of idSet) {
-            queueEvents.removed(id);
-        }
-    }
     return { cancelled: total, queued, paused, running };
 }
 
@@ -770,6 +781,10 @@ async function runFixWorker(): Promise<void> {
             if (next.batchMeta) {
                 pruneClearedBatchId(next.batchMeta.batchId);
             }
+            // Two events, one logical transition: `removed` evicts from the running
+            // group; `added` prepends to recentlyCompleted (which is capped by
+            // MAX_RECENTLY_COMPLETED). A single `updated` could not express the
+            // `recentlyCompleted` cap behavior.
             queueEvents.removed(next.id);
             const completedItem = recentlyCompletedTasks[0];
             if (completedItem) {

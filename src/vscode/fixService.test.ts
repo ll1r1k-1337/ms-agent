@@ -922,7 +922,7 @@ describe('fixService', () => {
     });
 
     describe('queueEvents coalescing', () => {
-        it('400 sequential enqueues produce exactly one queue_delta with added.length === 400', async () => {
+        it('400 sequential _enqueueFixTask writes coalesce into one queue_delta', async () => {
             _resetFixState();
             const sink = sinon.stub();
             const unsubscribe = _subscribeQueueEventsForTests(sink);
@@ -935,6 +935,7 @@ describe('fixService', () => {
                         resolve: () => {},
                     });
                 }
+                // Drain emitter's queueMicrotask + the subscriber fan-out it produces.
                 await Promise.resolve();
                 await Promise.resolve();
                 expect(sink.callCount).to.equal(1);
@@ -942,6 +943,81 @@ describe('fixService', () => {
                 expect(delta.added).to.have.lengthOf(400);
             } finally {
                 unsubscribe();
+            }
+        });
+
+        it('production fixIssues path coalesces all enqueues into one queue_delta', async () => {
+            _resetFixState();
+            // Stub webview so ensureFixDetailsPanel doesn't blow up.
+            sinon.stub(WebviewPanelProvider.prototype, 'postMessage');
+            sinon.stub(WebviewPanelProvider.prototype, 'createOrShow').returns({
+                webview: { postMessage: () => Promise.resolve(true) },
+                reveal: () => {},
+                dispose: () => {},
+                onDidDispose: () => {},
+            } as any);
+            sinon.stub(WebviewPanelProvider.prototype, 'clear');
+            sinon.stub(WebviewPanelProvider.prototype, 'onAction');
+            sinon.stub(WebviewPanelProvider.prototype, 'nextMessageId').callsFake(() => `msg_${Date.now()}`);
+            (global as any).msAgentContext = {
+                extensionUri: { fsPath: '/workspace' },
+                subscriptions: [],
+            };
+            sinon.stub(configModule, 'getLLMConfig').returns({
+                modelName: 'opencode/minimax-m2.5-free',
+                providerID: 'opencode',
+                modelID: 'minimax-m2.5-free',
+                modelFullName: 'opencode/minimax-m2.5-free',
+                timeoutMs: 300000,
+                opencodeServePort: 7325,
+                opencodeCliPath: 'opencode',
+            });
+            // Stub backend to resolve every fix as no_change immediately.
+            sinon.stub(backendFactory, 'createFixBackend').returns({
+                name: 'stub',
+                supportsStreaming: () => true,
+                cancel: () => {},
+                executeFix: async (_issue: any, _context: any, callbacks?: any) => {
+                    callbacks?.onEvent?.('session_start', { backend: 'stub', mode: 'server' });
+                    callbacks?.onEvent?.('session_end', {
+                        success: false,
+                        outcome: 'no_change',
+                        finalMessage: 'no change',
+                    });
+                    return {
+                        outcome: 'no_change',
+                        success: false,
+                        fileChanged: false,
+                        toolCallCount: 0,
+                        finalMessage: 'no change',
+                    };
+                },
+            } as any);
+            const sink = sinon.stub();
+            const unsubscribe = _subscribeQueueEventsForTests(sink);
+            try {
+                const payloads = Array.from({ length: 5 }, (_, i) => ({
+                    uri: `file:///workspace/test${i}.cpp`,
+                    range: { start: { line: i, character: 0 }, end: { line: i, character: 1 } },
+                    issueType: 'OUT_OF_BOUNDS',
+                    message: 'm',
+                    severity: 'Error',
+                }));
+                const promise = fixIssues(payloads);
+                // Drain the synchronous enqueue burst before any worker can run.
+                await Promise.resolve();
+                await Promise.resolve();
+                // Find the first delta after the burst — must contain all 5 added entries.
+                const burstDelta = sink.getCalls()
+                    .map((c) => c.args[0])
+                    .find((d) => d.added && d.added.length >= 5);
+                expect(burstDelta, 'expected one delta carrying all 5 enqueues').to.exist;
+                expect(burstDelta!.added).to.have.lengthOf(5);
+                // Let the rest of the batch settle so the test isn't dangling.
+                await promise;
+            } finally {
+                unsubscribe();
+                sinon.restore();
             }
         });
     });
