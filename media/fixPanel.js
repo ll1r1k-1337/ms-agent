@@ -979,19 +979,8 @@
         cancelBtn.type = 'button';
         cancelBtn.className = 'task-cancel-btn';
         cancelBtn.textContent = 'Cancel';
-        if (taskId) {
-            // Task lists are rebuilt on every queue_state, so this listener is
-            // bound here per build — never in bindEvents.
-            cancelBtn.addEventListener('click', function (event) {
-                event.preventDefault();
-                event.stopPropagation();
-                cancelBtn.disabled = true;
-                cancelBtn.textContent = 'Cancelling…';
-                vscode.postMessage({ type: 'cancel_task', id: taskId });
-            });
-        } else {
-            cancelBtn.disabled = true;
-        }
+        cancelBtn.setAttribute('data-task-id', taskId || '');
+        if (!taskId) cancelBtn.disabled = true;
         mainRow.appendChild(cancelBtn);
         lines.appendChild(mainRow);
 
@@ -1378,6 +1367,28 @@
         window.addEventListener('message', function (event) {
             handleMessage(event.data);
         });
+        function onTaskListClick(event) {
+            var target = event.target;
+            if (!target || typeof target.matches !== 'function') return;
+            if (!target.matches('.task-cancel-btn')) return;
+            var taskId = target.getAttribute('data-task-id');
+            if (!taskId || target.disabled) return;
+            event.preventDefault();
+            event.stopPropagation();
+            target.disabled = true;
+            target.textContent = 'Cancelling…';
+            vscode.postMessage({ type: 'cancel_task', id: taskId });
+        }
+        var lists = [
+            els.tasksRunningList,
+            els.tasksQueuedList,
+            els.tasksCompletedList,
+            els.tasksFailedList,
+            els.tasksCancelledList,
+        ];
+        for (var li = 0; li < lists.length; li += 1) {
+            if (lists[li]) lists[li].addEventListener('click', onTaskListClick);
+        }
     }
 
     function renderResult() {
