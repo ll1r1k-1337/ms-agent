@@ -135,6 +135,7 @@ export class WebviewPanelProvider {
                 || message.type === 'cancel_current'
                 || message.type === 'cancel_task'
                 || message.type === 'remove_queued'
+                || message.type === 'request_queue_state'
             ) {
                 this.onActionCallback?.(message);
             }

@@ -863,6 +863,10 @@ function ensureFixDetailsPanel(): void {
     }
     webviewProvider.createOrShow(extensionContext);
     webviewProvider.onAction((message: { type?: string; id?: string }) => {
+        if (message.type === 'request_queue_state') {
+            notifyQueueState();
+            return;
+        }
         if (message.type === 'pause_toggle') {
             if (pauseRequested) {
                 pauseRequested = false;
