@@ -763,7 +763,7 @@ async function runFixWorker(): Promise<void> {
                 next.sourceDiagnostic,
                 (opencodeSessionId) => {
                     next.opencodeSessionId = opencodeSessionId;
-                    notifyQueueState();
+                    queueEvents.updated(next.id, { opencodeSessionId });
                 },
                 next.id,
             );
@@ -938,7 +938,9 @@ function ensureFixDetailsPanel(): void {
             if (entry) {
                 cancelRequestedTaskIds.add(message.id);
                 entry.cts.cancel();
-                queueEvents.removed(message.id);
+                // Deferred removal: the worker emits `queueEvents.removed(next.id)`
+                // when the cancellation actually settles (see runFixWorker task-finish
+                // block). Matches cancelBatch's running-branch policy.
                 return;
             }
             // The task may have been paused mid-run between render and click.
@@ -1128,6 +1130,8 @@ export async function notifyBatchProgress(
     status: CompletedTaskStatus,
 ): Promise<void> {
     if (!ctx?.receiverAvailable) return;
+    // Host-side counter — bumped per task regardless of whether the receiver
+    // actually observed the event. Do not use this number for retry/gap detection.
     ctx.completedCount += 1;
     try {
         await vscode.commands.executeCommand(

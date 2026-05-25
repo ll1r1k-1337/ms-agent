@@ -21,6 +21,14 @@
         model: '',
         opencodeSessionId: '',
         queueState: { paused: false, hasPendingTasks: false, items: [] },
+        groupNodeMaps: {
+            queued: new Map(),
+            running: new Map(),
+            completed: new Map(),
+            failed: new Map(),
+            cancelled: new Map(),
+        },
+        pendingQueueStateRequest: false,
         // Per-task result detail keyed by queue task id — populated by
         // 'task_detail' messages so a Completed entry can be expanded to show
         // what it applied or why it crashed.
@@ -826,6 +834,9 @@
         }
         if (!currentNode) {
             // Unknown id — ask the host for a fresh full sync. See T9 handler.
+            // Guard with a flag so N unknown ids in one delta fire only one re-sync.
+            if (state.pendingQueueStateRequest) return;
+            state.pendingQueueStateRequest = true;
             try {
                 vscode.postMessage({ type: 'request_queue_state' });
             } catch (e) { /* vscode may be undefined in tests */ }
@@ -1226,6 +1237,7 @@
             cancelled: false,
         };
         state.userPinnedToBottom = true;
+        state.pendingQueueStateRequest = false;
         state.queueState = { paused: false, hasPendingTasks: false, items: [], runningTasks: [], recentlyCompleted: [] };
         state.groupNodeMaps = {
             queued: new Map(),
@@ -1303,6 +1315,7 @@
                 clearAll();
                 break;
             case 'queue_state':
+                state.pendingQueueStateRequest = false;
                 applyQueueState(p);
                 break;
             case 'queue_delta':
