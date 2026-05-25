@@ -669,6 +669,64 @@ describe('fixService', () => {
             expect(taskDetail.payload.diffs).to.deep.equal([]);
             expect(taskDetail.payload.finalMessage).to.include('Rate limit exceeded');
         });
+
+        it('runs fixProblem as a batch of one — stamps taskId and carries batch metadata', async () => {
+            const diagnostic = makeDiag({ fileName: '/workspace/test.cpp' });
+            const postMessageStub = stubWebview();
+            stubConfig();
+            sinon.stub(DiagnosticsManager, 'getCurrentDiagnostics').returns([diagnostic]);
+            sinon.stub(DiagnosticsManager, 'removeDiagnostic').returns(true);
+            sinon.stub(backendFactory, 'createFixBackend').returns({
+                name: 'opencode',
+                supportsStreaming: () => true,
+                cancel: () => {},
+                executeFix: async (
+                    _diag: SanitizerDiagnostic,
+                    _context: FixContext,
+                    callbacks?: FixCallbacks,
+                ) => {
+                    callbacks?.onEvent?.('session_start', { backend: 'opencode', mode: 'server' });
+                    callbacks?.onEvent?.('session_end', {
+                        success: true,
+                        outcome: 'applied',
+                        finalMessage: 'Fix applied.',
+                    });
+                    return {
+                        success: true,
+                        outcome: 'applied',
+                        finalMessage: 'Fix applied.',
+                        toolCallCount: 1,
+                        fileChanged: true,
+                        originalContent: 'a',
+                        newContent: 'b',
+                    };
+                },
+            } as any);
+
+            const result = await fixProblem(0, { clearWebview: true });
+            expect(result.status).to.equal('completed');
+
+            // Every run-scoped message is stamped with the queue task id.
+            const sessionStart: any = postMessageStub.getCalls()
+                .map((call) => call.args[0])
+                .find((message) => message && message.type === 'session_start');
+            expect(sessionStart, 'expected a session_start message').to.not.be.undefined;
+            expect(sessionStart.taskId).to.be.a('string');
+            expect(sessionStart.taskId.length).to.be.greaterThan(0);
+
+            // The envelope taskId matches the task_detail task id.
+            const taskDetail = findTaskDetail(postMessageStub);
+            expect(taskDetail, 'expected a task_detail message').to.not.be.undefined;
+            expect(sessionStart.taskId).to.equal(taskDetail.payload.taskId);
+
+            // The single fix carries batch-of-one metadata.
+            const completed = getAiFixQueueSnapshot().recentlyCompleted;
+            expect(completed).to.have.length(1);
+            expect(completed[0].batchId).to.be.a('string');
+            expect(completed[0].batchId).to.have.lengthOf.above(0);
+            expect(completed[0].batchIndex).to.equal(0);
+            expect(completed[0].batchTotal).to.equal(1);
+        });
     });
 
     describe('fixIssue direct payload handling', () => {
@@ -1004,6 +1062,21 @@ describe('fixService', () => {
                 },
             } as any);
         }
+
+        it('clears the webview exactly once for a multi-task batch', async () => {
+            stubWebview();
+            stubConfig();
+            stubAppliedBackend();
+            const clearStub = WebviewPanelProvider.prototype.clear as sinon.SinonStub;
+
+            const result = await fixIssues([
+                makeValidPayload('/workspace/a.cpp', 10),
+                makeValidPayload('/workspace/b.cpp', 20),
+            ]);
+
+            expect(result.accepted).to.equal(2);
+            expect(clearStub.callCount).to.equal(1);
+        });
 
         it('returns an empty result for an empty array without warnings', async () => {
             const warningStub = sinon.stub(vscode.window, 'showWarningMessage');

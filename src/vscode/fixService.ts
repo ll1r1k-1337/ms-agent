@@ -116,6 +116,12 @@ const fixedSanitizerIndices = new Set<number>();
  * integration flow too. Reset per run alongside the completed history.
  */
 const fixedCallerOwnedTaskIds = new Set<string>();
+/**
+ * Batch ids whose webview clear has already happened. The first task of a batch
+ * to reach a worker clears the webview; every later task (and any resumed task)
+ * of the same batch skips it. Pruned when a batch fully drains.
+ */
+const clearedBatchIds = new Set<string>();
 
 function isKeyActive(key: string): boolean {
     for (const entry of activeTasks.values()) {
@@ -377,6 +383,21 @@ function resetCompletedHistory(): void {
 }
 
 /**
+ * Drop a batch id from `clearedBatchIds` once no task of that batch remains
+ * queued, active, or paused — keeps the set from growing unbounded across a
+ * long session. Called after each task completes.
+ */
+function pruneClearedBatchId(batchId: string): void {
+    const present =
+        fixQueue.some((t) => t.batchMeta?.batchId === batchId)
+        || Array.from(activeTasks.values()).some((e) => e.task.batchMeta?.batchId === batchId)
+        || Array.from(pausedActiveFixTasks.values()).some((t) => t.batchMeta?.batchId === batchId);
+    if (!present) {
+        clearedBatchIds.delete(batchId);
+    }
+}
+
+/**
  * Push one finished task's result detail (diffs / failure reason) to the
  * WebView so the Tasks card can reveal it when the user expands the Completed
  * entry. Posted exactly once per task — never re-broadcast like `queue_state`
@@ -594,18 +615,34 @@ async function runFixWorker(): Promise<void> {
             );
             notifyQueueState();
 
+            // Clear the webview exactly once per batch: the first task of a
+            // batch to reach a worker clears; siblings — and any resumed task —
+            // skip it. A single fix is a batch of one, so it clears as before.
+            const clearBatchId = next.batchMeta?.batchId;
+            let shouldClear: boolean;
+            if (clearBatchId === undefined) {
+                shouldClear = next.options?.clearWebview !== false;
+            } else {
+                shouldClear = next.options?.clearWebview !== false
+                    && !clearedBatchIds.has(clearBatchId);
+                if (shouldClear) {
+                    clearedBatchIds.add(clearBatchId);
+                }
+            }
+
             const result = await fixSingleDiagnostic(
                 next.issue,
                 undefined,
                 undefined,
                 next.options,
                 cts,
-                next.options?.clearWebview,
+                shouldClear,
                 next.sourceDiagnostic,
                 (opencodeSessionId) => {
                     next.opencodeSessionId = opencodeSessionId;
                     notifyQueueState();
                 },
+                next.id,
             );
 
             const wasCancelled = cancelRequestedTaskIds.has(next.id);
@@ -647,6 +684,9 @@ async function runFixWorker(): Promise<void> {
             next.resolve(wasCancelled ? { status: 'cancelled' } : result);
             logFixQueue(`finish task id=${next.id} index=${next.sanitizerIndex ?? 'direct'} status=${finalStatus}`);
             activeTasks.delete(next.id);
+            if (next.batchMeta) {
+                pruneClearedBatchId(next.batchMeta.batchId);
+            }
             notifyQueueState();
             clearConversationIfCancelledAndIdle();
         }
@@ -791,19 +831,20 @@ function enqueueRepairIssue(
     sanitizerIndex?: number,
     sourceDiagnostic?: SanitizerDiagnostic,
     batchMeta?: FixBatchTaskMeta,
+    dedupe: boolean = true,
 ): Promise<FixProblemResult> {
     const key = getDiagnosticFixKey(issue);
     // Dedupe by file:line:errorType is meant to suppress accidental double-clicks
-    // on the same diagnostic row. A batch caller (e.g. "AI fix all in group")
-    // intentionally enqueues every row in a group — collapsing rows by key
-    // would make the queue lie about the work it is doing, both visually (the
-    // user expects N queued tasks for N selected rows) and in the result
-    // summary. Sanitizer rows can legitimately share a file:line:errorType
-    // even when they describe different findings (different addresses, byte
-    // sizes, kernels), so for batch tasks we accept every payload unchanged
-    // and rely on the queue to process them one at a time. The single-issue
-    // path keeps the dedupe so a stray UI double-click still no-ops.
-    if (batchMeta === undefined) {
+    // on the same diagnostic row. A multi-issue batch caller (e.g. "AI fix all
+    // in group") intentionally enqueues every row in a group — collapsing rows
+    // by key would make the queue lie about the work it is doing, both visually
+    // (the user expects N queued tasks for N selected rows) and in the result
+    // summary. Sanitizer rows can legitimately share a file:line:errorType even
+    // when they describe different findings (different addresses, byte sizes,
+    // kernels), so a multi-issue batch passes `dedupe: false` and accepts every
+    // payload unchanged. The single-fix path (a batch of one) passes
+    // `dedupe: true` so a stray UI double-click still no-ops.
+    if (dedupe) {
         if (isKeyActive(key)) {
             logFixQueue(`skip enqueue key=${key} reason=already_active_key`);
             webviewProvider.revealLatestSession();
@@ -858,23 +899,28 @@ export async function fixIssue(
         vscode.window.showWarningMessage(`msAgent: invalid fixIssue payload: ${normalized.error}`);
         return { status: 'invalid_payload' };
     }
+    // A single fix is a batch of one — see fixProblem.
     return enqueueRepairIssue(
         normalized.issue,
         { clearWebview: true, ...(options ?? {}) },
+        undefined,
+        undefined,
+        { batchId: createBatchId(), batchIndex: 0, batchTotal: 1 },
+        /* dedupe */ true,
     );
 }
 
 /**
  * Options for `fixIssues(...)`.
  *
- * `clearWebview` is applied only to the *first* task in the batch by default so
- * that the WebView preserves the rest of the batch's session history. Callers
- * that need a different behavior can override per-task options with `options`.
+ * The webview is cleared exactly once per batch — before the batch's first
+ * task runs (enforced by the worker). Set `perTaskOptions.clearWebview: false`
+ * to opt the whole batch out of clearing.
  */
 export interface FixIssuesOptions {
     /** Optional caller-supplied batch identifier. Auto-generated when omitted. */
     batchId?: string;
-    /** Forwarded to every task. The webview is cleared only before the first task unless `clearWebview` is false. */
+    /** Forwarded to every task. The webview is cleared once per batch unless `clearWebview` is false. */
     perTaskOptions?: FixProblemOptions;
 }
 
@@ -1005,13 +1051,12 @@ export async function fixIssues(
             });
             continue;
         }
-        // Clear the webview before the first task only — matches the
-        // single-issue `fixIssue` contract — but never wipe history mid-batch.
-        const isFirstAccepted = acceptedCount === 0;
-        const callerClearWebview = options?.perTaskOptions?.clearWebview;
+        // Every task forwards the same options; the worker clears the webview
+        // exactly once per batch (the first task of the batch to run — see
+        // runFixWorker's `clearedBatchIds`). A caller that sets
+        // `perTaskOptions.clearWebview: false` opts the whole batch out.
         const effectiveOptions: FixProblemOptions = {
             ...(options?.perTaskOptions ?? {}),
-            clearWebview: isFirstAccepted ? (callerClearWebview ?? true) : false,
         };
         const batchMeta: FixBatchTaskMeta = {
             batchId,
@@ -1025,6 +1070,7 @@ export async function fixIssues(
             undefined,
             undefined,
             batchMeta,
+            /* dedupe */ false,
         );
         pending.push({ index: i, promise });
         acceptedCount += 1;
@@ -1137,11 +1183,15 @@ export async function fixProblem(
         webviewProvider.revealLatestSession();
         return { status: 'already_running' };
     }
+    // A single fix is a batch of one — give it batch metadata so the host and
+    // webview have one uniform (batch-first) code path.
     return enqueueRepairIssue(
         repairIssueFromSanitizerDiagnostic(diagnostic),
         options,
         index,
         diagnostic,
+        { batchId: createBatchId(), batchIndex: 0, batchTotal: 1 },
+        /* dedupe */ true,
     );
 }
 
@@ -1188,6 +1238,7 @@ async function fixSingleDiagnostic(
     clearWebview: boolean = true,
     sourceDiagnostic?: SanitizerDiagnostic,
     onSessionMetadata?: (opencodeSessionId: string) => void,
+    queueTaskId?: string,
 ): Promise<FixSingleResult> {
     const config = getLLMConfig();
     const backend = createFixBackend(config);
@@ -1255,6 +1306,7 @@ async function fixSingleDiagnostic(
                     webviewProvider.postMessage({
                         ...message,
                         runId: repairRunId,
+                        taskId: queueTaskId,
                     });
                 };
 
@@ -1485,6 +1537,7 @@ async function fixSingleDiagnostic(
             webviewProvider.postMessage({
                 type: 'session_end',
                 runId: repairRunId,
+                taskId: queueTaskId,
                 payload: {
                     success: false,
                     outcome: 'cancelled',
@@ -1588,6 +1641,7 @@ export function _resetFixState() {
     pauseRequested = false;
     clearConversationOnIdleAfterCancel = false;
     fixedSanitizerIndices.clear();
+    clearedBatchIds.clear();
     resetCompletedHistory();
 }
 

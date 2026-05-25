@@ -43,6 +43,10 @@ export interface WebviewMessage {
     type: WebviewMessageType;
     payload: WebviewPayload;
     runId?: string;
+    /** Queue task id this message belongs to. Stamped by `fixSingleDiagnostic`
+     *  so the webview can route run-scoped messages to per-task runtime state.
+     *  A single fix is a batch of one — every fix carries a `taskId`. */
+    taskId?: string;
 }
 
 export interface TextStreamPayload {

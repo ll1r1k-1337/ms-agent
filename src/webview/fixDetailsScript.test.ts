@@ -21,12 +21,9 @@ describe('fixDetailsScript string inclusion', () => {
 
   it('contains card-based render entry points', () => {
     expect(fixDetailsScript).to.include('renderStatusCard');
-    expect(fixDetailsScript).to.include('renderFiles');
-    expect(fixDetailsScript).to.include('renderExplanation');
+    expect(fixDetailsScript).to.include('renderTasksCard');
     expect(fixDetailsScript).to.include('renderIdleHint');
     expect(fixDetailsScript).to.include('renderInlineMarkdown');
-    expect(fixDetailsScript).to.include('parseExplanationSections');
-    expect(fixDetailsScript).to.include('explanationSectionHtml');
     expect(fixDetailsScript).to.include('formatDiffLines');
     expect(fixDetailsScript).to.include('renderCollapsedCards');
     expect(fixDetailsScript).to.include('toggleCardCollapse');
@@ -39,19 +36,11 @@ describe('fixDetailsScript string inclusion', () => {
       'meta-backend',
       'meta-mode',
       'meta-elapsed',
-      'status-pill',
-      'status-label',
       'status-card',
       'status-progress',
       'elapsed-row',
       'queue-row',
       'queue-badge',
-      'files-card',
-      'files-list',
-      'files-meta',
-      'explanation-card',
-      'explanation-body',
-      'explanation-meta',
       'idle-hint',
       'tasks-cancelled-group',
       'tasks-cancelled-list',
@@ -109,9 +98,9 @@ describe('fixDetailsScript string inclusion', () => {
 
   it('contains task panel state management', () => {
     expect(fixDetailsScript).to.include('sessionActive');
-    expect(fixDetailsScript).to.include("phase: 'waiting'");
+    expect(fixDetailsScript).to.include("phase: 'connecting'");
     expect(fixDetailsScript).to.include('updateCurrentAction');
-    expect(fixDetailsScript).to.include('currentOutcome');
+    expect(fixDetailsScript).to.include('currentAction');
   });
 
   it('contains automatic scrolling', () => {
@@ -133,44 +122,29 @@ describe('fixDetailsScript string inclusion', () => {
 
   it('contains task-panel specific state', () => {
     expect(fixDetailsScript).to.include('sessionStartedAt');
-    expect(fixDetailsScript).to.include('changes');
-    expect(fixDetailsScript).to.include('explanation');
-    expect(fixDetailsScript).to.include('activeRunId');
-    expect(fixDetailsScript).to.include('terminalLocked');
+    expect(fixDetailsScript).to.include('state.tasks');
+    expect(fixDetailsScript).to.include('getOrCreateTaskRuntime');
     expect(fixDetailsScript).to.include('collapsedCards');
   });
 
-  it('contains multi-file diff rendering markers', () => {
-    expect(fixDetailsScript).to.include('files-list');
-    expect(fixDetailsScript).to.include('file-item');
+  it('contains task diff rendering markers', () => {
+    expect(fixDetailsScript).to.include('task-diff');
     expect(fixDetailsScript).to.include('file-diff');
     expect(fixDetailsScript).to.include('line-add');
     expect(fixDetailsScript).to.include('line-del');
   });
 
-  it('contains explanation accumulation from text_stream', () => {
-    expect(fixDetailsScript).to.include('state.explanation');
-    expect(fixDetailsScript).to.include('state.finalExplanation');
-    expect(fixDetailsScript).to.include('state.finalExplanationKind');
-    expect(fixDetailsScript).to.include('state.explanationMessages.set(messageId');
-    expect(fixDetailsScript).to.include('getExplanationText()');
+  it('accumulates streaming text into per-task runtime', () => {
+    expect(fixDetailsScript).to.include('getOrCreateTaskRuntime');
+    expect(fixDetailsScript).to.include('rt.streamText += delta');
     expect(fixDetailsScript).to.include('isProgressMessageId(messageId)');
+    expect(fixDetailsScript).to.include('state.tasks');
   });
 
-  it('renders final-only explanation sections', () => {
-    expect(fixDetailsScript).to.include('Problem Explanation');
-    expect(fixDetailsScript).to.include('Fix Explanation');
-    expect(fixDetailsScript).to.include('Why it works');
-    expect(fixDetailsScript).to.include('Full Explanation');
-    expect(fixDetailsScript).to.include('Failure Reason');
-    expect(fixDetailsScript).to.include("if (!finished) {");
-  });
-
-  it('guards completed runs from stale running updates', () => {
-    expect(fixDetailsScript).to.include('message.runId');
-    expect(fixDetailsScript).to.include("message.type === 'session_end'");
-    expect(fixDetailsScript).to.include("message.type === 'step_update' || message.type === 'tool_call' || message.type === 'tool_result'");
-    expect(fixDetailsScript).to.include("guardedPhase === 'running' || guardedPhase === 'connecting' || guardedPhase === 'finalizing'");
+  it('guards completed tasks from stale running updates per task', () => {
+    expect(fixDetailsScript).to.include('rt.outcome');
+    expect(fixDetailsScript).to.include("phase === 'running' || phase === 'connecting' || phase === 'finalizing'");
+    expect(fixDetailsScript).to.include('getOrCreateTaskRuntime');
   });
 
   it('toggles status-progress shimmer based on in-flight phase', () => {
@@ -178,7 +152,7 @@ describe('fixDetailsScript string inclusion', () => {
     expect(fixDetailsScript).to.include("'status-progress'");
   });
 
-  it('emits two-tone path/name spans for modified files', () => {
+  it('emits two-tone path/name spans for task diffs', () => {
     expect(fixDetailsScript).to.include('file-path');
     expect(fixDetailsScript).to.include('file-name');
   });
@@ -189,8 +163,6 @@ describe('fixDetailsScript string inclusion', () => {
     expect(fixDetailsScript).to.include('shouldIgnoreCollapseToggle');
     expect(fixDetailsScript).to.include('is-collapsed');
     expect(fixDetailsScript).to.include('status: false');
-    expect(fixDetailsScript).to.include('files: false');
-    expect(fixDetailsScript).to.include('explanation: false');
     expect(fixDetailsScript).to.include('tasks: false');
   });
 
@@ -211,11 +183,6 @@ describe('fixDetailsScript string inclusion', () => {
     expect(fixDetailsScript).to.include('state.expandedTasks');
     expect(fixDetailsScript).to.include('Failure reason');
     expect(fixDetailsScript).to.include('Applied change');
-  });
-
-  it('hides the shared Explanation card for multi-task sessions', () => {
-    expect(fixDetailsScript).to.include('countSessionTasks');
-    expect(fixDetailsScript).to.include('countSessionTasks() > 1');
   });
 
   it('surfaces a failed count in the Tasks card meta', () => {
@@ -243,11 +210,16 @@ describe('fixDetailsScript string inclusion', () => {
     expect(fixDetailsScript).to.include("type: 'pause_toggle'");
   });
 
-  it('renders a per-task opencode Session line', () => {
+  it('renders a per-task Session line and a live action sub-row', () => {
     expect(fixDetailsScript).to.include('taskSessionLineHtml');
     expect(fixDetailsScript).to.include('task-session');
-    expect(fixDetailsScript).to.include('task-row-sub');
+    expect(fixDetailsScript).to.include('task-row-action');
+    expect(fixDetailsScript).to.include('buildRunningTaskItem');
     expect(fixDetailsScript).to.include('opencodeSessionId');
+  });
+
+  it('phase-locks the running spinner so a rebuilt entry does not snap to 0deg', () => {
+    expect(fixDetailsScript).to.include('animationDelay');
   });
 
   it('supports collapsing the Completed and Failed task groups', () => {

@@ -41,19 +41,11 @@ describe('WebviewPanelProvider', () => {
                 'meta-mode',
                 'meta-model',
                 'meta-elapsed',
-                'status-pill',
-                'status-label',
                 'status-card',
                 'status-progress',
                 'elapsed-row',
                 'queue-row',
                 'queue-badge',
-                'files-card',
-                'files-list',
-                'files-meta',
-                'explanation-card',
-                'explanation-body',
-                'explanation-meta',
                 'idle-hint',
                 'tasks-cancelled-list',
                 'tasks-pause-btn',
@@ -63,8 +55,7 @@ describe('WebviewPanelProvider', () => {
                 expect(html).to.include(`id="${id}"`, `Missing element with id="${id}"`);
             }
             expect(html).to.include('data-card-toggle="status"');
-            expect(html).to.include('data-card-toggle="files"');
-            expect(html).to.include('data-card-toggle="explanation"');
+            expect(html).to.include('data-card-toggle="tasks"');
             expect(html).to.include('data-group-toggle="completed"');
             expect(html).to.include('data-group-toggle="failed"');
             expect(html).to.include('data-group-toggle="cancelled"');

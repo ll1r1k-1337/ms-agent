@@ -9,19 +9,6 @@
         return;
     }
 
-    const PHASE_LABELS = {
-        connecting: 'Starting OpenCode',
-        running: 'Repairing',
-        finalizing: 'Verifying changes',
-        error: 'Error',
-        waiting: 'Ready',
-        completed: 'Completed',
-        no_change: 'No code change needed',
-        failed: 'Failed',
-        cancelled: 'Cancelled',
-        idle: 'Ready',
-    };
-
     const state = {
         sessionStartedAt: 0,
         sessionActive: false,
@@ -29,16 +16,9 @@
         elapsedTimerId: null,
         inactivityTimeoutId: null,
         target: '',
-        phase: 'waiting',
-        currentOutcome: 'pending',
-        finalMessage: '',
-        finalExplanation: '',
-        finalExplanationKind: '',
         backend: '',
         mode: '',
         model: '',
-        activeRunId: '',
-        terminalLocked: false,
         opencodeSessionId: '',
         queueState: { paused: false, hasPendingTasks: false, items: [] },
         // Per-task result detail keyed by queue task id — populated by
@@ -47,14 +27,13 @@
         taskDetails: new Map(),
         // Task ids the user has expanded; survives Tasks-card re-renders.
         expandedTasks: new Set(),
-        changes: new Map(),
-        explanation: '',
-        explanationMessages: new Map(),
-        explanationOrder: [],
+        // Per-task live runtime keyed by queue task id — built from run-scoped
+        // messages (session_start / status / diff / text_stream / …) so each
+        // task entry can show live progress while it runs. Terminal detail
+        // still arrives via 'task_detail'; this Map is the in-flight source.
+        tasks: new Map(),
         collapsedCards: {
             status: false,
-            files: false,
-            explanation: false,
             tasks: false,
         },
         // Collapse state for the Completed / Failed / Cancelled task groups.
@@ -73,8 +52,6 @@
     function initElements() {
         els.messages = $('messages');
         els.jumpLatest = $('jump-latest');
-        els.statusPill = $('status-pill');
-        els.statusLabel = $('status-label');
         els.statusProgress = $('status-progress');
         els.metaBackend = $('meta-backend');
         els.metaMode = $('meta-mode');
@@ -84,9 +61,6 @@
         els.queueRow = $('queue-row');
         els.queueBadge = $('queue-badge');
         els.statusCard = $('status-card');
-        els.filesCard = $('files-card');
-        els.filesList = $('files-list');
-        els.filesMeta = $('files-meta');
         els.tasksCard = $('tasks-card');
         els.tasksMeta = $('tasks-meta');
         els.tasksRunningGroup = $('tasks-running-group');
@@ -105,9 +79,6 @@
         els.tasksCancelledCount = $('tasks-cancelled-count');
         els.tasksCancelledList = $('tasks-cancelled-list');
         els.tasksPauseBtn = $('tasks-pause-btn');
-        els.explanationCard = $('explanation-card');
-        els.explanationBody = $('explanation-body');
-        els.explanationMeta = $('explanation-meta');
         els.idleHint = $('idle-hint');
         els.collapseToggles = Array.prototype.slice.call(document.querySelectorAll('[data-card-toggle]'));
         els.groupCollapseToggles = Array.prototype.slice.call(document.querySelectorAll('[data-group-toggle]'));
@@ -347,85 +318,8 @@
         return combined;
     }
 
-    function stripStructuredHeading(text, heading) {
-        const pattern = new RegExp('^' + heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*:\\s*', 'i');
-        return String(text || '').replace(pattern, '').trim();
-    }
-
     function isProgressMessageId(messageId) {
         return /_progress$/.test(String(messageId || ''));
-    }
-
-    function getExplanationText() {
-        const chunks = state.explanationOrder
-            .map(function (messageId) { return state.explanationMessages.get(messageId) || ''; })
-            .map(function (text) { return String(text || '').trim(); })
-            .filter(Boolean);
-        if (chunks.length > 0) {
-            return chunks.join('\n\n').trim();
-        }
-        return String(state.explanation || '').trim();
-    }
-
-    function parseExplanationSections(text, finalMessage, outcome) {
-        const raw = String(text || '').trim();
-        const fallback = String(finalMessage || '').trim();
-        const source = raw || fallback;
-        const sections = {
-            problem: '',
-            fix: '',
-            why: '',
-            notes: '',
-            hasStructuredHeadings: false,
-            raw: source,
-        };
-
-        if (!source) {
-            return sections;
-        }
-
-        const headingPattern = /^(Problem|Fix|Why it works|Notes)\s*:\s*/gim;
-        const matches = [];
-        let match;
-        while ((match = headingPattern.exec(source)) !== null) {
-            matches.push({
-                key: match[1].toLowerCase(),
-                start: match.index,
-                end: headingPattern.lastIndex,
-            });
-        }
-
-        if (matches.length > 0) {
-            sections.hasStructuredHeadings = true;
-            for (let i = 0; i < matches.length; i += 1) {
-                const current = matches[i];
-                const next = matches[i + 1];
-                const content = source.slice(current.start, next ? next.start : source.length).trim();
-                if (current.key === 'problem') sections.problem = stripStructuredHeading(content, 'Problem');
-                if (current.key === 'fix') sections.fix = stripStructuredHeading(content, 'Fix');
-                if (current.key === 'why it works') sections.why = stripStructuredHeading(content, 'Why it works');
-                if (current.key === 'notes') sections.notes = stripStructuredHeading(content, 'Notes');
-            }
-            return sections;
-        }
-
-        if (outcome === 'applied') {
-            sections.fix = source;
-            return sections;
-        }
-
-        sections.problem = source;
-        return sections;
-    }
-
-    function explanationSectionHtml(title, text) {
-        if (!text) {
-            return '';
-        }
-        return '<section class="explanation-section">'
-            + '<h4 class="explanation-section-title">' + escapeHtml(title) + '</h4>'
-            + '<div class="explanation-section-body">' + renderInlineMarkdown(text) + '</div>'
-            + '</section>';
     }
 
     function scrollToBottom() {
@@ -472,12 +366,6 @@
     function renderCollapsedCards() {
         if (els.statusCard) {
             els.statusCard.classList.toggle('is-collapsed', !!state.collapsedCards.status);
-        }
-        if (els.filesCard) {
-            els.filesCard.classList.toggle('is-collapsed', !!state.collapsedCards.files);
-        }
-        if (els.explanationCard) {
-            els.explanationCard.classList.toggle('is-collapsed', !!state.collapsedCards.explanation);
         }
         if (els.tasksCard) {
             els.tasksCard.classList.toggle('is-collapsed', !!state.collapsedCards.tasks);
@@ -553,23 +441,7 @@
 
     // ── render ──────────────────────────────────────────────────
 
-    function phaseToPillKind() {
-        if (state.currentOutcome === 'applied') return 'success';
-        if (state.currentOutcome === 'failed' || state.phase === 'error') return 'error';
-        if (state.currentOutcome === 'no_change') return 'warning';
-        if (state.currentOutcome === 'cancelled' || state.phase === 'cancelled') return 'warning';
-        if (state.phase === 'running' || state.phase === 'connecting' || state.phase === 'finalizing') {
-            return 'running';
-        }
-        return 'waiting';
-    }
-
     function renderStatusCard() {
-        // Pill
-        if (els.statusPill && els.statusLabel) {
-            els.statusPill.className = 'status-pill is-' + phaseToPillKind();
-            els.statusLabel.textContent = PHASE_LABELS[state.phase] || PHASE_LABELS.waiting;
-        }
         // Kv-rows
         if (els.metaBackend) els.metaBackend.textContent = state.backend || '-';
         if (els.metaMode) els.metaMode.textContent = state.mode || '-';
@@ -586,50 +458,15 @@
         if (els.queueBadge) {
             els.queueBadge.textContent = String(queued);
         }
-        // Progress shimmer (visible while in-flight)
+        // Progress shimmer — visible while any task is running.
         if (els.statusProgress) {
-            const inFlight = state.phase === 'running'
-                || state.phase === 'connecting'
-                || state.phase === 'finalizing';
-            els.statusProgress.classList.toggle('hidden', !inFlight);
+            const running = (state.queueState.runningTasks || []).length;
+            els.statusProgress.classList.toggle('hidden', running === 0);
         }
     }
 
-    function renderFiles() {
-        if (!els.filesCard || !els.filesList || !els.filesMeta) return;
-        const files = Array.from(state.changes.values());
-        if (files.length === 0) {
-            els.filesCard.classList.add('hidden');
-            return;
-        }
-        els.filesCard.classList.remove('hidden');
-        els.filesMeta.textContent = files.length + ' file' + (files.length === 1 ? '' : 's');
-        els.filesList.innerHTML = files.map(fileHtml).join('');
-    }
-
-    function fileHtml(file) {
-        const stat = diffStat(file.oldText, file.newText);
-        const lines = formatDiffLines(file.oldText, file.newText);
-        const diffHtml = lines.map(function (l) {
-            const cls = l.type === 'add' ? 'line-add'
-                : l.type === 'del' ? 'line-del'
-                : l.type === 'ctx' ? 'line-ctx'
-                : 'line-meta';
-            return '<span class="' + cls + '">' + escapeHtml(l.text) + '</span>';
-        }).join('');
-        return '<details class="file-item">'
-            + '<summary class="file-summary">'
-                + '<span class="file-path">' + escapeHtml(dirname(file.path)) + '</span>'
-                + '<span class="file-name">' + escapeHtml(basename(file.path)) + '</span>'
-                + '<span class="file-stat"><span class="add">+' + stat.added + '</span> '
-                    + '<span class="del">-' + stat.removed + '</span></span>'
-            + '</summary>'
-            + '<pre class="file-diff">' + diffHtml + '</pre>'
-            + '</details>';
-    }
-
-    // Total tasks tracked in this session — queued + running + completed.
-    function countSessionTasks() {
+    // Total tasks tracked this session — queued + running + completed.
+    function countAllTasks() {
         const q = state.queueState || {};
         const running = Array.isArray(q.runningTasks) ? q.runningTasks.length : 0;
         const queued = Array.isArray(q.items) ? q.items.length : 0;
@@ -637,184 +474,184 @@
         return running + queued + completed;
     }
 
-    function renderExplanation() {
-        if (!els.explanationCard || !els.explanationBody || !els.explanationMeta) return;
-        // With more than one task in the session, every Completed entry carries
-        // its own diff/explanation — the single shared Explanation card only
-        // reflects the latest task, so it is noise. Hide it for multi-task runs.
-        if (countSessionTasks() > 1) {
-            els.explanationCard.classList.add('hidden');
-            return;
-        }
-        const finished = state.currentOutcome !== 'pending';
-        if (!finished) {
-            els.explanationCard.classList.add('hidden');
-            return;
-        }
-        const text = String(state.finalExplanation || state.finalMessage || '').trim();
-        if (!text) {
-            els.explanationCard.classList.add('hidden');
-            return;
-        }
-        const sections = parseExplanationSections(text, state.finalMessage, state.currentOutcome);
-        let html = '';
-        if (state.currentOutcome === 'applied') {
-            if ((state.finalExplanationKind === 'structured' || state.finalExplanationKind === 'synthetic') && sections.hasStructuredHeadings) {
-                html = [
-                    explanationSectionHtml('Problem Explanation', sections.problem),
-                    explanationSectionHtml('Fix Explanation', sections.fix),
-                    explanationSectionHtml('Why it works', sections.why),
-                    explanationSectionHtml('Notes', sections.notes),
-                ].filter(Boolean).join('');
-            } else if (sections.hasStructuredHeadings) {
-                html = [
-                    explanationSectionHtml('Problem Explanation', sections.problem),
-                    explanationSectionHtml('Fix Explanation', sections.fix),
-                    explanationSectionHtml('Why it works', sections.why),
-                    explanationSectionHtml('Notes', sections.notes),
-                ].filter(Boolean).join('');
-            } else {
-                html = explanationSectionHtml('Full Explanation', sections.raw);
-            }
-        } else if (state.currentOutcome === 'failed' && !sections.hasStructuredHeadings) {
-            html = explanationSectionHtml('Failure Reason', sections.raw);
-        } else if (state.currentOutcome === 'no_change' && !sections.hasStructuredHeadings) {
-            html = explanationSectionHtml('Final Explanation', sections.raw);
-        } else {
-            html = explanationSectionHtml('Full Explanation', sections.raw);
-        }
-        if (!html) {
-            els.explanationCard.classList.add('hidden');
-            return;
-        }
-        els.explanationCard.classList.remove('hidden');
-        els.explanationBody.classList.remove('is-empty');
-        els.explanationBody.innerHTML = html;
-        els.explanationMeta.textContent = finished ? 'Final' : 'Streaming…';
-    }
-
     function renderIdleHint() {
         if (!els.idleHint) return;
-        const hasContent = state.sessionActive
-            || state.changes.size > 0
-            || state.explanation
-            || state.currentOutcome !== 'pending'
-            || state.hasReceivedContent;
+        const hasContent = state.sessionActive || countAllTasks() > 0;
         els.idleHint.classList.toggle('hidden', hasContent);
     }
 
     function renderAll() {
         renderStatusCard();
         renderTasksCard();
-        renderFiles();
-        renderExplanation();
         renderIdleHint();
         renderCollapsedCards();
     }
 
     // ── handlers ─────────────────────────────────────────────────
 
-    function appendTextStream(messageId, delta) {
+    // Per-task live runtime, keyed by queue task id. Created lazily on the
+    // first run-scoped message for a task.
+    function getOrCreateTaskRuntime(taskId) {
+        if (!taskId) return null;
+        let rt = state.tasks.get(taskId);
+        if (!rt) {
+            rt = {
+                phase: 'connecting',
+                currentAction: '',
+                streamText: '',
+                liveDiffs: new Map(),
+                outcome: '',
+                finalMessage: '',
+                explanationKind: '',
+                startedAt: Date.now(),
+                endedAt: 0,
+            };
+            state.tasks.set(taskId, rt);
+        }
+        return rt;
+    }
+
+    // Coalesce rapid Tasks-card re-renders (one per text_stream delta would
+    // thrash layout) into a single render on the next animation frame.
+    let tasksRenderScheduled = false;
+    function scheduleTasksRender() {
+        if (tasksRenderScheduled) return;
+        tasksRenderScheduled = true;
+        requestAnimationFrame(function () {
+            tasksRenderScheduled = false;
+            renderTasksCard();
+        });
+    }
+
+    function appendTextStream(taskId, messageId, delta) {
         if (!delta) return;
         state.hasReceivedContent = true;
         clearInactivityTimeout();
+        // Progress messages (`*_progress` ids) are host narration, not the
+        // assistant's explanation — never accumulate them.
         if (isProgressMessageId(messageId)) {
             renderIdleHint();
             return;
         }
-        if (!state.explanationMessages.has(messageId)) {
-            state.explanationOrder.push(messageId);
-            state.explanationMessages.set(messageId, '');
+        const rt = getOrCreateTaskRuntime(taskId);
+        if (rt && !rt.outcome) {
+            rt.streamText += delta;
         }
-        state.explanationMessages.set(messageId, (state.explanationMessages.get(messageId) || '') + delta);
-        state.explanation = getExplanationText();
-        renderExplanation();
+        scheduleTasksRender();
         renderIdleHint();
         maybeStickyScroll();
-        // messageId is part of the protocol but the panel does not segment by id.
-        void messageId;
     }
 
-    function appendUserMessage(messageId, text) {
-        if (text) state.target = text;
-        renderStatusCard();
+    function appendUserMessage(taskId, messageId, text) {
+        // The task title already carries the "Repair X in file:line" summary,
+        // so the user-message bubble is redundant in the batch-first panel.
+        void taskId;
+        void messageId;
+        void text;
         renderIdleHint();
-        void messageId;
     }
 
-    // Kept as a named no-op so prior tests / internal callers still resolve.
-    function updateCurrentAction(_label) {
-        // intentionally empty: actions are reflected via phase + progress shimmer
+    // Sets a task's current-action headline — the live sub-line of a running
+    // task entry in the Tasks card.
+    function updateCurrentAction(taskId, label) {
+        const rt = getOrCreateTaskRuntime(taskId);
+        if (rt && label && !rt.outcome) {
+            rt.currentAction = label;
+        }
     }
 
-    function appendToolCall(messageId, toolCallId, name, params) {
-        state.phase = 'running';
+    function appendToolCall(taskId, messageId, toolCallId, name, params) {
         state.hasReceivedContent = true;
         clearInactivityTimeout();
+        const rt = getOrCreateTaskRuntime(taskId);
+        if (rt && !rt.outcome) {
+            rt.phase = 'running';
+            rt.currentAction = summarizeToolCall(name, params || {});
+        }
         log('tool_call ' + summarizeToolCall(name, params || {}));
-        renderStatusCard();
+        scheduleTasksRender();
         renderIdleHint();
         void messageId;
         void toolCallId;
     }
 
-    function appendToolResult(toolCallId, result, isError) {
+    function appendToolResult(taskId, toolCallId, result, isError) {
         if (isError) {
-            state.phase = 'error';
+            const rt = getOrCreateTaskRuntime(taskId);
+            if (rt && !rt.outcome) rt.phase = 'error';
             log('tool_result error ' + summarizeToolResult(result, true));
         }
-        renderStatusCard();
+        scheduleTasksRender();
         void toolCallId;
     }
 
-    function appendDiff(payload, isFinal) {
+    function appendDiff(taskId, payload, isFinal) {
         if (!payload || !payload.path) return;
         const oldText = isFinal ? payload.oldContent : payload.oldText;
         const newText = isFinal ? payload.newContent : payload.newText;
-        state.changes.set(payload.path, {
-            path: payload.path,
-            oldText: oldText || '',
-            newText: newText || '',
-        });
-        if (isFinal && payload.message && !getExplanationText()) {
-            state.explanation = payload.message;
+        const rt = getOrCreateTaskRuntime(taskId);
+        if (rt) {
+            rt.liveDiffs.set(payload.path, {
+                path: payload.path,
+                oldText: oldText || '',
+                newText: newText || '',
+            });
+            if (isFinal && payload.message && !rt.finalMessage) {
+                rt.finalMessage = payload.message;
+            }
+            if (isFinal && payload.explanationKind) {
+                rt.explanationKind = payload.explanationKind;
+            }
         }
         state.hasReceivedContent = true;
-        renderFiles();
-        renderExplanation();
+        scheduleTasksRender();
         renderIdleHint();
         maybeStickyScroll();
     }
 
-    function appendFinalDiff(payload) {
-        appendDiff(payload, true);
+    function appendFinalDiff(taskId, payload) {
+        appendDiff(taskId, payload, true);
     }
 
-    function completeMessage(_messageId) {
-        state.explanation = getExplanationText();
+    function completeMessage(taskId, messageId) {
+        void taskId;
+        void messageId;
         scrollToBottom();
     }
 
-    function updateStatus(phase, message) {
+    function updateStatus(taskId, phase, message) {
+        const rt = getOrCreateTaskRuntime(taskId);
+        // Per-task terminal guard: once a task has an outcome, ignore late
+        // running/connecting/finalizing updates so a finished entry is not
+        // revived by a straggler message. Replaces the old global lock.
         if (
-            state.terminalLocked
+            rt && rt.outcome
             && (phase === 'running' || phase === 'connecting' || phase === 'finalizing')
         ) {
             return;
         }
-        if (phase) state.phase = phase;
-        if (message) updateCurrentAction(message);
-        renderStatusCard();
+        if (rt && phase) rt.phase = phase;
+        if (message) updateCurrentAction(taskId, message);
+        scheduleTasksRender();
         renderIdleHint();
     }
 
     function updateQueueState(payload) {
         state.queueState = payload || state.queueState;
+        const q = state.queueState || {};
+        const running = Array.isArray(q.runningTasks) ? q.runningTasks.length : 0;
+        const queued = Array.isArray(q.items) ? q.items.length : 0;
+        // The batch is active while any task is running or queued; once it
+        // drains, freeze the wall-clock timer.
+        if (running === 0 && queued === 0) {
+            state.sessionActive = false;
+            stopElapsedTimer();
+        } else {
+            state.sessionActive = true;
+        }
         renderStatusCard();
         renderTasksCard();
-        // The task count just changed — re-evaluate whether the shared
-        // Explanation card should hide itself for a multi-task run.
-        renderExplanation();
+        renderIdleHint();
     }
 
     function handleTaskDetail(payload) {
@@ -933,14 +770,47 @@
             + '</div>';
     }
 
-    // A running task: a two-row entry. The main row carries the icon, title and
-    // a per-task Cancel button; the sub-row shows this task's opencode session
-    // id once the backend has reported it.
+    // A short fallback action label when a running task has not yet reported a
+    // tool call — keyed off its live phase.
+    function phaseHint(phase) {
+        switch (phase) {
+            case 'connecting': return 'Starting OpenCode…';
+            case 'finalizing': return 'Verifying changes…';
+            case 'error':      return 'Tool error — continuing…';
+            default:           return 'Repairing…';
+        }
+    }
+
+    // A running task: an expandable <details> entry. The summary carries the
+    // icon, title and per-task Cancel button on its main row, plus an
+    // always-visible live action sub-row. Expanding reveals the live body —
+    // this task's session id, streamed explanation and accumulating diffs.
     function buildRunningTaskItem(task) {
         const taskId = (task && task.id) || '';
         const sessionId = (task && task.opencodeSessionId) || '';
+        const rt = taskId ? state.tasks.get(taskId) : null;
         const li = document.createElement('li');
-        li.className = 'tasks-list-item task-active-entry is-running';
+        li.className = 'tasks-list-item task-entry is-running';
+
+        const details = document.createElement('details');
+        details.className = 'task-entry-details';
+        if (taskId && state.expandedTasks.has(taskId)) {
+            details.open = true;
+        }
+        details.addEventListener('toggle', function () {
+            if (!taskId) return;
+            if (details.open) {
+                state.expandedTasks.add(taskId);
+            } else {
+                state.expandedTasks.delete(taskId);
+            }
+        });
+
+        const summary = document.createElement('summary');
+        summary.className = 'task-entry-summary task-running-summary';
+
+        const lines = document.createElement('div');
+        lines.className = 'task-running-lines';
 
         const mainRow = document.createElement('div');
         mainRow.className = 'task-row-main';
@@ -949,6 +819,12 @@
         icon.className = 'task-icon';
         icon.setAttribute('aria-hidden', 'true');
         icon.innerHTML = taskIconSvg('running');
+        // The Tasks list is rebuilt on every status update, which would snap
+        // the spinner back to 0°. Phase-lock its CSS animation to a wall-clock
+        // cycle (1600ms matches the `tasks-spin` duration in fixPanel.css) so a
+        // freshly-built spinner continues smoothly mid-rotation — and all
+        // running spinners stay in sync.
+        icon.style.animationDelay = '-' + (Date.now() % 1600) + 'ms';
         mainRow.appendChild(icon);
 
         const title = document.createElement('span');
@@ -975,15 +851,23 @@
             cancelBtn.disabled = true;
         }
         mainRow.appendChild(cancelBtn);
+        lines.appendChild(mainRow);
 
-        li.appendChild(mainRow);
+        // Live action sub-row — visible without expanding the entry.
+        const action = document.createElement('div');
+        action.className = 'task-row-action';
+        action.textContent = (rt && rt.currentAction) || phaseHint(rt && rt.phase);
+        lines.appendChild(action);
 
-        if (sessionId) {
-            const sub = document.createElement('div');
-            sub.className = 'task-row-sub';
-            sub.innerHTML = taskSessionLineHtml(sessionId);
-            li.appendChild(sub);
-        }
+        summary.appendChild(lines);
+        details.appendChild(summary);
+
+        const body = document.createElement('div');
+        body.className = 'task-entry-body';
+        body.innerHTML = taskDetailHtml(taskId, 'running', sessionId);
+        details.appendChild(body);
+
+        li.appendChild(details);
         return li;
     }
 
@@ -1040,37 +924,49 @@
         return li;
     }
 
-    // Inner HTML for an expanded completed task: the applied diff(s) and/or the
-    // assistant's explanation / failure reason, whichever the task produced.
+    // Inner HTML for an expanded task body — running or terminal. The applied
+    // (or accumulating) diff(s) plus the assistant's explanation / failure
+    // reason. Terminal detail from 'task_detail' is authoritative; while it is
+    // absent (task still running, or task_detail not yet delivered) the live
+    // per-task runtime is used instead.
     function taskDetailHtml(taskId, status, sessionId) {
         const detail = taskId ? state.taskDetails.get(taskId) : undefined;
-        // The Session line is shown for every terminal task, even one with no
-        // captured detail (e.g. a task cancelled before it produced a diff).
+        const rt = taskId ? state.tasks.get(taskId) : undefined;
+        // The Session line is shown for every task, even one with no captured
+        // detail (e.g. a task cancelled before it produced a diff).
         const sessionHtml = sessionId ? taskSessionLineHtml(sessionId) : '';
-        const emptyHtml = '<div class="task-detail-empty">'
-            + 'No fix details were captured for this task.</div>';
-        if (!detail) {
-            return sessionHtml + emptyHtml;
+
+        let diffs = [];
+        let message = '';
+        if (detail) {
+            diffs = Array.isArray(detail.diffs) ? detail.diffs : [];
+            message = String(detail.finalMessage || '').trim();
+        } else if (rt) {
+            diffs = Array.from(rt.liveDiffs.values());
+            message = String(rt.streamText || rt.finalMessage || '').trim();
         }
+
         let html = sessionHtml;
-        const diffs = Array.isArray(detail.diffs) ? detail.diffs : [];
         if (diffs.length > 0) {
             html += '<div class="task-detail-label">'
                 + (diffs.length === 1 ? 'Applied change' : 'Applied changes')
                 + '</div>';
             html += diffs.map(taskDiffHtml).join('');
         }
-        const message = String(detail.finalMessage || '').trim();
         if (message) {
             const label = status === 'failed' ? 'Failure reason'
                 : (status === 'cancelled' || status === 'stopped') ? 'Status'
+                : status === 'running' ? 'Progress'
                 : diffs.length > 0 ? 'Explanation'
                 : 'Result';
             html += '<div class="task-detail-label">' + escapeHtml(label) + '</div>';
             html += '<div class="task-detail-text">' + renderInlineMarkdown(message) + '</div>';
         }
         if (html === sessionHtml) {
-            return sessionHtml + emptyHtml;
+            const emptyMsg = status === 'running'
+                ? 'Waiting for the assistant…'
+                : 'No fix details were captured for this task.';
+            return sessionHtml + '<div class="task-detail-empty">' + emptyMsg + '</div>';
         }
         return html;
     }
@@ -1129,46 +1025,52 @@
         }
     }
 
-    function handleSessionStart(payload) {
-        state.sessionStartedAt = Date.now();
-        state.sessionActive = true;
+    function handleSessionStart(taskId, payload) {
+        // A session_start belongs to one task — it must NOT wipe the panel.
+        // Per-batch reset happens once, on the host's 'clear' message.
+        const rt = getOrCreateTaskRuntime(taskId);
+        if (rt) {
+            rt.phase = 'connecting';
+            rt.outcome = '';
+            rt.endedAt = 0;
+            rt.startedAt = Date.now();
+        }
         state.hasReceivedContent = false;
-        state.changes = new Map();
-        state.explanation = '';
-        state.explanationMessages = new Map();
-        state.explanationOrder = [];
-        state.currentOutcome = 'pending';
-        state.finalMessage = '';
-        state.finalExplanation = '';
-        state.finalExplanationKind = '';
-        state.phase = 'connecting';
-        state.terminalLocked = false;
-        state.opencodeSessionId = '';
+        state.sessionActive = true;
+        // Batch wall-clock: starts with the first task of the batch.
+        if (state.sessionStartedAt === 0) {
+            state.sessionStartedAt = Date.now();
+        }
         state.userPinnedToBottom = true;
         state.backend = (payload && payload.backend) || state.backend;
         state.mode = (payload && payload.mode) || state.mode;
         state.model = (payload && payload.model) || state.model;
-        renderAll();
+        renderStatusCard();
+        renderTasksCard();
+        renderIdleHint();
         startElapsedTimer();
         scheduleInactivityTimeout();
     }
 
-    function appendSessionResult(outcome, finalMessage, explanationKind) {
+    function appendSessionResult(taskId, outcome, finalMessage, explanationKind) {
         const normalized = outcome || 'failed';
-        state.sessionActive = false;
-        state.currentOutcome = normalized;
-        state.finalMessage = finalMessage || '';
-        state.finalExplanation = finalMessage || state.finalExplanation;
-        state.finalExplanationKind = explanationKind || state.finalExplanationKind || '';
-        if (normalized === 'applied') state.phase = 'completed';
-        else if (normalized === 'no_change') state.phase = 'no_change';
-        else if (normalized === 'cancelled') state.phase = 'cancelled';
-        else state.phase = 'failed';
-        state.terminalLocked = true;
-        if (finalMessage && !getExplanationText()) state.explanation = finalMessage;
+        const rt = getOrCreateTaskRuntime(taskId);
+        if (rt) {
+            rt.outcome = normalized;
+            rt.finalMessage = finalMessage || rt.finalMessage || '';
+            rt.explanationKind = explanationKind || rt.explanationKind || '';
+            rt.phase = normalized === 'applied' ? 'completed'
+                : normalized === 'no_change' ? 'no_change'
+                : normalized === 'cancelled' ? 'cancelled'
+                : 'failed';
+            rt.endedAt = Date.now();
+        }
+        // The batch as a whole is still active if siblings are running — the
+        // wall-clock timer is stopped by updateQueueState once the queue drains.
         clearInactivityTimeout();
-        stopElapsedTimer();
-        renderAll();
+        renderStatusCard();
+        renderTasksCard();
+        renderIdleHint();
     }
 
     function clearAll() {
@@ -1178,25 +1080,13 @@
         state.sessionActive = false;
         state.hasReceivedContent = false;
         state.target = '';
-        state.phase = 'waiting';
-        state.currentOutcome = 'pending';
-        state.finalMessage = '';
-        state.finalExplanation = '';
-        state.finalExplanationKind = '';
         state.backend = '';
         state.mode = '';
         state.model = '';
-        state.activeRunId = '';
-        state.terminalLocked = false;
         state.opencodeSessionId = '';
-        state.changes = new Map();
-        state.explanation = '';
-        state.explanationMessages = new Map();
-        state.explanationOrder = [];
+        state.tasks = new Map();
         state.collapsedCards = {
             status: false,
-            files: false,
-            explanation: false,
             tasks: false,
         };
         state.collapsedGroups = {
@@ -1215,51 +1105,28 @@
 
     function handleMessage(message) {
         if (!message || !message.type) return;
-        const runId = typeof message.runId === 'string' ? message.runId : '';
-        if (message.type === 'session_start' && runId) {
-            state.activeRunId = runId;
-            state.terminalLocked = false;
-        }
-        if (
-            message.type !== 'queue_state'
-            && message.type !== 'clear'
-            && runId
-            && state.activeRunId
-            && runId !== state.activeRunId
-        ) {
-            return;
-        }
-        if (state.terminalLocked) {
-            if (message.type === 'session_end') {
-                return;
-            }
-            if (message.type === 'step_update' || message.type === 'tool_call' || message.type === 'tool_result') {
-                return;
-            }
-            if (message.type === 'status') {
-                const guardedPhase = firstString(message.payload || {}, ['phase']);
-                if (guardedPhase === 'running' || guardedPhase === 'connecting' || guardedPhase === 'finalizing') {
-                    return;
-                }
-            }
-        }
         log('handleMessage ' + message.type);
         const p = message.payload || {};
+        // Run-scoped messages carry the queue task id they belong to. The old
+        // single-run `activeRunId` filter is gone — concurrent batch tasks no
+        // longer fight over one "active" run; each message routes to its own
+        // per-task runtime in `state.tasks`. A per-task terminal guard (see
+        // updateStatus) replaces the old global `terminalLocked`.
+        const taskId = typeof message.taskId === 'string' ? message.taskId : '';
         switch (message.type) {
             case 'session_start':
-                handleSessionStart(p);
+                handleSessionStart(taskId, p);
                 break;
             case 'session_metadata':
-                // Per-task Session ids now arrive via queue_state; the Status
-                // card no longer renders a session row. Keep the assignment so
-                // the last run's id stays available to any other consumer.
+                // Per-task Session ids arrive via queue_state; keep this
+                // assignment so the last run's id stays available to consumers.
                 state.opencodeSessionId = p.opencodeSessionId || state.opencodeSessionId;
                 break;
             case 'session_end':
-                appendSessionResult(p.outcome, p.finalMessage, p.explanationKind);
+                appendSessionResult(taskId, p.outcome, p.finalMessage, p.explanationKind);
                 break;
             case 'status':
-                updateStatus(p.phase, p.message);
+                updateStatus(taskId, p.phase, p.message);
                 break;
             case 'backend_info':
                 state.backend = p.backend || state.backend;
@@ -1268,37 +1135,31 @@
                 renderStatusCard();
                 break;
             case 'step_update':
-                updateStatus('running', p.detail ? p.step + ' · ' + p.detail : p.step);
+                updateStatus(taskId, 'running', p.detail ? p.step + ' · ' + p.detail : p.step);
                 break;
             case 'tool_call':
-                appendToolCall(p.messageId, p.toolCallId, p.name, p.params);
+                appendToolCall(taskId, p.messageId, p.toolCallId, p.name, p.params);
                 break;
             case 'tool_result':
-                appendToolResult(p.toolCallId, p.result, !!p.isError);
+                appendToolResult(taskId, p.toolCallId, p.result, !!p.isError);
                 break;
             case 'diff':
-                appendDiff(p, false);
+                appendDiff(taskId, p, false);
                 break;
             case 'final_diff':
-                if (p.message) {
-                    state.finalExplanation = p.message;
-                }
-                if (p.explanationKind) {
-                    state.finalExplanationKind = p.explanationKind;
-                }
-                appendFinalDiff(p);
+                appendFinalDiff(taskId, p);
                 break;
             case 'text_stream':
-                appendTextStream(p.messageId, p.delta || '');
+                appendTextStream(taskId, p.messageId, p.delta || '');
                 break;
             case 'user_message':
-                appendUserMessage(p.messageId, p.text || '');
+                appendUserMessage(taskId, p.messageId, p.text || '');
                 break;
             case 'message_complete':
-                completeMessage(p.messageId);
+                completeMessage(taskId, p.messageId);
                 break;
             case 'error':
-                appendSessionResult('failed', p.message || 'Unknown error');
+                appendSessionResult(taskId, 'failed', p.message || 'Unknown error');
                 break;
             case 'clear':
                 clearAll();
@@ -1369,8 +1230,7 @@
 
     function renderResult() {
         // Backward-compatible alias retained for existing test entry points.
-        renderFiles();
-        renderExplanation();
+        renderTasksCard();
     }
 
     function initialize() {
