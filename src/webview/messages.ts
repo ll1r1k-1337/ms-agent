@@ -99,6 +99,12 @@ export interface ErrorPayload {
 
 export interface ClearPayload {}
 
+// NOTE: QueueStateItem is the **webview-side** view of a queue snapshot item.
+// The ms-agent host has its own `AiFixQueueSnapshotItem` in
+// `src/vscode/fixService.ts`; the two are joined only by JSON serialization
+// over `webview.postMessage`. Adding a required field here therefore does NOT
+// break fixService at compile time — but the snapshot builder there must
+// supply the same field at runtime (see task T3 of the scaling plan).
 export type QueueGroup =
     | 'queued'
     | 'running'
@@ -121,7 +127,11 @@ export interface QueueStateItem {
     batchTotal?: number;
     /** opencode session id for this task, once the backend reports it. */
     opencodeSessionId?: string;
-    /** Terminal status — present only on `recentlyCompleted` entries. */
+    /**
+     * Narrower than `group`: only set when `group` is `'completed'`,
+     * `'failed'`, or `'cancelled'`. Carries the worker's terminal verdict
+     * (e.g. `'no_change'`, `'stopped'`) which the group alone cannot express.
+     */
     status?: 'completed' | 'no_change' | 'failed' | 'cancelled' | 'stopped';
     /** Unix-ms completion time — present only on `recentlyCompleted` entries. */
     completedAt?: number;
@@ -138,14 +148,27 @@ export interface QueueStatePayload {
     runningTasks?: QueueStateItem[];
     /** Recently finished tasks, newest-first. */
     recentlyCompleted?: QueueStateItem[];
+    /**
+     * Aggregate counts. Optional on full-sync payloads for back-compat with
+     * older snapshot producers; will become required once every producer
+     * (see fixService.getAiFixQueueSnapshot) supplies it. Until then,
+     * `paused` and `hasPendingTasks` above are the authoritative source.
+     */
     summary?: QueueSummary;
 }
 
 export interface QueueSummary {
     paused: boolean;
     hasPendingTasks: boolean;
+    /** Tasks currently running (size of activeTasks). */
     runningCount: number;
+    /** Tasks waiting in the queue (size of fixQueue + pausedActiveFixTasks). */
     queuedCount: number;
+    /**
+     * Tasks whose terminal outcome was 'completed' or 'no_change' within the
+     * current `recentlyCompleted` window (not a lifetime total). Capped by
+     * MAX_RECENTLY_COMPLETED on the producer side.
+     */
     completedCount: number;
 }
 
@@ -153,6 +176,11 @@ export interface QueueDeltaPayload {
     added?: QueueStateItem[];
     removed?: string[];
     updated?: Array<Partial<QueueStateItem> & { id: string }>;
+    /**
+     * Always present on a delta. A delta carries no group-level item lists,
+     * so the reducer relies on `summary` to update counters and the pause
+     * indicator without an O(N) walk.
+     */
     summary: QueueSummary;
 }
 
