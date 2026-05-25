@@ -69,7 +69,14 @@ export type FixBatchTaskMeta = {
     batchIndex: number;
     batchTotal: number;
 };
-type QueuedFixTask = {
+export interface BatchProgressContext {
+    batchId: string;
+    receiverAvailable: boolean;
+    batchTotal: number;
+    /** Mutated as each task in the batch finishes; shared by reference across tasks. */
+    completedCount: number;
+}
+export type QueuedFixTask = {
     id: string;
     key: string;
     sanitizerIndex?: number;
@@ -78,6 +85,7 @@ type QueuedFixTask = {
     sourceDiagnostic?: SanitizerDiagnostic;
     options?: FixProblemOptions;
     batchMeta?: FixBatchTaskMeta;
+    progress?: BatchProgressContext;
     /**
      * opencode session id for this task, captured from the backend's
      * `session_metadata` event. Lets the panel show each task's own session
@@ -812,6 +820,7 @@ async function runFixWorker(): Promise<void> {
             if (completedItem) {
                 queueEvents.added(completedItem);
             }
+            void notifyBatchProgress(next.progress, next, completedStatus);
             clearConversationIfCancelledAndIdle();
         }
     } finally {
@@ -963,6 +972,7 @@ function enqueueRepairIssue(
     sourceDiagnostic?: SanitizerDiagnostic,
     batchMeta?: FixBatchTaskMeta,
     dedupe: boolean = true,
+    progress?: BatchProgressContext,
 ): Promise<FixProblemResult> {
     const key = getDiagnosticFixKey(issue);
     // Dedupe by file:line:errorType is meant to suppress accidental double-clicks
@@ -1013,6 +1023,7 @@ function enqueueRepairIssue(
             sourceDiagnostic,
             options,
             batchMeta,
+            progress,
             resolve,
         };
         fixQueue.push(queued);
@@ -1111,6 +1122,33 @@ function emptyBatchSummary(): FixBatchResult['summary'] {
     };
 }
 
+export async function notifyBatchProgress(
+    ctx: BatchProgressContext | undefined,
+    task: QueuedFixTask,
+    status: CompletedTaskStatus,
+): Promise<void> {
+    if (!ctx?.receiverAvailable) return;
+    ctx.completedCount += 1;
+    try {
+        await vscode.commands.executeCommand(
+            'op-devtools.msAgentFixIssuesProgress',
+            {
+                batchId: ctx.batchId,
+                index: task.batchMeta?.batchIndex ?? 0,
+                status,
+                completedCount: ctx.completedCount,
+                batchTotal: ctx.batchTotal,
+                taskId: task.id,
+                title: task.title,
+            },
+        );
+    }
+    catch {
+        // Receiver threw or disappeared mid-batch — swallow. The next per-task
+        // call will retry; we never let a receiver fault stop the batch.
+    }
+}
+
 function bumpBatchSummary(summary: FixBatchResult['summary'], status: FixProblemStatus): void {
     switch (status) {
         case 'completed':
@@ -1177,6 +1215,21 @@ export async function fixIssues(
     const maxBatchSize = readMaxBatchSize();
     const acceptIndexLimit = Math.min(requests.length, maxBatchSize);
 
+    let receiverAvailable = false;
+    try {
+        const cmds = await vscode.commands.getCommands(true);
+        receiverAvailable = cmds.includes('op-devtools.msAgentFixIssuesProgress');
+    }
+    catch {
+        receiverAvailable = false;
+    }
+    const progressCtx: BatchProgressContext = {
+        batchId,
+        receiverAvailable,
+        batchTotal: 0, // patched below once acceptedCount is known
+        completedCount: 0,
+    };
+
     // Two-pass: validate first so we know the accepted count before enqueueing.
     // Knowing `batchTotal` up front lets every task carry the real denominator
     // when it lands in the queue, removing the need to walk three task
@@ -1213,6 +1266,8 @@ export async function fixIssues(
         }
     }
 
+    progressCtx.batchTotal = acceptedCount;
+
     type Pending = { index: number; promise: Promise<FixProblemResult> };
     const pending: Pending[] = [];
     const earlyResults: Map<number, FixBatchItemResult> = new Map();
@@ -1245,6 +1300,7 @@ export async function fixIssues(
             undefined,
             batchMeta,
             /* dedupe */ false,
+            progressCtx,
         );
         pending.push({ index: entry.index, promise });
         batchIndex += 1;

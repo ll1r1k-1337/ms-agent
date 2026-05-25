@@ -14,6 +14,7 @@ import {
     fixIssues,
     cancelBatch,
     showFixDetailsPanel,
+    notifyBatchProgress,
     _resetFixState,
     _enqueueFixTask,
     _setActiveFix,
@@ -26,6 +27,8 @@ import {
     _resetFixOutputChannelForTests,
     _recordCompletedTaskForTests,
     _subscribeQueueEventsForTests,
+    type BatchProgressContext,
+    type QueuedFixTask,
 } from './fixService';
 import * as backendFactory from '../backends/backendFactory';
 import * as configModule from '../llm/config';
@@ -1447,6 +1450,87 @@ describe('fixService', () => {
                 expect(result.results[1].status).to.equal('invalid_payload');
                 expect(result.results[1].error).to.equal('batch_size_limit_exceeded');
             });
+        });
+    });
+
+    describe('notifyBatchProgress', () => {
+        let executeCommandStub: sinon.SinonStub;
+
+        beforeEach(() => {
+            executeCommandStub = sinon.stub(vscode.commands, 'executeCommand').resolves();
+        });
+
+        afterEach(() => {
+            executeCommandStub.restore();
+        });
+
+        function makeTaskForProgress(over: Partial<QueuedFixTask> = {}): QueuedFixTask {
+            return {
+                id: over.id ?? 't1',
+                key: 'k:OUT',
+                title: over.title ?? 'T1',
+                issue: repairIssueFromSanitizerDiagnostic(makeDiag()),
+                resolve: () => {},
+                batchMeta: over.batchMeta ?? { batchId: 'b', batchIndex: 0, batchTotal: 2 },
+                ...over,
+            } as QueuedFixTask;
+        }
+
+        it('does nothing when receiverAvailable is false', async () => {
+            const ctx: BatchProgressContext = {
+                batchId: 'b', receiverAvailable: false, batchTotal: 2, completedCount: 0,
+            };
+            await notifyBatchProgress(ctx, makeTaskForProgress(), 'completed');
+            expect(executeCommandStub.callCount).to.equal(0);
+        });
+
+        it('fires op-devtools.msAgentFixIssuesProgress with the expected payload', async () => {
+            const ctx: BatchProgressContext = {
+                batchId: 'b', receiverAvailable: true, batchTotal: 2, completedCount: 0,
+            };
+            await notifyBatchProgress(
+                ctx,
+                makeTaskForProgress({ id: 't1', batchMeta: { batchId: 'b', batchIndex: 0, batchTotal: 2 } }),
+                'completed',
+            );
+            expect(executeCommandStub.callCount).to.equal(1);
+            expect(executeCommandStub.firstCall.args[0]).to.equal('op-devtools.msAgentFixIssuesProgress');
+            expect(executeCommandStub.firstCall.args[1]).to.deep.include({
+                batchId: 'b',
+                index: 0,
+                status: 'completed',
+                completedCount: 1,
+                batchTotal: 2,
+                taskId: 't1',
+            });
+        });
+
+        it('increments completedCount across calls (shared-by-reference semantics)', async () => {
+            const ctx: BatchProgressContext = {
+                batchId: 'b', receiverAvailable: true, batchTotal: 2, completedCount: 0,
+            };
+            await notifyBatchProgress(
+                ctx,
+                makeTaskForProgress({ id: 'a', batchMeta: { batchId: 'b', batchIndex: 0, batchTotal: 2 } }),
+                'completed',
+            );
+            await notifyBatchProgress(
+                ctx,
+                makeTaskForProgress({ id: 'b', batchMeta: { batchId: 'b', batchIndex: 1, batchTotal: 2 } }),
+                'failed',
+            );
+            expect(executeCommandStub.firstCall.args[1].completedCount).to.equal(1);
+            expect(executeCommandStub.secondCall.args[1].completedCount).to.equal(2);
+        });
+
+        it('swallows receiver-thrown errors', async () => {
+            executeCommandStub.restore();
+            executeCommandStub = sinon.stub(vscode.commands, 'executeCommand').rejects(new Error('boom'));
+            const ctx: BatchProgressContext = {
+                batchId: 'b', receiverAvailable: true, batchTotal: 1, completedCount: 0,
+            };
+            await notifyBatchProgress(ctx, makeTaskForProgress(), 'completed');
+            // Reaching this line means no rejection. The test passes by virtue of not throwing.
         });
     });
 });
