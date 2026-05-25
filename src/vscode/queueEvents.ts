@@ -34,12 +34,9 @@ export class QueueEventEmitter {
     }
 
     added(item: QueueStateItem): void {
-        const existing = this.dirty.get(item.id);
-        if (existing && existing.kind === 'remove') {
-            this.dirty.set(item.id, { kind: 'add', item });
-        } else {
-            this.dirty.set(item.id, { kind: 'add', item });
-        }
+        // Conflict resolution within one tick: any prior entry (including
+        // 'remove') is superseded — the final state is an add.
+        this.dirty.set(item.id, { kind: 'add', item });
         this.scheduleFlush();
     }
 
@@ -104,9 +101,8 @@ export class QueueEventEmitter {
         for (const listener of this.listeners) {
             try {
                 listener(delta);
-            } catch {
-                // Swallow — one bad subscriber must not block the others or
-                // poison the next tick.
+            } catch (err) {
+                console.error('QueueEventEmitter listener threw', err);
             }
         }
     }

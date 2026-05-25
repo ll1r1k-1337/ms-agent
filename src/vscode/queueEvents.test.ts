@@ -89,17 +89,55 @@ describe('QueueEventEmitter', () => {
 
     it('subscriber exception clears dirty state and does not poison the next flush', () => {
         const emitter = new QueueEventEmitter(() => summary);
-        const sink = sinon.stub()
-            .onFirstCall().throws(new Error('boom'))
-            .onSecondCall().returns(undefined);
+        const sandbox = sinon.createSandbox();
+        sandbox.stub(console, 'error');  // silence expected log
+        try {
+            const sink = sinon.stub()
+                .onFirstCall().throws(new Error('boom'))
+                .onSecondCall().returns(undefined);
+            emitter.subscribe(sink);
+            emitter.added(makeItem({ id: 'a' }));
+            expect(() => emitter.flushNow()).to.not.throw();
+            emitter.added(makeItem({ id: 'b' }));
+            emitter.flushNow();
+            expect(sink.callCount).to.equal(2);
+            const secondDelta = sink.secondCall.args[0];
+            expect(secondDelta.added).to.have.lengthOf(1);
+            expect(secondDelta.added[0].id).to.equal('b');
+        } finally {
+            sandbox.restore();
+        }
+    });
+
+    it('update after remove in the same tick is ignored', () => {
+        const emitter = new QueueEventEmitter(() => summary);
+        const sink = sinon.stub();
         emitter.subscribe(sink);
-        emitter.added(makeItem({ id: 'a' }));
-        expect(() => emitter.flushNow()).to.not.throw();
-        emitter.added(makeItem({ id: 'b' }));
+        emitter.removed('a');
+        emitter.updated('a', { title: 'too late' });
         emitter.flushNow();
-        expect(sink.callCount).to.equal(2);
-        const secondDelta = sink.secondCall.args[0];
-        expect(secondDelta.added).to.have.lengthOf(1);
-        expect(secondDelta.added[0].id).to.equal('b');
+        expect(sink.callCount).to.equal(1);
+        const delta = sink.firstCall.args[0];
+        expect(delta.removed).to.deep.equal(['a']);
+        expect(delta.updated ?? []).to.be.empty;
+    });
+
+    it('a throwing subscriber does not block sibling subscribers in the same tick', () => {
+        const emitter = new QueueEventEmitter(() => summary);
+        const sandbox = sinon.createSandbox();
+        sandbox.stub(console, 'error');  // silence expected log
+        try {
+            const bad = sinon.stub().throws(new Error('boom'));
+            const good = sinon.stub();
+            emitter.subscribe(bad);
+            emitter.subscribe(good);
+            emitter.added(makeItem({ id: 'a' }));
+            emitter.flushNow();
+            expect(bad.callCount).to.equal(1);
+            expect(good.callCount).to.equal(1);
+            expect(good.firstCall.args[0].added).to.have.lengthOf(1);
+        } finally {
+            sandbox.restore();
+        }
     });
 });
