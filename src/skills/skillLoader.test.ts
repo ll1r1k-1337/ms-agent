@@ -138,4 +138,20 @@ describe('buildFixPrompt', () => {
 
         expect(prompt).to.not.include('**Kernel**');
     });
+
+    it('should omit sanitizer-specific fields when they are not provided', () => {
+        const prompt = buildFixPrompt({
+            issueType: 'MSSANITIZER_ISSUE',
+            severity: 'Error',
+            fileName: '/workspace/external.cpp',
+            lineNumber: 7,
+            message: 'caller detected a sanitizer issue',
+        });
+
+        expect(prompt).to.include('**Type**: MSSANITIZER_ISSUE');
+        expect(prompt).to.include('**Message**: caller detected a sanitizer issue');
+        expect(prompt).to.not.include('**Address**');
+        expect(prompt).to.not.include('**Size**');
+        expect(prompt).to.not.include('**Kernel**');
+    });
 });

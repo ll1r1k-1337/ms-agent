@@ -6,6 +6,8 @@ import {
     extractToolResult,
     isCompletionEvent,
     isToolCallContinuationBoundary,
+    extractPermissionRequest,
+    PermissionRequestInfo,
     OpenCodeEvent,
 } from './opencodeEventAdapter';
 import {
@@ -17,6 +19,7 @@ import {
     OpenCodeServerManagerConfig,
     TransportLogger,
 } from './opencodeServerManager';
+import { logRawEvent, RawEventDisposition } from '../vscode/rawEventChannel';
 
 export interface OpenCodeTurnRunnerConfig extends OpenCodeServerManagerConfig {
     model?: string;
@@ -63,6 +66,24 @@ function classifyToolKind(name: string): ToolKind {
         return 'read';
     }
     return 'other';
+}
+
+// Paths that look like credential / secret stores. A permission request for
+// one of these is rejected even under auto-approve, so the repair agent can
+// never pull API keys or private keys into the model's context.
+const SECRET_PATH_RE =
+    /(^|\/)\.ssh\/|(^|\/)\.aws\/|(^|\/)\.gnupg\/|auth\.json|\.netrc|id_rsa\b|id_ed25519\b|credentials|(^|\/)\.env(\.|\/|$)/i;
+
+/**
+ * Decide how to answer a `permission.asked` request. The repair agent often
+ * needs to read reference material outside the project directory (CANN SDK
+ * headers, example kernels); without an answer those reads stall until the
+ * hard timeout. Approve `once` (no persisted rule) — except when the target
+ * path looks like a credential store, which is rejected.
+ */
+function decidePermission(request: PermissionRequestInfo): 'once' | 'reject' {
+    const haystack = `${request.filepath} ${request.patterns.join(' ')}`;
+    return SECRET_PATH_RE.test(haystack) ? 'reject' : 'once';
 }
 
 function getConfiguredModel(
@@ -115,6 +136,7 @@ export class OpenCodeTurnRunner {
     private seenEditToolResult = false;
     private seenFileChangeSignal = false;
     private readonly toolKindsById = new Map<string, ToolKind>();
+    private readonly respondedPermissionIds = new Set<string>();
 
     constructor(
         config: OpenCodeTurnRunnerConfig,
@@ -269,10 +291,15 @@ export class OpenCodeTurnRunner {
     }
 
     private handleEvent(event: unknown): void {
+        this.recordRawEvent(event);
         if (!this.sessionId) {
             this.pendingSessionEvents.push(event);
             return;
         }
+        // Answer permission prompts before the session-scope filter, so that
+        // `task` subagent reads (which run in child sessions) are unblocked
+        // too — the reply targets the request's own sessionID.
+        this.maybeAutoRespondToPermission(event);
         if (!this.shouldEmitEventForSession(event)) {
             return;
         }
@@ -418,6 +445,64 @@ export class OpenCodeTurnRunner {
             return false;
         }
         return isCompletionEvent(event as OpenCodeEvent);
+    }
+
+    /**
+     * Mirror every event pulled off the SSE stream to the raw-events channel,
+     * verbatim, before the session-scoping filter runs. Runners share one
+     * OpenCode server, so each `/event` subscription sees every session's
+     * events plus server-wide frames like `server.heartbeat`; the disposition
+     * tag records what this runner did with each one. Pure observability — it
+     * must never throw and never influence protocol decisions.
+     */
+    private recordRawEvent(event: unknown): void {
+        try {
+            let disposition: RawEventDisposition;
+            if (!this.sessionId) {
+                disposition = 'buffered';
+            } else if (this.shouldEmitEventForSession(event)) {
+                disposition = 'emit';
+            } else {
+                disposition = 'skip';
+            }
+            logRawEvent(event, { runnerSessionId: this.sessionId, disposition });
+        } catch {
+            // Observability must never break a repair.
+        }
+    }
+
+    /**
+     * Auto-answer OpenCode `permission.asked` events. A gated tool call
+     * (commonly a `read` outside the project dir) stalls until the hard
+     * timeout if nobody replies — msAgent runs the server non-interactively,
+     * so there is no user to click "allow". We answer on the user's behalf:
+     * approve `once`, except for credential-looking paths (see
+     * decidePermission). Fire-and-forget — a failed reply is logged, never
+     * fatal, and never influences protocol/terminal state.
+     */
+    private maybeAutoRespondToPermission(event: unknown): void {
+        const request = extractPermissionRequest(event);
+        if (!request || !this.sdkClient) {
+            return;
+        }
+        if (this.respondedPermissionIds.has(request.permissionId)) {
+            return;
+        }
+        this.respondedPermissionIds.add(request.permissionId);
+        const decision = decidePermission(request);
+        this.logger?.(
+            `[OpenCodeTurnRunner] permission.asked id=${request.permissionId}`
+            + ` session=${request.sessionId} permission=${request.permission || 'unknown'}`
+            + ` path=${request.filepath || request.patterns[0] || 'unknown'} -> ${decision}`,
+        );
+        void this.sdkClient
+            .respondToPermission(request.sessionId, request.permissionId, decision)
+            .catch((error) => {
+                this.logger?.(
+                    `[OpenCodeTurnRunner] permission respond failed id=${request.permissionId}: `
+                    + (error instanceof Error ? error.message : String(error)),
+                );
+            });
     }
 
     private emitEvent(event: unknown): void {

@@ -1,0 +1,84 @@
+{
+  "description": "Regression for the provider rate-limit hang (observed 2026-05-20 via the OpenCode Raw Events channel). The model provider rate-limits the turn: OpenCode does NOT emit a terminal assistant message.updated and does NOT close the stream — it emits session.status with status.type=retry (a rate-limit message plus a future `next` epoch-ms retry time), then only server.heartbeat keep-alives. With no terminal event and no edit the run would otherwise hang until its hard timeout. The session MUST fail fast on the retry status, preserve the original file, and report an actionable retry/rate-limit failure. Heartbeats after the retry must be harmless no-ops.",
+  "steps": [
+    {
+      "kind": "event",
+      "event": {
+        "type": "message.updated",
+        "properties": {
+          "sessionID": "ses_rate_limit",
+          "info": {
+            "id": "msg_user_rl",
+            "role": "user",
+            "sessionID": "ses_rate_limit",
+            "time": {
+              "created": 1000
+            }
+          }
+        }
+      }
+    },
+    {
+      "kind": "event",
+      "event": {
+        "type": "message.updated",
+        "properties": {
+          "sessionID": "ses_rate_limit",
+          "info": {
+            "id": "msg_asst_rl",
+            "role": "assistant",
+            "sessionID": "ses_rate_limit",
+            "time": {
+              "created": 1001
+            }
+          }
+        }
+      }
+    },
+    {
+      "kind": "event",
+      "event": {
+        "type": "session.status",
+        "properties": {
+          "sessionID": "ses_rate_limit",
+          "status": {
+            "type": "busy"
+          }
+        }
+      }
+    },
+    {
+      "kind": "event",
+      "event": {
+        "type": "session.status",
+        "properties": {
+          "sessionID": "ses_rate_limit",
+          "status": {
+            "type": "retry",
+            "attempt": 1,
+            "message": "Rate limit exceeded. Please try again later.",
+            "next": 1779321600837
+          }
+        }
+      }
+    },
+    {
+      "kind": "event",
+      "event": {
+        "type": "server.heartbeat",
+        "properties": {}
+      }
+    },
+    {
+      "kind": "event",
+      "event": {
+        "type": "server.heartbeat",
+        "properties": {}
+      }
+    },
+    {
+      "kind": "close",
+      "exitCode": 0
+    }
+  ]
+}

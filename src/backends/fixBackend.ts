@@ -1,5 +1,5 @@
-import { SanitizerDiagnostic } from '../parser/types';
 import { StreamChunk } from '../llm/types';
+import type { RepairIssue } from '../vscode/repairIssue';
 
 export interface FixCallbacks {
     onMessageChunk?: (chunk: StreamChunk, messageId: string) => void;
@@ -35,13 +35,13 @@ export interface FixBackend {
 
     /**
      * Execute a fix for the given diagnostic.
-     * @param diagnostic The sanitizer diagnostic to fix
+     * @param diagnostic The repair issue to fix
      * @param context Fix context (workspace root, extension context)
      * @param callbacks Optional callbacks for streaming UI updates
      * @returns Fix result
      */
     executeFix(
-        diagnostic: SanitizerDiagnostic,
+        diagnostic: RepairIssue,
         context: FixContext,
         callbacks?: FixCallbacks,
     ): Promise<FixResult>;

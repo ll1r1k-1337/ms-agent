@@ -11,24 +11,41 @@ export function loadSkill(skillName: string): string | null {
 }
 
 export function buildFixPrompt(diagnostic: {
-    errorType: string;
+    issueType?: string;
+    errorType?: string;
     severity: string;
     fileName: string;
     lineNumber: number;
-    address: string;
-    addressSpace: string;
-    byteSize: number;
+    message?: string;
+    address?: string;
+    addressSpace?: string;
+    byteSize?: number;
     kernelName?: string;
 }): string {
+    const type = diagnostic.issueType ?? diagnostic.errorType ?? 'UNKNOWN_ISSUE';
+    const details: string[] = [];
+    details.push(`- **Type**: ${type}`);
+    details.push(`- **Severity**: ${diagnostic.severity}`);
+    details.push(`- **File**: ${diagnostic.fileName}:${diagnostic.lineNumber}`);
+    if (diagnostic.message) {
+        details.push(`- **Message**: ${diagnostic.message}`);
+    }
+    if (diagnostic.address || diagnostic.addressSpace) {
+        const address = diagnostic.address ?? 'unknown address';
+        const addressSpace = diagnostic.addressSpace ?? 'unknown address space';
+        details.push(`- **Address**: ${address} on ${addressSpace}`);
+    }
+    if (diagnostic.byteSize !== undefined) {
+        details.push(`- **Size**: ${diagnostic.byteSize} bytes`);
+    }
+    if (diagnostic.kernelName) {
+        details.push(`- **Kernel**: ${diagnostic.kernelName}`);
+    }
+
     return `You are an expert at fixing Ascend NPU operator memory errors detected by ms-agent.
 
 ## Error to Fix
-- **Type**: ${diagnostic.errorType}
-- **Severity**: ${diagnostic.severity}
-- **File**: ${diagnostic.fileName}:${diagnostic.lineNumber}
-- **Address**: ${diagnostic.address} on ${diagnostic.addressSpace}
-- **Size**: ${diagnostic.byteSize} bytes
-${diagnostic.kernelName ? `- **Kernel**: ${diagnostic.kernelName}` : ''}
+${details.join('\n')}
 
 ## Instructions
 1. Read the file with OpenCode's native file/context tools to understand the surrounding code context

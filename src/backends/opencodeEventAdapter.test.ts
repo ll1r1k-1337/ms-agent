@@ -12,11 +12,14 @@ import {
     isToolCallPart,
     isToolResultPart,
     isToolUsePart,
+    isReasoningPart,
     extractToolCall,
     extractToolResult,
+    extractToolPartParamsUpdate,
     parseEventLine,
     extractTextDelta,
     extractErrorMessage,
+    extractRetryStatus,
     extractAssistantFinishReason,
     isCompletionEvent,
     isToolCallContinuationBoundary,
@@ -24,6 +27,7 @@ import {
     extractMessageRole,
     extractMessageId,
     extractPartMessageId,
+    extractPermissionRequest,
 } from './opencodeEventAdapter';
 
 describe('opencodeEventAdapter', () => {
@@ -152,6 +156,102 @@ describe('opencodeEventAdapter', () => {
         it('should return null for non-tool event', () => {
             const event: OpenCodeEvent = { type: 'text', text: 'hello' };
             expect(extractToolCall(event)).to.be.null;
+        });
+    });
+
+    describe('extractToolPartParamsUpdate', () => {
+        it('returns the parsed input for a pending tool part with populated input', () => {
+            const event: OpenCodeEvent = {
+                type: 'message.part.updated',
+                properties: {
+                    part: {
+                        type: 'tool',
+                        tool: 'grep',
+                        callID: 'tc_grep_1',
+                        state: { type: 'pending', input: '{"pattern":"foo"}' },
+                    },
+                },
+            };
+            expect(extractToolPartParamsUpdate(event)).to.deep.equal({
+                toolCallId: 'tc_grep_1',
+                params: { pattern: 'foo' },
+            });
+        });
+
+        it('returns the parsed input for a running tool part — the typical late-arrival shape', () => {
+            const event: OpenCodeEvent = {
+                type: 'message.part.updated',
+                properties: {
+                    part: {
+                        type: 'tool',
+                        tool: 'grep',
+                        callID: 'tc_grep_2',
+                        state: { type: 'running', input: '{"pattern":"bar","path":"src"}' },
+                    },
+                },
+            };
+            expect(extractToolPartParamsUpdate(event)).to.deep.equal({
+                toolCallId: 'tc_grep_2',
+                params: { pattern: 'bar', path: 'src' },
+            });
+        });
+
+        it('returns the parsed input for a completed tool part', () => {
+            const event: OpenCodeEvent = {
+                type: 'message.part.updated',
+                properties: {
+                    part: {
+                        type: 'tool',
+                        tool: 'edit',
+                        callID: 'tc_edit_1',
+                        state: { type: 'completed', input: '{"path":"a.cpp"}' },
+                    },
+                },
+            };
+            expect(extractToolPartParamsUpdate(event)).to.deep.equal({
+                toolCallId: 'tc_edit_1',
+                params: { path: 'a.cpp' },
+            });
+        });
+
+        it('returns empty params (not null) when input is missing or empty', () => {
+            const event: OpenCodeEvent = {
+                type: 'message.part.updated',
+                properties: {
+                    part: {
+                        type: 'tool',
+                        tool: 'grep',
+                        callID: 'tc_grep_3',
+                        state: { type: 'pending' },
+                    },
+                },
+            };
+            const result = extractToolPartParamsUpdate(event);
+            expect(result).to.not.be.null;
+            expect(result?.toolCallId).to.equal('tc_grep_3');
+            expect(result?.params).to.deep.equal({});
+        });
+
+        it('returns null when the event has no callID', () => {
+            const event: OpenCodeEvent = {
+                type: 'message.part.updated',
+                properties: {
+                    part: {
+                        type: 'tool',
+                        tool: 'grep',
+                        state: { type: 'running', input: '{"pattern":"foo"}' },
+                    },
+                },
+            };
+            expect(extractToolPartParamsUpdate(event)).to.be.null;
+        });
+
+        it('returns null for non-tool parts', () => {
+            const event: OpenCodeEvent = {
+                type: 'message.part.updated',
+                properties: { part: { type: 'text', text: 'hello' } },
+            };
+            expect(extractToolPartParamsUpdate(event)).to.be.null;
         });
     });
 
@@ -361,6 +461,126 @@ describe('opencodeEventAdapter', () => {
         it('should return null when no error', () => {
             const event: OpenCodeEvent = { type: 'text' };
             expect(extractErrorMessage(event)).to.be.null;
+        });
+    });
+
+    describe('extractRetryStatus', () => {
+        it('returns the message, retry time, and attempt for a session.status retry', () => {
+            const event: OpenCodeEvent = {
+                type: 'session.status',
+                properties: {
+                    sessionID: 'ses_1',
+                    status: {
+                        type: 'retry',
+                        attempt: 1,
+                        message: 'Rate limit exceeded. Please try again later.',
+                        next: 1779321600837,
+                    },
+                },
+            };
+            expect(extractRetryStatus(event)).to.deep.equal({
+                message: 'Rate limit exceeded. Please try again later.',
+                retryAtMs: 1779321600837,
+                attempt: 1,
+            });
+        });
+
+        it('omits retryAtMs and attempt when the retry status does not carry them', () => {
+            const event: OpenCodeEvent = {
+                type: 'session.status',
+                properties: { status: { type: 'retry', message: 'Slow down.' } },
+            };
+            const result = extractRetryStatus(event);
+            expect(result).to.not.be.null;
+            expect(result?.message).to.equal('Slow down.');
+            expect(result?.retryAtMs).to.be.undefined;
+            expect(result?.attempt).to.be.undefined;
+        });
+
+        it('falls back to a default message when the retry status carries none', () => {
+            const event: OpenCodeEvent = {
+                type: 'session.status',
+                properties: { status: { type: 'retry', next: 123 } },
+            };
+            const result = extractRetryStatus(event);
+            expect(result?.message).to.equal('OpenCode reported a retry status with no message');
+            expect(result?.retryAtMs).to.equal(123);
+        });
+
+        it('returns null for non-retry session.status events', () => {
+            expect(extractRetryStatus({
+                type: 'session.status',
+                properties: { status: { type: 'busy' } },
+            })).to.be.null;
+            expect(extractRetryStatus({
+                type: 'session.status',
+                properties: { status: { type: 'idle' } },
+            })).to.be.null;
+        });
+
+        it('returns null for events that are not a session.status retry', () => {
+            expect(extractRetryStatus({ type: 'server.heartbeat', properties: {} })).to.be.null;
+            expect(extractRetryStatus({
+                type: 'message.updated',
+                properties: { info: { role: 'assistant' } },
+            })).to.be.null;
+            expect(extractRetryStatus({ type: 'session.status' })).to.be.null;
+            expect(extractRetryStatus({ type: 'session.status', properties: {} })).to.be.null;
+        });
+    });
+
+    describe('extractPermissionRequest', () => {
+        it('extracts a permission.asked request', () => {
+            const info = extractPermissionRequest({
+                type: 'permission.asked',
+                properties: {
+                    id: 'per_abc',
+                    sessionID: 'ses_xyz',
+                    permission: 'external_directory',
+                    patterns: ['/home/developer/Ascend/*'],
+                    metadata: { filepath: '/home/developer/Ascend/cann/include/kernel_operator.h' },
+                    always: ['/home/developer/Ascend/*'],
+                },
+            });
+            expect(info).to.not.equal(null);
+            expect(info!.permissionId).to.equal('per_abc');
+            expect(info!.sessionId).to.equal('ses_xyz');
+            expect(info!.permission).to.equal('external_directory');
+            expect(info!.patterns).to.deep.equal(['/home/developer/Ascend/*']);
+            expect(info!.filepath).to.equal('/home/developer/Ascend/cann/include/kernel_operator.h');
+        });
+
+        it('returns null for non-permission events and malformed payloads', () => {
+            expect(extractPermissionRequest({ type: 'session.idle', properties: {} })).to.equal(null);
+            expect(extractPermissionRequest({ type: 'permission.asked', properties: { id: 'per_x' } })).to.equal(null);
+            expect(extractPermissionRequest({ type: 'permission.asked' })).to.equal(null);
+            expect(extractPermissionRequest(null)).to.equal(null);
+        });
+    });
+
+    describe('isReasoningPart', () => {
+        it('detects a ReasoningPart on a message.part.updated event', () => {
+            expect(isReasoningPart({
+                type: 'message.part.updated',
+                properties: { part: { type: 'reasoning', text: 'thinking through the bounds' } },
+            })).to.be.true;
+        });
+
+        it('returns false for text and tool parts', () => {
+            expect(isReasoningPart({
+                type: 'message.part.updated',
+                properties: { part: { type: 'text', text: 'the answer' } },
+            })).to.be.false;
+            expect(isReasoningPart({
+                type: 'message.part.updated',
+                properties: { part: { type: 'tool', state: { type: 'pending' } } },
+            })).to.be.false;
+        });
+
+        it('returns false when the event carries no part', () => {
+            expect(isReasoningPart({ type: 'session.idle', properties: {} })).to.be.false;
+            expect(isReasoningPart({})).to.be.false;
+            expect(isReasoningPart(null)).to.be.false;
         });
     });
 

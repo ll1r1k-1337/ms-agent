@@ -702,6 +702,54 @@ describe('OpenCodeSession', () => {
         expect(streamed.filter((delta) => delta.includes(quotaMessage))).to.have.length(1);
     });
 
+    it('fails fast when OpenCode reports a session.status retry (rate limit)', async () => {
+        const events: Array<{ type: string; payload: unknown }> = [];
+        session = new OpenCodeSession(transport, {
+            onEvent: (type, payload) => events.push({ type, payload }),
+        });
+
+        const runPromise = session.run(baseOptions());
+        transport.emitEvent({
+            type: 'session.status',
+            properties: {
+                sessionID: 'ses_rl',
+                status: {
+                    type: 'retry',
+                    attempt: 1,
+                    message: 'Rate limit exceeded. Please try again later.',
+                    next: 1779321600837,
+                },
+            },
+        });
+        const result = await runPromise;
+
+        expect(result.success).to.equal(false);
+        expect(result.outcome).to.equal('failed');
+        expect(result.fileChanged).to.equal(false);
+        expect(result.finalMessage).to.include('retry/rate-limit status');
+        expect(result.finalMessage).to.include('Rate limit exceeded. Please try again later.');
+        expect(result.finalMessage).to.include('2026-05-21T00:00:00.837Z');
+        expect(transport.cancelled).to.equal(true);
+        expect(fs.readFileSync(testFilePath, 'utf-8')).to.equal('int main() { return 0; }');
+        const sessionEnd = events.find((entry) => entry.type === 'session_end');
+        expect(sessionEnd, 'expected a session_end event').to.not.equal(undefined);
+        expect((sessionEnd!.payload as any).outcome).to.equal('failed');
+    });
+
+    it('ignores a non-retry session.status (busy) and does not fail the run', async () => {
+        const runPromise = session.run(baseOptions());
+        transport.emitEvent({
+            type: 'session.status',
+            properties: { sessionID: 'ses_busy', status: { type: 'busy' } },
+        });
+        transport.emitEvent({ type: 'text', part: { text: 'NO_FIX_NEEDED: already bounded.' } });
+        transport.emitEvent({ type: 'done' });
+        const result = await runPromise;
+
+        expect(result.outcome).to.equal('no_change');
+        expect(result.finalMessage).to.equal('already bounded.');
+    });
+
     it('maps NO_FIX_NEEDED to a no_change outcome', async () => {
         const runPromise = session.run(baseOptions());
         transport.emitEvent({ type: 'text', part: { text: 'NO_FIX_NEEDED: copyLen is already used on the bounded write path.' } });
@@ -736,6 +784,50 @@ describe('OpenCodeSession', () => {
         expect(result.outcome).to.equal('failed');
         expect(result.finalMessage).to.include('did not provide a parseable reason');
         expect(result.fileChanged).to.equal(false);
+    });
+
+    it('logs model reasoning and keeps it out of the parsed answer', async () => {
+        const runPromise = session.run(baseOptions());
+        transport.emitEvent({
+            type: 'message.updated',
+            properties: { info: { role: 'assistant', id: 'msg_r' } },
+        });
+        // A ReasoningPart — the model's internal "thinking". It must be logged
+        // but must NOT feed parsedText; otherwise its NO_FIX_NEEDED line below
+        // would be picked up ahead of the real answer.
+        transport.emitEvent({
+            type: 'message.part.updated',
+            properties: {
+                part: {
+                    type: 'reasoning',
+                    messageID: 'msg_r',
+                    text: 'Considering the buffer bounds.\nNO_FIX_NEEDED: reasoning says skip.\n',
+                },
+            },
+        });
+        transport.emitEvent({
+            type: 'message.part.updated',
+            properties: {
+                part: {
+                    type: 'text',
+                    messageID: 'msg_r',
+                    text: 'NO_FIX_NEEDED: the write is already bounded.',
+                },
+            },
+        });
+        transport.emitEvent({
+            type: 'message.updated',
+            properties: { info: { role: 'assistant', id: 'msg_r', time: { completed: 1 } } },
+        });
+        const result = await runPromise;
+
+        expect(result.outcome).to.equal('no_change');
+        // The answer came from the TextPart, not the reasoning monologue.
+        expect(result.finalMessage).to.equal('the write is already bounded.');
+        // The reasoning was surfaced in the session log.
+        expect(outputLines.some((line) =>
+            line.includes('model_reasoning') && line.includes('Considering the buffer bounds'),
+        )).to.equal(true);
     });
 });
 

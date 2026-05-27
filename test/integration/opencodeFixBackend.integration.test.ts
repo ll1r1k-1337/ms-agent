@@ -13,6 +13,7 @@ import {
     Severity,
 } from '../../src/parser/types';
 import { FixCallbacks } from '../../src/backends/fixBackend';
+import { repairIssueFromSanitizerDiagnostic } from '../../src/vscode/repairIssue';
 
 interface IntegrationSetup {
     tempDir: string;
@@ -126,7 +127,7 @@ async function runFixtureSequence(
     const diagnostic = makeDiagnostic(workspace.filePath, options?.line || 2);
 
     const result = await backend.executeFix(
-        diagnostic,
+        repairIssueFromSanitizerDiagnostic(diagnostic),
         { workspaceRoot: workspace.tempDir },
         callbacks,
     );
@@ -403,8 +404,8 @@ describe('OpenCodeFixBackend (integration via FixtureTransport)', () => {
                 expect(run.diskContent).to.include('DataCopy(zGlobal[progress * 3], zLocal, TILE_LENGTH);');
                 expect(run.diskContent).to.include('// Line 50: BUG - reading uninitialized yLocal');
 
-                const originalLines = original.split('\n');
-                const newLines = run.diskContent.split('\n');
+                const originalLines = original.replace(/\r\n/g, '\n').split('\n');
+                const newLines = run.diskContent.replace(/\r\n/g, '\n').split('\n');
                 const changedLines = originalLines
                     .map((line, index) => ({ index, oldLine: line, newLine: newLines[index] }))
                     .filter((entry) => entry.oldLine !== entry.newLine);
@@ -528,6 +529,27 @@ describe('OpenCodeFixBackend (integration via FixtureTransport)', () => {
                 expect(run.result.finalMessage).to.include('Problem:');
                 expect(run.result.finalMessage).to.include('Fix:');
                 expect(run.result.finalMessage).to.include('Why it works:');
+            } finally {
+                run.workspace.cleanup();
+            }
+        });
+    });
+
+    describe('rate-limit-retry (regression 2026-05-20)', () => {
+        it('fails fast on a session.status retry instead of hanging until timeout', async () => {
+            const original = 'int main() { return 0; }\n';
+            const run = await runFixture('rate-limit-retry', original);
+            try {
+                expect(run.result.success).to.equal(false);
+                expect(run.result.outcome).to.equal('failed');
+                expect(run.result.fileChanged).to.equal(false);
+                expect(run.result.finalMessage).to.include('retry/rate-limit status');
+                expect(run.result.finalMessage.toLowerCase()).to.include('rate limit exceeded');
+                expect(run.diskContent).to.equal(original);
+                expect(run.callbacks.diffs.length).to.equal(0);
+                // A rate-limited run must not be retried — a second attempt
+                // would just hit the same limit.
+                expect(run.transports).to.have.length(1);
             } finally {
                 run.workspace.cleanup();
             }

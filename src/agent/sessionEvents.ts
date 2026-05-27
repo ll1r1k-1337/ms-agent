@@ -1,6 +1,6 @@
 /**
- * Backend-side fix session lifecycle types. Distinct from src/webview/sessionState.ts,
- * which models webview UI state (phase / timeline / diff cards).
+ * Backend-side fix session lifecycle types — distinct from the webview's
+ * per-task UI runtime (see media/fixPanel.js).
  */
 export type SessionLifecycleState =
     | 'idle'

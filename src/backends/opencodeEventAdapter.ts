@@ -205,6 +205,61 @@ export function isToolUsePart(part: unknown): part is Record<string, unknown> {
     return part.type === 'tool';
 }
 
+/**
+ * True when `event` carries a ReasoningPart — the model's internal
+ * "thinking" stream. Parts are discriminated by `part.type` (opencode-protocol
+ * Part Type Catalog); a ReasoningPart has `part.type === 'reasoning'`. Accepts
+ * a full SSE event and resolves the nested part internally, mirroring
+ * `extractTextDelta`. Reasoning is distinct from the TextPart answer and must
+ * not be parsed as the model's final output.
+ */
+export function isReasoningPart(event: unknown): boolean {
+    const part = resolvePart(event);
+    return isRecordLike(part) && part.type === 'reasoning';
+}
+
+/**
+ * Inspect any event for a tool-part update and return the latest known
+ * `(callID, params)` pair, regardless of the part's `state.type`.
+ *
+ * Why this exists: `extractToolCall` only fires once per tool, on the
+ * `pending` boundary. But OpenCode streams tool input incrementally — the
+ * `pending` event often carries an empty `state.input`, and the actual
+ * arguments arrive in subsequent `message.part.updated` events that flip
+ * `state.type` to `running` and then `completed`. Anything that wants to
+ * display the *resolved* arguments (e.g. an activity log line that says
+ * "grep returned" with the pattern shown) needs to peek at every update,
+ * not just the start. Returns null when the event is not a tool part update
+ * or no callID can be extracted.
+ *
+ * Crucially this does NOT advance protocol state — it's pure observation.
+ * Returning a value here never implies "tool started" or "tool completed";
+ * those signals still come from `extractToolCall` and `extractToolResult`.
+ */
+export function extractToolPartParamsUpdate(
+    event: unknown,
+): { toolCallId: string; params: Record<string, unknown> } | null {
+    const part = resolvePart(event);
+    if (!isToolUsePart(part)) {
+        return null;
+    }
+    const toolCallId = resolveToolCallId(part) || (typeof part.callID === 'string' ? part.callID : undefined);
+    if (!toolCallId) {
+        return null;
+    }
+    let params: Record<string, unknown>;
+    if (isRecordLike(part.state)) {
+        params = safeParseParams(part.state.input);
+        if (Object.keys(params).length === 0) {
+            // Some servers attach the parsed input alongside the state.
+            params = safeParseParams(part.input || part.args || part.arguments);
+        }
+    } else {
+        params = safeParseParams(part.input || part.args || part.arguments);
+    }
+    return { toolCallId, params };
+}
+
 export function extractToolCall(event: unknown): ToolCallInfo | null {
     if (!isRecordLike(event)) { return null; }
 
@@ -616,4 +671,104 @@ export function isToolCallContinuationBoundary(event: OpenCodeEvent): boolean {
  */
 export function isSoftCloseEvent(event: OpenCodeEvent): boolean {
     return SOFT_CLOSE_TYPES.has(event.type ?? '');
+}
+
+export interface RetryStatusInfo {
+    /** Provider message, e.g. "Rate limit exceeded. Please try again later." */
+    message: string;
+    /** Epoch-ms the provider says the model may be retried, when present. */
+    retryAtMs?: number;
+    /** Retry attempt counter, when present. */
+    attempt?: number;
+}
+
+/**
+ * Detect OpenCode's `session.status` *retry* signal.
+ *
+ * When a provider rejects a turn — most commonly a rate-limit / daily-quota
+ * exhaustion on free models — OpenCode does NOT close the stream and does NOT
+ * emit a terminal assistant `message.updated`. It emits a `session.status`
+ * event whose `properties.status.type === "retry"` (carrying the provider
+ * message and a `next` epoch-ms retry time), then stays quiet apart from
+ * `server.heartbeat` keep-alives. With no terminal event and no edit, the
+ * session would otherwise sit idle until its hard timeout.
+ *
+ * This is NOT a terminal/completion signal — per the `opencode-protocol`
+ * skill (R2) the only success terminal is an assistant `message.updated`
+ * with `info.time.completed`, and `session.status` is explicitly listed as
+ * non-terminal. Callers use this purely to FAIL the run fast instead of
+ * hanging. Returns null for every event that is not a `session.status` with
+ * `status.type === "retry"` (including `busy`/`idle` statuses and unknown
+ * frames like `server.heartbeat`), so unknown shapes are tolerated.
+ */
+export function extractRetryStatus(event: OpenCodeEvent): RetryStatusInfo | null {
+    if (event.type !== 'session.status' || !isRecordLike(event.properties)) {
+        return null;
+    }
+    const status = event.properties.status;
+    if (!isRecordLike(status) || status.type !== 'retry') {
+        return null;
+    }
+    const rawMessage = typeof status.message === 'string' ? status.message.trim() : '';
+    const info: RetryStatusInfo = {
+        message: rawMessage || 'OpenCode reported a retry status with no message',
+    };
+    if (typeof status.next === 'number' && Number.isFinite(status.next)) {
+        info.retryAtMs = status.next;
+    }
+    if (typeof status.attempt === 'number' && Number.isFinite(status.attempt)) {
+        info.attempt = status.attempt;
+    }
+    return info;
+}
+
+export interface PermissionRequestInfo {
+    /** Permission id — the `{permissionID}` for the respond endpoint. */
+    permissionId: string;
+    /** Session the request belongs to (may be a `task` subagent session). */
+    sessionId: string;
+    /** Permission kind, e.g. `external_directory`. */
+    permission: string;
+    /** Path glob patterns the request covers. */
+    patterns: string[];
+    /** Best-effort target file/dir path from the request `metadata`. */
+    filepath: string;
+}
+
+/**
+ * Detect OpenCode's `permission.asked` event — emitted when a tool action
+ * (commonly a `read` of a file outside the project directory) needs the
+ * client's approval. Wire shape is `{type:"permission.asked", properties:
+ * PermissionRequest}`, per `@opencode-ai/sdk` `EventPermissionAsked`. Until
+ * the client answers via `PUT /session/{id}/permissions/{permissionID}` the
+ * gated tool call stalls, so callers use this to auto-respond. Returns null
+ * for every other event.
+ */
+export function extractPermissionRequest(event: unknown): PermissionRequestInfo | null {
+    if (!isRecordLike(event) || event.type !== 'permission.asked') {
+        return null;
+    }
+    const props = event.properties;
+    if (!isRecordLike(props)) {
+        return null;
+    }
+    const permissionId = readStringField(props, 'id');
+    const sessionId = readStringField(props, 'sessionID', 'sessionId');
+    if (!permissionId || !sessionId) {
+        return null;
+    }
+    const patterns = Array.isArray(props.patterns)
+        ? props.patterns.filter((value): value is string => typeof value === 'string')
+        : [];
+    let filepath = '';
+    if (isRecordLike(props.metadata)) {
+        filepath = readStringField(props.metadata, 'filepath', 'filePath', 'parentDir', 'path') ?? '';
+    }
+    return {
+        permissionId,
+        sessionId,
+        permission: readStringField(props, 'permission') ?? '',
+        patterns,
+        filepath,
+    };
 }

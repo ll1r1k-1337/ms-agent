@@ -11,6 +11,7 @@ import * as opencodeSessionModule from './opencodeSession';
 import { OpenCodeFixBackend } from './openCodeFixBackend';
 import { FixContext } from './fixBackend';
 import { SanitizerDiagnostic, MemErrorType, Severity, AddressSpace, BlockType } from '../parser/types';
+import { repairIssueFromSanitizerDiagnostic, RepairIssue } from '../vscode/repairIssue';
 
 describe('OpenCodeFixBackend', () => {
     let backend: OpenCodeFixBackend;
@@ -27,7 +28,7 @@ describe('OpenCodeFixBackend', () => {
     const mockSessionRun = sinon.stub();
     const mockSessionCancel = sinon.stub();
 
-    const baseDiagnostic: SanitizerDiagnostic = {
+    const baseSanitizerDiagnostic: SanitizerDiagnostic = {
         errorType: MemErrorType.OUT_OF_BOUNDS,
         severity: Severity.ERROR,
         fileName: 'test.cpp',
@@ -41,6 +42,7 @@ describe('OpenCodeFixBackend', () => {
         kernelName: 'TestKernel',
         rawLines: ['ERROR: OUT_OF_BOUNDS'],
     };
+    const baseDiagnostic: RepairIssue = repairIssueFromSanitizerDiagnostic(baseSanitizerDiagnostic);
 
     const mockConfig = {
         modelName: 'volcengine-plan/doubao-seed-2.0-code',
@@ -176,6 +178,39 @@ describe('OpenCodeFixBackend', () => {
         expect(prompt).to.include('Your first assistant response must be a native tool action');
         expect(prompt).to.include('Emit process narration such as "I\'ll inspect the file"');
         expect(prompt).to.include('>    2 | line 2');
+    });
+
+    it('builds a prompt for caller-owned issues without optional sanitizer metadata', async () => {
+        const testFilePath = path.join(tempDir, 'test.cpp');
+        fs.writeFileSync(testFilePath, 'void kernel() {}\n', 'utf-8');
+        mockSessionRun.resolves(mockSessionResult);
+
+        await backend.executeFix(
+            {
+                issueType: 'MSSANITIZER_ISSUE',
+                errorType: 'MSSANITIZER_ISSUE',
+                severity: Severity.ERROR,
+                fileName: 'test.cpp',
+                lineNumber: 1,
+                range: {
+                    startLine: 1,
+                    startCharacter: 0,
+                    endLine: 1,
+                    endCharacter: 6,
+                },
+                message: 'external plugin detected a sanitizer issue',
+                rawLines: ['external plugin detected a sanitizer issue'],
+            },
+            { workspaceRoot: tempDir },
+        );
+
+        const prompt = mockSessionRun.firstCall.args[0].prompt as string;
+        expect(prompt).to.include('**Type**: MSSANITIZER_ISSUE');
+        expect(prompt).to.include('**Message**: external plugin detected a sanitizer issue');
+        expect(prompt).to.include('Error target: line 1, columns 1-7.');
+        expect(prompt).to.include('Diagnostic message: external plugin detected a sanitizer issue');
+        expect(prompt).to.not.include('**Address**');
+        expect(prompt).to.not.include('**Size**');
     });
 
     it('adds a targeted DataCopy hint for OUT_OF_BOUNDS diagnostics', async () => {

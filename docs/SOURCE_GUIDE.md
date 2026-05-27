@@ -31,6 +31,7 @@ src/
 ├── vscode/
 │   ├── diagnosticsManager.ts     # 诊断发布与索引管理
 │   ├── codeActionProvider.ts     # Quick Fix 入口
+│   ├── repairIssue.ts            # 外部修复 payload 归一化
 │   └── fixService.ts             # 队列、WebView、修复编排
 └── webview/
     ├── messages.ts               # WebView 消息协议
@@ -87,6 +88,18 @@ fixService
   -> WebView event stream + final diff
 ```
 
+### 4. 外部诊断 payload 到修复
+
+```text
+caller plugin
+  -> executeCommand('msagent.fixIssue', payload)
+  -> repairIssue.normalizeFixIssueRequest()
+  -> fixService direct queue item
+  -> same OpenCode repair chain
+```
+
+`fixIssue` 不会调用 `DiagnosticsManager`，也不会发布 msAgent Problems。调用方继续自己负责诊断、UI、issue identity 和清理。
+
 ## 关键实现说明
 
 ### diagnosticsManager.ts
@@ -105,6 +118,7 @@ fixService
 ### fixService.ts
 
 - 管理修复队列、暂停、恢复、取消
+- `fixIssue` 会把外部 payload 归一化为 `RepairIssue` 并直接入队，不写入 msAgent 诊断集合
 - 统一向 Fix Details 面板发送：
   - `backend_info`
   - `text_stream`
@@ -194,6 +208,7 @@ fixService
 
 - `msagent.parseLog`
 - `msagent.fixProblem`
+- `msagent.fixIssue`
 - `msagent.fixAll`
 - `msagent.clearDiagnostics`
 

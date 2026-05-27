@@ -16,6 +16,9 @@
     "onLanguage:cpp",
     "onCommand:msagent.parseLog",
     "onCommand:msagent.fixProblem",
+    "onCommand:msagent.fixIssue",
+    "onCommand:msagent.fixIssues",
+    "onCommand:msagent.cancelBatch",
     "onCommand:msagent.fixAll",
     "onCommand:msagent.selectModel",
     "onCommand:msagent.openSettings",
@@ -32,6 +35,18 @@
       {
         "command": "msagent.fixProblem",
         "title": "msAgent: Fix Problem by Index"
+      },
+      {
+        "command": "msagent.fixIssue",
+        "title": "msAgent: Fix Issue Payload"
+      },
+      {
+        "command": "msagent.fixIssues",
+        "title": "msAgent: Fix Issue Payload Batch"
+      },
+      {
+        "command": "msagent.cancelBatch",
+        "title": "msAgent: Cancel Fix Batch"
       },
       {
         "command": "msagent.getAiFixQueueStates",
@@ -82,6 +97,20 @@
           "type": "string",
           "default": "opencode",
           "description": "Path to the OpenCode executable used for `opencode serve`."
+        },
+        "msagent.fixesPerBatch": {
+          "type": "integer",
+          "default": 1,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "Number of AI fixes to run concurrently. When greater than 1, queued repair tasks (e.g. from msagent.fixIssues) are processed in parallel — up to this many at once. Set to 1 to keep the original one-at-a-time behavior."
+        },
+        "msagent.maxBatchSize": {
+          "type": "number",
+          "default": 500,
+          "minimum": 1,
+          "maximum": 5000,
+          "description": "Maximum number of payloads accepted by msagent.fixIssues in a single call. Excess payloads are rejected with status=invalid_payload and error=batch_size_limit_exceeded; the rest are processed normally."
         }
       }
     },
@@ -110,7 +139,7 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "lint": "eslint src --ext ts",
-    "test": "mocha --exclude 'test/integration/localOpencode.integration.test.ts'",
+    "test": "mocha --exclude '**/localOpencode.integration.test.ts'",
     "test:integration": "mocha --spec 'test/integration/**/*.test.ts'",
     "test:coverage": "c8 mocha --exclude 'test/integration/localOpencode.integration.test.ts'",
     "package": "npm run compile && npx vsce package --baseContentUrl https://gitcode.com/yangchenhua/ms-agent/raw/main/ --baseImagesUrl https://gitcode.com/yangchenhua/ms-agent/raw/main/"

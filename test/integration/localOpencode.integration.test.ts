@@ -16,6 +16,7 @@ import {
     Severity,
 } from '../../src/parser/types';
 import { FixCallbacks } from '../../src/backends/fixBackend';
+import { repairIssueFromSanitizerDiagnostic } from '../../src/vscode/repairIssue';
 
 interface LocalHarness {
     model: string;
@@ -144,7 +145,7 @@ async function runLocalFix(harness: LocalHarness) {
 
     try {
         const result = await backend.executeFix(
-            diagnostic,
+            repairIssueFromSanitizerDiagnostic(diagnostic),
             { workspaceRoot: workspace.tempDir },
             callbacks,
         );
@@ -160,7 +161,10 @@ describe('OpenCode local integration', function () {
 
     let harness: LocalHarness;
 
-    before(() => {
+    before(function () {
+        if (!process.env.MSAGENT_LOCAL_MODEL?.trim()) {
+            this.skip();
+        }
         harness = resolveHarness();
     });
 

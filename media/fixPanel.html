@@ -16,22 +16,11 @@
                         <span class="card-icon" aria-hidden="true">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
                         </span>
-                        <span class="card-title">Status</span>
+                        <span class="card-title">Info</span>
                     </div>
                     <span class="card-chevron" aria-hidden="true"></span>
-                    <span id="status-pill" class="status-pill is-waiting">
-                        <span class="pulse"></span>
-                        <span id="status-label">Idle</span>
-                    </span>
                 </div>
                 <div class="card-body">
-                    <div class="kv-row">
-                        <span class="kv-label">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
-                            Target
-                        </span>
-                        <span id="meta-target" class="kv-value" title="">-</span>
-                    </div>
                     <div class="kv-row">
                         <span class="kv-label">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/></svg>
@@ -53,13 +42,6 @@
                         </span>
                         <span id="meta-model" class="kv-value is-blue">-</span>
                     </div>
-                    <div class="kv-row">
-                        <span class="kv-label">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                            Session
-                        </span>
-                        <span id="meta-session" class="kv-value is-session" title="">-</span>
-                    </div>
                     <div id="elapsed-row" class="kv-row hidden">
                         <span class="kv-label">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 7 12 12 15 14"/></svg>
@@ -78,43 +60,65 @@
                         <div class="progress-fill"></div>
                     </div>
                 </div>
-                <div id="action-row" class="action-row hidden">
-                    <button id="stopBtn" class="action-btn" type="button">Pause</button>
-                    <button id="cancelBtn" class="action-btn is-danger" type="button">Cancel</button>
-                </div>
             </section>
 
-            <section id="files-card" class="card files-card hidden is-collapsible" data-card-id="files">
-                <div class="card-head" data-card-toggle="files" title="Double-click to collapse or expand">
+            <section id="tasks-card" class="card tasks-card hidden is-collapsible" data-card-id="tasks">
+                <div class="card-head" data-card-toggle="tasks" title="Double-click to collapse or expand">
                     <div class="card-head-left">
                         <span class="card-icon" aria-hidden="true">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 012 2v7"/><line x1="6" y1="9" x2="6" y2="21"/></svg>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
                         </span>
-                        <span class="card-title">Modified</span>
+                        <span class="card-title">Tasks</span>
                     </div>
                     <span class="card-chevron" aria-hidden="true"></span>
-                    <span id="files-meta" class="card-meta">0 files</span>
+                    <span id="tasks-meta" class="card-meta">0 in progress · 0 completed</span>
+                    <button id="tasks-pause-btn" class="action-btn tasks-pause-btn hidden" type="button">Pause</button>
                 </div>
-                <div id="files-list" class="files-list"></div>
-            </section>
-
-            <section id="explanation-card" class="card explanation-card hidden is-collapsible" data-card-id="explanation">
-                <div class="card-head" data-card-toggle="explanation" title="Double-click to collapse or expand">
-                    <div class="card-head-left">
-                        <span class="card-icon" aria-hidden="true">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
-                        </span>
-                        <span class="card-title">Explanation</span>
+                <div class="card-body tasks-body">
+                    <div id="tasks-running-group" class="tasks-group hidden">
+                        <div class="tasks-group-head">
+                            <span class="tasks-group-title">In progress</span>
+                            <span id="tasks-running-count" class="tasks-group-count">0</span>
+                        </div>
+                        <ul id="tasks-running-list" class="tasks-list"></ul>
                     </div>
-                    <span class="card-chevron" aria-hidden="true"></span>
-                    <span id="explanation-meta" class="card-meta">Streaming…</span>
+                    <div id="tasks-queued-group" class="tasks-group hidden">
+                        <div class="tasks-group-head">
+                            <span class="tasks-group-title">Queued</span>
+                            <span id="tasks-queued-count" class="tasks-group-count">0</span>
+                        </div>
+                        <ul id="tasks-queued-list" class="tasks-list"></ul>
+                    </div>
+                    <div id="tasks-completed-group" class="tasks-group hidden is-group-collapsible" data-group-id="completed">
+                        <div class="tasks-group-head" data-group-toggle="completed" title="Double-click to collapse or expand">
+                            <span class="tasks-group-chevron" aria-hidden="true"></span>
+                            <span class="tasks-group-title">Completed</span>
+                            <span id="tasks-completed-count" class="tasks-group-count">0</span>
+                        </div>
+                        <ul id="tasks-completed-list" class="tasks-list"></ul>
+                    </div>
+                    <div id="tasks-failed-group" class="tasks-group hidden is-group-collapsible" data-group-id="failed">
+                        <div class="tasks-group-head" data-group-toggle="failed" title="Double-click to collapse or expand">
+                            <span class="tasks-group-chevron" aria-hidden="true"></span>
+                            <span class="tasks-group-title">Failed</span>
+                            <span id="tasks-failed-count" class="tasks-group-count">0</span>
+                        </div>
+                        <ul id="tasks-failed-list" class="tasks-list"></ul>
+                    </div>
+                    <div id="tasks-cancelled-group" class="tasks-group hidden is-group-collapsible" data-group-id="cancelled">
+                        <div class="tasks-group-head" data-group-toggle="cancelled" title="Double-click to collapse or expand">
+                            <span class="tasks-group-chevron" aria-hidden="true"></span>
+                            <span class="tasks-group-title">Cancelled</span>
+                            <span id="tasks-cancelled-count" class="tasks-group-count">0</span>
+                        </div>
+                        <ul id="tasks-cancelled-list" class="tasks-list"></ul>
+                    </div>
                 </div>
-                <div id="explanation-body" class="explanation-body"></div>
             </section>
 
             <div id="idle-hint" class="idle-hint">
                 <div class="idle-title">No active session</div>
-                <div class="idle-detail">Run a fix on a diagnostic to see status, file changes, and the assistant's explanation here.</div>
+                <div class="idle-detail">Run a fix to see tasks, live progress, and diffs here.</div>
             </div>
         </main>
         <button id="jump-latest" class="jump-latest" type="button" aria-label="Jump to latest">

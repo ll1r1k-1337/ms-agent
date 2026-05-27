@@ -59,6 +59,7 @@ All settings are exposed through native VS Code settings under `msagent`.
 | Command | Description |
 |---|---|
 | `msAgent: Parse Log File` | Parse a log file and publish diagnostics |
+| `msAgent: Fix Issue Payload` | Repair a caller-owned issue payload without publishing msAgent diagnostics |
 | `msAgent: Fix All Issues` | Fix all msAgent diagnostics for the active file |
 | `msAgent: Clear Diagnostics` | Clear all msAgent diagnostics |
 | `msAgent: Select OpenCode Model` | Pick a model from the local OpenCode config and write it back to `msagent.modelName` |
@@ -71,7 +72,7 @@ Notes:
 - On first activation, msAgent tries to sync the model from your OpenCode config files
 - After that, dynamic model choice continues through `msAgent: Select OpenCode Model`
 
-`msagent.fixProblem` remains as the internal single-problem entrypoint used by Quick Fix and tests.
+`msagent.fixProblem` remains as the standalone parser-flow entrypoint used by Quick Fix and tests. Integrating extensions should call `msagent.fixIssue` with `{ uri, range, issueType, message, severity?, details? }` when they already own diagnosis and Problems publication.
 
 ## Fix Details Behavior
 
