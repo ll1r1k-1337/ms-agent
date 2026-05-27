@@ -493,6 +493,25 @@ function recordCompletedTask(task: QueuedFixTask, status: CompletedTaskStatus): 
     }
 }
 
+/**
+ * Emit the post-cancel bookkeeping that `runFixWorker` runs after a task
+ * settles: record the terminal entry, transition the webview group, and
+ * notify the OP DevTools receiver. Used by every path that cancels a task
+ * outside the worker (queue / paused removal via cancelBatch, cancel_current,
+ * cancel_task, remove_queued) so OP DevTools sees one progress event per
+ * task and the webview tally lands in the `cancelled` bucket instead of
+ * silently vanishing.
+ */
+function emitCancelledTerminalEvents(task: QueuedFixTask): void {
+    recordCompletedTask(task, 'cancelled');
+    queueEvents.removed(task.id);
+    const completedItem = recentlyCompletedTasks[0];
+    if (completedItem) {
+        queueEvents.added(completedItem);
+    }
+    void notifyBatchProgress(task.progress, task, 'cancelled');
+}
+
 function resetCompletedHistory(): void {
     recentlyCompletedTasks.length = 0;
     fixedCallerOwnedTaskIds.clear();
@@ -651,8 +670,8 @@ export function cancelBatch(batchId: string): CancelBatchResult {
         if (idSet.has(task.id)) {
             fixQueue.splice(i, 1);
             unlinkTaskFromBatch(task.id, task.batchMeta);
+            emitCancelledTerminalEvents(task);
             task.resolve({ status: 'cancelled' });
-            queueEvents.removed(task.id);
             queued += 1;
         }
     }
@@ -663,8 +682,8 @@ export function cancelBatch(batchId: string): CancelBatchResult {
         if (pausedTask) {
             pausedActiveFixTasks.delete(id);
             unlinkTaskFromBatch(id, pausedTask.batchMeta);
+            emitCancelledTerminalEvents(pausedTask);
             pausedTask.resolve({ status: 'cancelled' });
-            queueEvents.removed(id);
             paused += 1;
             continue;
         }
@@ -910,6 +929,7 @@ function ensureFixDetailsPanel(): void {
                 for (const [id, task] of pausedActiveFixTasks.entries()) {
                     pausedActiveFixTasks.delete(id);
                     unlinkTaskFromBatch(id, task.batchMeta);
+                    emitCancelledTerminalEvents(task);
                     task.resolve({ status: 'cancelled' });
                 }
                 pauseRequested = false;
@@ -948,8 +968,8 @@ function ensureFixDetailsPanel(): void {
             if (pausedTask) {
                 pausedActiveFixTasks.delete(message.id);
                 unlinkTaskFromBatch(message.id, pausedTask.batchMeta);
+                emitCancelledTerminalEvents(pausedTask);
                 pausedTask.resolve({ status: 'cancelled' });
-                queueEvents.removed(message.id);
                 clearConversationIfCancelledAndIdle();
             }
             return;
@@ -959,8 +979,8 @@ function ensureFixDetailsPanel(): void {
             if (idx >= 0) {
                 const [removed] = fixQueue.splice(idx, 1);
                 unlinkTaskFromBatch(removed.id, removed.batchMeta);
+                emitCancelledTerminalEvents(removed);
                 removed.resolve({ status: 'cancelled' });
-                queueEvents.removed(removed.id);
             }
         }
     });

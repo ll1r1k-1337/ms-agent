@@ -922,6 +922,82 @@ describe('fixService', () => {
             const snapshot = getAiFixQueueSnapshot();
             expect(snapshot.items).to.have.length(1);
         });
+
+        it('records queued cancellations into recentlyCompleted so the webview can tally them', () => {
+            const diag = makeDiag();
+            _enqueueFixTask({
+                key: 'k1',
+                title: 'A',
+                diagnostic: diag,
+                batchMeta: { batchId: 'b_queue', batchIndex: 0, batchTotal: 2 },
+                resolve: () => {},
+            });
+            _enqueueFixTask({
+                key: 'k2',
+                title: 'B',
+                diagnostic: diag,
+                batchMeta: { batchId: 'b_queue', batchIndex: 1, batchTotal: 2 },
+                resolve: () => {},
+            });
+            cancelBatch('b_queue');
+            const snapshot = getAiFixQueueSnapshot();
+            expect(snapshot.recentlyCompleted.map((e) => e.status))
+                .to.deep.equal(['cancelled', 'cancelled']);
+        });
+
+        it('records paused cancellations into recentlyCompleted so the webview can tally them', () => {
+            const diag = makeDiag();
+            _setPausedFix({
+                id: 'paused_b1',
+                key: 'paused-key',
+                title: 'Paused In Batch',
+                issue: repairIssueFromSanitizerDiagnostic(diag),
+                batchMeta: { batchId: 'b_paused_tally', batchIndex: 0, batchTotal: 1 },
+                resolve: () => {},
+            });
+            cancelBatch('b_paused_tally');
+            const snapshot = getAiFixQueueSnapshot();
+            expect(snapshot.recentlyCompleted).to.have.length(1);
+            expect(snapshot.recentlyCompleted[0].status).to.equal('cancelled');
+        });
+
+        it('fires op-devtools.msAgentFixIssuesProgress with cancelled status for queued and paused tasks', () => {
+            const executeCommandStub = sinon.stub(vscode.commands, 'executeCommand').resolves();
+            const diag = makeDiag();
+            const progressCtx: BatchProgressContext = {
+                batchId: 'b_progress',
+                receiverAvailable: true,
+                batchTotal: 2,
+                completedCount: 0,
+            };
+            _enqueueFixTask({
+                key: 'q1',
+                title: 'Queued In Batch',
+                diagnostic: diag,
+                batchMeta: { batchId: 'b_progress', batchIndex: 0, batchTotal: 2 },
+                progress: progressCtx,
+                resolve: () => {},
+            });
+            _setPausedFix({
+                id: 'paused_progress',
+                key: 'paused-progress-key',
+                title: 'Paused In Batch',
+                issue: repairIssueFromSanitizerDiagnostic(diag),
+                batchMeta: { batchId: 'b_progress', batchIndex: 1, batchTotal: 2 },
+                progress: progressCtx,
+                resolve: () => {},
+            });
+
+            cancelBatch('b_progress');
+
+            const progressCalls = executeCommandStub.getCalls().filter(
+                (c) => c.args[0] === 'op-devtools.msAgentFixIssuesProgress',
+            );
+            expect(progressCalls).to.have.length(2);
+            for (const call of progressCalls) {
+                expect(call.args[1]).to.include({ batchId: 'b_progress', status: 'cancelled' });
+            }
+        });
     });
 
     describe('queueEvents coalescing', () => {
